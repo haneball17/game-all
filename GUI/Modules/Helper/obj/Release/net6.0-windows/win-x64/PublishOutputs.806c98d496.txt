@@ -1,0 +1,3 @@
+E:\code\game-helper\tools\gui\GameHelperGUI\bin\Release\net6.0-windows\win-x64\publish\GameHelperGUI.pdb
+E:\code\game-helper\tools\gui\GameHelperGUI\bin\Release\net6.0-windows\win-x64\publish\config\\params.json
+E:\code\game-helper\tools\gui\GameHelperGUI\bin\Release\net6.0-windows\win-x64\publish\GameHelperGUI.exe
