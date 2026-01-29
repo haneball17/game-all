@@ -131,14 +131,15 @@ MasterGUI 配置：
 Helper 配置（支持热更新，默认 1s 轮询）：
 - 启动/功能/热键/输出/日志等参数
 
-> **注意**：当前 Helper 与 Helper GUI 读取的默认路径为 `game_helper.ini`（与 exe/dll 同级）。
-> 若你希望配置生效，需要将该文件复制到 `artifacts/run/` 根目录，或调整代码读取路径。
+> **当前路径**：`artifacts/run/config/game_helper.ini`  
+> Payload 与 Helper GUI 均从 `./config` 读取，并支持热更新。
 
 ### 4) `params.json`
 Helper GUI 参数面板的元数据。
 
 ### 5) `sync_hotkey.ini`
-Sync 热键模板（当前 Sync 默认热键固定为 **Alt + .**）。
+Sync 热键配置（支持热更新）。  
+默认热键为 **Alt + .**，可修改为如 `Ctrl+F10`。
 
 ---
 
@@ -205,4 +206,3 @@ Shared/Protocols/协议说明.md
 ## 免责声明
 
 本项目仅用于内部授权测试环境。禁止用于任何未授权场景。
-

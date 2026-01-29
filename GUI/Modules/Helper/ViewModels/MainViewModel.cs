@@ -75,7 +75,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public MainViewModel()
     {
         var baseDir = AppDomain.CurrentDomain.BaseDirectory;
-        var configPath = Path.Combine(baseDir, "game_helper.ini");
+        var configPath = Path.Combine(baseDir, "config", "game_helper.ini");
         var metadataPath = Path.Combine(baseDir, "config", "params.json");
         ParameterConfig = new ParameterConfigViewModel(configPath, metadataPath);
         HotkeyConfig = new HotkeyConfigViewModel(configPath);
