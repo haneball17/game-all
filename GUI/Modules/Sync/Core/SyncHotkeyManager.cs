@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Threading;
 using System.Windows.Forms;
+using Timer = System.Threading.Timer;
 
 namespace DNFSyncBox;
 
