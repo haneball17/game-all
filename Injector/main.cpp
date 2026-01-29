@@ -7,6 +7,8 @@
 #include <cstring>
 #include <unordered_map>
 #include <unordered_set>
+#include <memory>
+#include <limits>
 
 #ifdef _DEBUG
 #include <algorithm>
@@ -18,6 +20,9 @@ struct InjectorConfig {
     std::wstring output_dir;
     DWORD scan_interval_ms = 1000;
     DWORD inject_delay_ms = 2000;
+    DWORD window_wait_timeout_ms = 30000;
+    DWORD window_poll_interval_ms = 500;
+    DWORD post_window_delay_ms = 10000;
     int max_retries = 3;
     DWORD retry_interval_ms = 1000;
     DWORD success_timeout_ms = 6000;
@@ -26,6 +31,7 @@ struct InjectorConfig {
     DWORD heartbeat_interval_ms = 200;
     bool watch_mode = true;
     DWORD idle_exit_seconds = 600;
+    DWORD max_concurrent_tasks = 3;
 };
 
 #pragma pack(push, 1)
@@ -212,8 +218,14 @@ static void EnsureDefaultInjectorConfig(const std::wstring& config_path) {
         "; output_dir=\r\n"
         "; 扫描进程间隔（毫秒）\r\n"
         "scan_interval_ms=1000\r\n"
-        "; 发现进程后等待注入的延迟（毫秒）\r\n"
-        "inject_delay_ms=2000\r\n"
+        "; 等待窗口出现的超时（毫秒）\r\n"
+        "window_wait_timeout_ms=30000\r\n"
+        "; 窗口检测轮询间隔（毫秒）\r\n"
+        "window_poll_interval_ms=500\r\n"
+        "; 窗口出现后强制等待时间（毫秒）\r\n"
+        "post_window_delay_ms=10000\r\n"
+        "; 发现窗口后额外延迟（毫秒，可选）\r\n"
+        "inject_delay_ms=0\r\n"
         "; 重试次数与间隔\r\n"
         "max_retries=3\r\n"
         "retry_interval_ms=1000\r\n"
@@ -226,7 +238,9 @@ static void EnsureDefaultInjectorConfig(const std::wstring& config_path) {
         "; 常驻监听模式\r\n"
         "watch_mode=true\r\n"
         "; 无新目标进程出现后自动退出（秒，0 表示不退出）\r\n"
-        "idle_exit_seconds=600\r\n";
+        "idle_exit_seconds=600\r\n"
+        "; 并发注入任务上限（0 表示不限制）\r\n"
+        "max_concurrent_tasks=3\r\n";
     WriteTextFileUtf8(config_path, content);
 }
 
@@ -264,6 +278,42 @@ static bool ReadIniBool(const std::wstring& path, const wchar_t* key, bool defau
         return false;
     }
     return default_value;
+}
+
+struct WindowCheckCtx {
+    DWORD target_pid = 0;
+    bool found = false;
+};
+
+static BOOL CALLBACK EnumWindowCheckProc(HWND hwnd, LPARAM lparam) {
+    auto* ctx = reinterpret_cast<WindowCheckCtx*>(lparam);
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid != ctx->target_pid) {
+        return TRUE;
+    }
+    if (!IsWindowVisible(hwnd)) {
+        return TRUE;
+    }
+    if (GetWindow(hwnd, GW_OWNER) != nullptr) {
+        return TRUE;
+    }
+    ctx->found = true;
+    return FALSE;
+}
+
+static bool WaitForProcessWindow(DWORD pid, DWORD timeout_ms, DWORD poll_interval_ms) {
+    ULONGLONG start = GetTickCount64();
+    while (GetTickCount64() - start <= timeout_ms) {
+        WindowCheckCtx ctx;
+        ctx.target_pid = pid;
+        EnumWindows(EnumWindowCheckProc, reinterpret_cast<LPARAM>(&ctx));
+        if (ctx.found) {
+            return true;
+        }
+        Sleep(poll_interval_ms);
+    }
+    return false;
 }
 
 static std::wstring NormalizeProcessName(const std::wstring& name) {
@@ -566,11 +616,6 @@ static bool PerformApcInjection(DWORD pid, const std::wstring& dll_path) {
     return queued > 0;
 }
 
-struct ProcessState {
-    ULONGLONG last_seen = 0;
-    bool injected = false;
-};
-
 static bool TryInjectProcess(DWORD pid, const InjectorConfig& config) {
     std::wstring success_path = BuildSuccessFilePath(config.dll_path, config.output_dir, pid);
     for (int attempt = 1; attempt <= config.max_retries; ++attempt) {
@@ -653,6 +698,9 @@ static InjectorConfig LoadInjectorConfig(const std::wstring& config_path, const 
 
     config.scan_interval_ms = ReadIniUInt32(config_path, L"scan_interval_ms", config.scan_interval_ms);
     config.inject_delay_ms = ReadIniUInt32(config_path, L"inject_delay_ms", config.inject_delay_ms);
+    config.window_wait_timeout_ms = ReadIniUInt32(config_path, L"window_wait_timeout_ms", config.window_wait_timeout_ms);
+    config.window_poll_interval_ms = ReadIniUInt32(config_path, L"window_poll_interval_ms", config.window_poll_interval_ms);
+    config.post_window_delay_ms = ReadIniUInt32(config_path, L"post_window_delay_ms", config.post_window_delay_ms);
     config.max_retries = static_cast<int>(ReadIniUInt32(config_path, L"max_retries", config.max_retries));
     config.retry_interval_ms = ReadIniUInt32(config_path, L"retry_interval_ms", config.retry_interval_ms);
     config.success_timeout_ms = ReadIniUInt32(config_path, L"success_timeout_ms", config.success_timeout_ms);
@@ -661,7 +709,116 @@ static InjectorConfig LoadInjectorConfig(const std::wstring& config_path, const 
     config.heartbeat_interval_ms = ReadIniUInt32(config_path, L"heartbeat_interval_ms", config.heartbeat_interval_ms);
     config.watch_mode = ReadIniBool(config_path, L"watch_mode", config.watch_mode);
     config.idle_exit_seconds = ReadIniUInt32(config_path, L"idle_exit_seconds", config.idle_exit_seconds);
+    config.max_concurrent_tasks = ReadIniUInt32(config_path, L"max_concurrent_tasks", config.max_concurrent_tasks);
     return config;
+}
+
+enum InjectTaskState {
+    kTaskPending = 0,
+    kTaskWaitingWindow = 1,
+    kTaskInjecting = 2,
+    kTaskSucceeded = 3,
+    kTaskFailed = 4,
+    kTaskAbandoned = 5
+};
+
+struct InjectTask {
+    DWORD pid = 0;
+    ULONGLONG last_seen = 0;
+    volatile LONG state = kTaskPending;
+    HANDLE thread = nullptr;
+    bool injected = false;
+    bool pending = true;
+};
+
+struct InjectTaskParams {
+    DWORD pid = 0;
+    InjectorConfig config;
+};
+
+static DWORD WINAPI InjectTaskThread(LPVOID param) {
+    std::unique_ptr<InjectTaskParams> payload(reinterpret_cast<InjectTaskParams*>(param));
+    DWORD pid = payload->pid;
+    InjectorConfig config = payload->config;
+
+    Log(L"等待目标进程窗口初始化... (PID " + std::to_wstring(pid) + L")");
+    if (!WaitForProcessWindow(pid, config.window_wait_timeout_ms, config.window_poll_interval_ms)) {
+        Log(L"超时：目标进程未创建窗口，跳过注入 (PID " + std::to_wstring(pid) + L")");
+        return 0;
+    }
+
+    if (config.post_window_delay_ms > 0) {
+        Log(L"窗口已就绪，等待 " + std::to_wstring(config.post_window_delay_ms) + L"ms 后注入 (PID " + std::to_wstring(pid) + L")");
+        Sleep(config.post_window_delay_ms);
+    }
+
+    if (config.inject_delay_ms > 0) {
+        Sleep(config.inject_delay_ms);
+    }
+
+    bool injected = TryInjectProcess(pid, config);
+    if (injected) {
+        Log(L"注入完成: PID " + std::to_wstring(pid));
+    } else {
+        Log(L"注入失败: PID " + std::to_wstring(pid));
+    }
+    return 0;
+}
+
+static void CleanupFinishedTasks(std::unordered_map<DWORD, InjectTask>& states) {
+    for (auto& pair : states) {
+        InjectTask& task = pair.second;
+        if (!task.thread) {
+            continue;
+        }
+        DWORD wait = WaitForSingleObject(task.thread, 0);
+        if (wait == WAIT_OBJECT_0) {
+            CloseHandle(task.thread);
+            task.thread = nullptr;
+        }
+    }
+}
+
+static size_t CountActiveTasks(const std::unordered_map<DWORD, InjectTask>& states) {
+    size_t count = 0;
+    for (const auto& pair : states) {
+        if (pair.second.thread) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+static void TryStartPendingTasks(std::unordered_map<DWORD, InjectTask>& states, const InjectorConfig& config) {
+    size_t active = CountActiveTasks(states);
+    size_t limit = config.max_concurrent_tasks == 0
+        ? (std::numeric_limits<size_t>::max)()
+        : static_cast<size_t>(config.max_concurrent_tasks);
+    if (active >= limit) {
+        return;
+    }
+    for (auto& pair : states) {
+        if (active >= limit) {
+            break;
+        }
+        InjectTask& task = pair.second;
+        if (!task.pending || task.thread) {
+            continue;
+        }
+        std::unique_ptr<InjectTaskParams> payload(new InjectTaskParams());
+        payload->pid = task.pid;
+        payload->config = config;
+        HANDLE thread = CreateThread(nullptr, 0, InjectTaskThread, payload.release(), 0, nullptr);
+        if (!thread) {
+            Log(L"创建注入线程失败: PID " + std::to_wstring(task.pid));
+            task.pending = true;
+            continue;
+        }
+        task.thread = thread;
+        task.pending = false;
+        ++active;
+        Log(L"启动注入任务: PID " + std::to_wstring(task.pid));
+    }
 }
 
 int wmain() {
@@ -674,6 +831,9 @@ int wmain() {
     Log(L"配置文件: " + config_path);
     Log(L"进程名: " + config.process_name);
     Log(L"DLL 路径: " + config.dll_path);
+    Log(L"窗口等待超时: " + std::to_wstring(config.window_wait_timeout_ms) + L"ms");
+    Log(L"窗口检测间隔: " + std::to_wstring(config.window_poll_interval_ms) + L"ms");
+    Log(L"窗口后等待: " + std::to_wstring(config.post_window_delay_ms) + L"ms");
 
     DWORD attr = GetFileAttributesW(config.dll_path.c_str());
     if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY) != 0) {
@@ -692,6 +852,14 @@ int wmain() {
             Sleep(config.scan_interval_ms);
         }
         Log(L"发现 PID: " + std::to_wstring(pid));
+        Log(L"等待目标进程窗口初始化...");
+        if (!WaitForProcessWindow(pid, config.window_wait_timeout_ms, config.window_poll_interval_ms)) {
+            Log(L"超时：目标进程未创建窗口，终止注入");
+            return 3;
+        }
+        if (config.post_window_delay_ms > 0) {
+            Sleep(config.post_window_delay_ms);
+        }
         if (config.inject_delay_ms > 0) {
             Sleep(config.inject_delay_ms);
         }
@@ -705,11 +873,12 @@ int wmain() {
     }
 
     Log(L"进入常驻监听模式");
-    std::unordered_map<DWORD, ProcessState> states;
+    std::unordered_map<DWORD, InjectTask> states;
     ULONGLONG last_new_tick = GetTickCount64();
 
     for (;;) {
         ULONGLONG now = GetTickCount64();
+        CleanupFinishedTasks(states);
         std::vector<DWORD> pids = ListProcessIds(config.process_name);
         std::unordered_set<DWORD> current(pids.begin(), pids.end());
 
@@ -718,6 +887,12 @@ int wmain() {
             if (current.find(it->first) == current.end()) {
                 Log(L"进程退出: PID " + std::to_wstring(it->first));
                 DeleteSuccessFileForPid(it->first, config);
+                if (it->second.thread) {
+                    // 任务线程仍在运行，不强制结束
+                    it->second.pending = false;
+                    ++it;
+                    continue;
+                }
                 it = states.erase(it);
                 continue;
             }
@@ -730,23 +905,17 @@ int wmain() {
             if (states.find(pid) != states.end()) {
                 continue;
             }
-            ProcessState state;
+            InjectTask state;
+            state.pid = pid;
             state.last_seen = now;
+            state.pending = true;
             states.emplace(pid, state);
             last_new_tick = now;
 
             Log(L"发现新进程: PID " + std::to_wstring(pid));
-            if (config.inject_delay_ms > 0) {
-                Sleep(config.inject_delay_ms);
-            }
-            bool injected = TryInjectProcess(pid, config);
-            states[pid].injected = injected;
-            if (injected) {
-                Log(L"注入完成: PID " + std::to_wstring(pid));
-            } else {
-                Log(L"注入失败: PID " + std::to_wstring(pid));
-            }
         }
+
+        TryStartPendingTasks(states, config);
 
         if (config.idle_exit_seconds > 0) {
             ULONGLONG idle_ms = static_cast<ULONGLONG>(config.idle_exit_seconds) * 1000ULL;
