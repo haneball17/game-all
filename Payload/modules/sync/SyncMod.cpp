@@ -124,8 +124,19 @@ static LONG g_vkeyMapReady = 0;
 static LONG g_forceDeviceStateOk = -1;
 static LONG g_forceDeviceStateLogged = 0;
 
-static HWND g_selfWindowCache = nullptr;
-static DWORD g_selfWindowCacheTick = 0;
+// 窗口缓存只由后台线程更新，Hook 回调仅做只读访问
+static volatile HWND g_selfWindowCache = nullptr;
+
+static void SetSelfWindowCache(HWND hwnd)
+{
+    InterlockedExchangePointer(reinterpret_cast<PVOID volatile*>(&g_selfWindowCache), hwnd);
+}
+
+static HWND GetSelfWindowCache()
+{
+    return reinterpret_cast<HWND>(
+        InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(&g_selfWindowCache), nullptr, nullptr));
+}
 static ULONGLONG g_injectTick = 0;
 static LONG g_spoofDelayMs = -1;
 static LONG g_spoofDelayLogged = 0;
@@ -1111,20 +1122,8 @@ static BOOL CALLBACK EnumWindowsFindSelf(HWND hwnd, LPARAM lparam)
     return TRUE;
 }
 
-static HWND GetSelfMainWindow()
+static void UpdateSelfWindowCache()
 {
-    if (g_selfWindowCache && IsWindow(g_selfWindowCache))
-    {
-        return g_selfWindowCache;
-    }
-
-    DWORD now = GetTickCount();
-    if (now - g_selfWindowCacheTick < 1000)
-    {
-        return g_selfWindowCache;
-    }
-
-    g_selfWindowCacheTick = now;
     WindowSearchContext ctx = {};
     ctx.pid = GetCurrentProcessId();
     EnumWindows(EnumWindowsFindSelf, reinterpret_cast<LPARAM>(&ctx));
@@ -1132,10 +1131,19 @@ static HWND GetSelfMainWindow()
     HWND result = ctx.best ? ctx.best : ctx.fallback;
     if (result && IsWindow(result))
     {
-        g_selfWindowCache = result;
+        SetSelfWindowCache(result);
+    }
+}
+
+static HWND GetSelfMainWindow()
+{
+    HWND cached = GetSelfWindowCache();
+    if (cached && IsWindow(cached))
+    {
+        return cached;
     }
 
-    return g_selfWindowCache;
+    return nullptr;
 }
 
 static bool IsWindowOwnedBySelf(HWND hwnd)
@@ -2248,6 +2256,9 @@ static DWORD WINAPI WorkerThread(LPVOID)
 
     LogInfo(L"Hook 安装完成，开始统计调用频率");
 
+    // 后台定期刷新窗口缓存，避免 Hook 回调中执行 EnumWindows
+    UpdateSelfWindowCache();
+
     // 暂时禁用抹头逻辑，便于调试与稳定性验证。
 #if 0
     // 抹头放在 Hook 初始化之后，避免影响需要解析 PE 的逻辑
@@ -2264,6 +2275,7 @@ static DWORD WINAPI WorkerThread(LPVOID)
     while (InterlockedCompareExchange(&g_shouldStop, 0, 0) == 0)
     {
         Sleep(1000);
+        UpdateSelfWindowCache();
         LogCountersOnce();
     }
 
