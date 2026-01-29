@@ -756,6 +756,48 @@ static BOOL WriteDefaultConfigFile(const wchar_t* config_path) {
 	return TRUE;
 }
 
+static BOOL TryLoadHelperConfigFromDirectory(const wchar_t* directory_path,
+	BOOL use_config_dir,
+	HelperConfig* config,
+	wchar_t* loaded_path,
+	size_t loaded_capacity) {
+	if (directory_path == NULL || directory_path[0] == L'\0' || config == NULL) {
+		return FALSE;
+	}
+	wchar_t candidate_path[MAX_PATH] = {0};
+	if (use_config_dir) {
+		wchar_t config_dir[MAX_PATH] = {0};
+		if (!BuildConfigDirPath(directory_path, config_dir, MAX_PATH)) {
+			return FALSE;
+		}
+		EnsureDirectoryExists(config_dir);
+		if (!BuildConfigPathInConfigDir(directory_path, candidate_path, MAX_PATH)) {
+			return FALSE;
+		}
+		DWORD attrs = GetFileAttributesW(candidate_path);
+		if (attrs == INVALID_FILE_ATTRIBUTES) {
+			WriteDefaultConfigFile(candidate_path);
+			attrs = GetFileAttributesW(candidate_path);
+		}
+		if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+			return FALSE;
+		}
+	} else {
+		if (!BuildConfigPath(directory_path, candidate_path, MAX_PATH)) {
+			return FALSE;
+		}
+	}
+	if (!LoadHelperConfig(candidate_path, config)) {
+		return FALSE;
+	}
+	if (loaded_path != NULL && loaded_capacity > 0) {
+		if (wcscpy_s(loaded_path, loaded_capacity, candidate_path) != 0) {
+			loaded_path[0] = L'\0';
+		}
+	}
+	return TRUE;
+}
+
 static BOOL GetFileLastWriteTime(const wchar_t* path, FILETIME* write_time) {
 	if (write_time == NULL || path == NULL || path[0] == L'\0') {
 		return FALSE;
@@ -2417,15 +2459,22 @@ static DWORD WINAPI WorkerThread(LPVOID param) {
 	HelperConfig config = GetDefaultHelperConfig();
 	BOOL config_loaded = FALSE;
 	wchar_t config_path[MAX_PATH] = {0};
+	// 优先读取 ./config/game_helper.ini（模块目录 -> 可执行目录）
 	if (has_module_directory &&
-		BuildConfigPath(module_directory, config_path, MAX_PATH) &&
-		LoadHelperConfig(config_path, &config)) {
+		TryLoadHelperConfigFromDirectory(module_directory, TRUE, &config, config_path, MAX_PATH)) {
 		config_loaded = TRUE;
 	}
-
 	if (!config_loaded && has_exe_directory &&
-		BuildConfigPath(exe_directory, config_path, MAX_PATH) &&
-		LoadHelperConfig(config_path, &config)) {
+		TryLoadHelperConfigFromDirectory(exe_directory, TRUE, &config, config_path, MAX_PATH)) {
+		config_loaded = TRUE;
+	}
+	// 兼容旧路径：模块目录/可执行目录根目录下的 game_helper.ini
+	if (!config_loaded && has_module_directory &&
+		TryLoadHelperConfigFromDirectory(module_directory, FALSE, &config, config_path, MAX_PATH)) {
+		config_loaded = TRUE;
+	}
+	if (!config_loaded && has_exe_directory &&
+		TryLoadHelperConfigFromDirectory(exe_directory, FALSE, &config, config_path, MAX_PATH)) {
 		config_loaded = TRUE;
 	}
 

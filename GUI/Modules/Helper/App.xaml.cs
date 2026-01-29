@@ -12,7 +12,7 @@ public partial class App : Application
     {
         base.OnStartup(e);
         string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-        string configPath = Path.Combine(baseDir, "game_helper.ini");
+        string configPath = Path.Combine(baseDir, "config", "game_helper.ini");
         GuiLogger.Initialize(configPath, baseDir);
         DispatcherUnhandledException += OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;

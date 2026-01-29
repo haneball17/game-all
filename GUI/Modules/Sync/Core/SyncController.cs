@@ -35,8 +35,11 @@ public sealed class SyncController : IDisposable
     private bool _userPaused;
     private bool _autoPaused = true;
     private bool _altDown;
+    private bool _ctrlDown;
+    private bool _shiftDown;
     private bool _hotkeyDown;
     private string _lastSnapshotSignature = string.Empty;
+    private SyncHotkeyManager? _hotkeyManager;
 
     /// <summary>
     /// 状态变化事件：用于 UI 展示。
@@ -66,6 +69,9 @@ public sealed class SyncController : IDisposable
     /// </summary>
     public void Start()
     {
+        _hotkeyManager ??= new SyncHotkeyManager(AppContext.BaseDirectory, message => Log($"[热键] {message}"));
+        Log($"热键配置：{_hotkeyManager.Current.Display}");
+
         _keyboardHook.KeyEvent += OnKeyEvent;
         _keyboardHook.Install();
 
@@ -166,6 +172,8 @@ public sealed class SyncController : IDisposable
     private void OnKeyEvent(Keys key, bool isDown)
     {
         var isAltKey = IsAltKey(key);
+        var isCtrlKey = IsCtrlKey(key);
+        var isShiftKey = IsShiftKey(key);
         if (isAltKey)
         {
             lock (_stateLock)
@@ -174,15 +182,36 @@ public sealed class SyncController : IDisposable
             }
             LogVerbose($"热键辅助键 Alt：{(isDown ? "按下" : "抬起")}");
         }
+        if (isCtrlKey)
+        {
+            lock (_stateLock)
+            {
+                _ctrlDown = isDown;
+            }
+            LogVerbose($"热键辅助键 Ctrl：{(isDown ? "按下" : "抬起")}");
+        }
+        if (isShiftKey)
+        {
+            lock (_stateLock)
+            {
+                _shiftDown = isDown;
+            }
+            LogVerbose($"热键辅助键 Shift：{(isDown ? "按下" : "抬起")}");
+        }
 
-        if (key == Keys.OemPeriod)
+        var hotkey = _hotkeyManager?.Current ?? SyncHotkeyManager.DefaultHotkey;
+        if (key == hotkey.Key)
         {
             var shouldToggle = false;
             var altDown = false;
+            var ctrlDown = false;
+            var shiftDown = false;
             lock (_stateLock)
             {
                 altDown = _altDown;
-                if (isDown && _altDown && !_hotkeyDown)
+                ctrlDown = _ctrlDown;
+                shiftDown = _shiftDown;
+                if (isDown && hotkey.MatchesModifiers(altDown, ctrlDown, shiftDown) && !_hotkeyDown)
                 {
                     _hotkeyDown = true;
                     shouldToggle = true;
@@ -195,13 +224,13 @@ public sealed class SyncController : IDisposable
 
             if (shouldToggle)
             {
-                LogVerbose("热键触发：Alt + .");
+                LogVerbose($"热键触发：{hotkey.Display}");
                 TogglePause();
             }
 
-            if (altDown)
+            if (hotkey.MatchesModifiers(altDown, ctrlDown, shiftDown))
             {
-                // 热键组合时不写入 OemPeriod，避免误触同步。
+                // 热键组合时不写入目标键，避免误触同步。
                 return;
             }
         }
@@ -457,6 +486,16 @@ public sealed class SyncController : IDisposable
         return key is Keys.Menu or Keys.LMenu or Keys.RMenu;
     }
 
+    private static bool IsCtrlKey(Keys key)
+    {
+        return key is Keys.ControlKey or Keys.LControlKey or Keys.RControlKey;
+    }
+
+    private static bool IsShiftKey(Keys key)
+    {
+        return key is Keys.ShiftKey or Keys.LShiftKey or Keys.RShiftKey;
+    }
+
     private void LogSnapshotIfNeeded(WindowSnapshot snapshot)
     {
         if (!VerboseLogging)
@@ -492,5 +531,6 @@ public sealed class SyncController : IDisposable
         _heartbeatTimer.Change(Timeout.Infinite, Timeout.Infinite);
         _heartbeatTimer.Dispose();
         _sharedMemory.Dispose();
+        _hotkeyManager?.Dispose();
     }
 }
