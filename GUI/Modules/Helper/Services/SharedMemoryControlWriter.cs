@@ -17,8 +17,8 @@ public sealed class SharedMemoryControlWriter
 {
     private static readonly string[] MappingPrefixes =
     {
-        "Global\\GameHelperControl_",
-        "Local\\GameHelperControl_"
+        "Local\\GameHelperControl_",
+        "Global\\GameHelperControl_"
     };
 
     private const uint ExpectedVersion = 1;

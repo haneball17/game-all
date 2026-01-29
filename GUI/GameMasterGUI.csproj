@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PlatformTarget>x86</PlatformTarget>
+    <AssemblyName>game-master</AssemblyName>
+    <RootNamespace>GameAll.MasterGUI</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="Modules/Helper/GameHelperGUI.csproj" />
+    <ProjectReference Include="Modules/Sync/DNFSyncBox.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="config\\mastergui.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 避免将子模块源码编译进 MasterGUI -->
+    <Compile Remove="Modules\\**\\*.cs" />
+    <Page Remove="Modules\\**\\*.xaml" />
+    <EmbeddedResource Remove="Modules\\**\\*.resx" />
+  </ItemGroup>
+
+  <Target Name="PostBuildCopyToRun" AfterTargets="Build">
+    <PropertyGroup>
+      <RepoRoot Condition="'$(SolutionDir)' != ''">$(SolutionDir)</RepoRoot>
+      <RepoRoot Condition="'$(SolutionDir)' == ''">$(MSBuildProjectDirectory)\..</RepoRoot>
+      <RunDir>$(RepoRoot)artifacts\run\</RunDir>
+      <RunConfigDir>$(RunDir)config\</RunConfigDir>
+      <ConfigTemplatesDir>$(RepoRoot)config-templates\</ConfigTemplatesDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <RunOutputFiles Include="$(TargetDir)*.*" />
+    </ItemGroup>
+    <MakeDir Directories="$(RunDir)" />
+    <MakeDir Directories="$(RunConfigDir)" />
+    <Copy SourceFiles="@(RunOutputFiles)" DestinationFolder="$(RunDir)" SkipUnchangedFiles="true" />
+    <Exec Command="xcopy /D /Y &quot;$(ConfigTemplatesDir)*.*&quot; &quot;$(RunConfigDir)&quot; &gt;nul" Condition="Exists('$(ConfigTemplatesDir)')" />
+  </Target>
+</Project>

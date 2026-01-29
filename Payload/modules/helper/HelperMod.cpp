@@ -5,7 +5,6 @@
 #include <stdlib.h>
 #include <intrin.h>
 
-#include "version_exports.h"
 
 // LDR 断链与抹头（可选）支持，使用私有结构以规避 SDK 结构差异。
 typedef struct _PEB_LDR_DATA_PRIVATE {
@@ -309,6 +308,7 @@ static void* g_control_memory_view = NULL;
 static wchar_t g_control_memory_name[64] = {0};
 static volatile LONG g_control_memory_ready_logged = 0;
 static volatile LONG g_control_memory_failed_logged = 0;
+static volatile LONG g_control_protocol_logged = 0;
 static const wchar_t kLogFileName[] = L"game_helper.jsonl";
 static const wchar_t kConfigFileName[] = L"game_helper.ini";
 static HMODULE g_self_module = NULL;
@@ -318,6 +318,7 @@ static BOOL g_log_lock_ready = FALSE;
 static HANDLE g_log_file = INVALID_HANDLE_VALUE;
 static BOOL g_log_ready = FALSE;
 static wchar_t g_log_path[MAX_PATH] = {0};
+static wchar_t g_success_file_path[MAX_PATH] = {0};
 
 static BOOL GetExeDirectory(wchar_t* directory_path, size_t directory_capacity) {
 	wchar_t exe_path[MAX_PATH] = {0};
@@ -418,6 +419,62 @@ static BOOL BuildConfigPath(const wchar_t* directory_path, wchar_t* output, size
 		}
 	}
 	return wcscat_s(output, output_capacity, kConfigFileName) == 0;
+}
+
+static BOOL BuildConfigDirPath(const wchar_t* directory_path, wchar_t* output, size_t output_capacity) {
+	if (directory_path == NULL || directory_path[0] == L'\0') {
+		return FALSE;
+	}
+	if (wcscpy_s(output, output_capacity, directory_path) != 0) {
+		return FALSE;
+	}
+	size_t length = wcslen(output);
+	if (length == 0 || length >= output_capacity - 1) {
+		return FALSE;
+	}
+	wchar_t last = output[length - 1];
+	if (last != L'\\' && last != L'/') {
+		if (wcscat_s(output, output_capacity, L"\\") != 0) {
+			return FALSE;
+		}
+	}
+	return wcscat_s(output, output_capacity, L"config") == 0;
+}
+
+static BOOL BuildConfigPathInConfigDir(const wchar_t* directory_path, wchar_t* output, size_t output_capacity) {
+	if (!BuildConfigDirPath(directory_path, output, output_capacity)) {
+		return FALSE;
+	}
+	size_t length = wcslen(output);
+	if (length == 0 || length >= output_capacity - 1) {
+		return FALSE;
+	}
+	if (output[length - 1] != L'\\' && output[length - 1] != L'/') {
+		if (wcscat_s(output, output_capacity, L"\\") != 0) {
+			return FALSE;
+		}
+	}
+	return wcscat_s(output, output_capacity, kConfigFileName) == 0;
+}
+
+static BOOL BuildLogsDirectoryPath(const wchar_t* base_dir, wchar_t* output, size_t output_capacity) {
+	if (base_dir == NULL || base_dir[0] == L'\0') {
+		return FALSE;
+	}
+	if (wcscpy_s(output, output_capacity, base_dir) != 0) {
+		return FALSE;
+	}
+	size_t length = wcslen(output);
+	if (length == 0 || length >= output_capacity - 1) {
+		return FALSE;
+	}
+	wchar_t last = output[length - 1];
+	if (last != L'\\' && last != L'/') {
+		if (wcscat_s(output, output_capacity, L"\\") != 0) {
+			return FALSE;
+		}
+	}
+	return wcscat_s(output, output_capacity, L"logs") == 0;
 }
 
 static BOOL BuildSuccessFilePath(const wchar_t* directory_path,
@@ -608,6 +665,95 @@ static BOOL IsDirectoryValid(const wchar_t* path) {
 		return FALSE;
 	}
 	return (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+
+static BOOL EnsureDirectoryExists(const wchar_t* path) {
+	if (path == NULL || path[0] == L'\0') {
+		return FALSE;
+	}
+	if (IsDirectoryValid(path)) {
+		return TRUE;
+	}
+	if (CreateDirectoryW(path, NULL)) {
+		return TRUE;
+	}
+	DWORD error = GetLastError();
+	if (error == ERROR_ALREADY_EXISTS) {
+		return IsDirectoryValid(path);
+	}
+	return FALSE;
+}
+
+static BOOL WriteDefaultConfigFile(const wchar_t* config_path) {
+	if (config_path == NULL || config_path[0] == L'\0') {
+		return FALSE;
+	}
+	HANDLE file = CreateFileW(config_path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS,
+		FILE_ATTRIBUTE_NORMAL, NULL);
+	if (file == INVALID_HANDLE_VALUE) {
+		return FALSE;
+	}
+	// UTF-8 BOM
+	const BYTE bom[] = {0xEF, 0xBB, 0xBF};
+	DWORD written = 0;
+	WriteFile(file, bom, sizeof(bom), &written, NULL);
+
+	const char* content =
+		"[startup]\r\n"
+		"startup_delay_ms=0\r\n"
+		"safe_mode=false\r\n"
+		"\r\n"
+		"[patch]\r\n"
+		"; apply_fullscreen_attack_patch=false\r\n"
+		"; fullscreen_attack_poll_interval_ms=1000\r\n"
+		"\r\n"
+		"[stealth]\r\n"
+		"wipe_pe_header=true\r\n"
+		"\r\n"
+		"[feature]\r\n"
+		"disable_input_thread=false\r\n"
+		"disable_attract_thread=false\r\n"
+		"enable_summon_doll=true\r\n"
+		"; summon_monster_id=25301\r\n"
+		"; summon_level=70\r\n"
+		"; summon_cooldown_ms=0\r\n"
+		"enable_fullscreen_skill=true\r\n"
+		"; player_name_encoding=auto\r\n"
+		"\r\n"
+		"[fullscreen]\r\n"
+		"; skill_code=20022\r\n"
+		"; skill_damage=13333\r\n"
+		"; skill_interval=1000\r\n"
+		"; hotkey_vk=36\r\n"
+		"\r\n"
+		"[hotkey]\r\n"
+		"toggle_transparent=113\r\n"
+		"toggle_fullscreen_attack=114\r\n"
+		"summon_doll=123\r\n"
+		"attract_mode1=55\r\n"
+		"attract_mode2=56\r\n"
+		"attract_mode3=57\r\n"
+		"attract_mode4=48\r\n"
+		"toggle_attract_direction=189\r\n"
+		"; toggle_fullscreen_skill=36\r\n"
+		"\r\n"
+		"[attract]\r\n"
+		"; monster_x_offset_mode1=0.0\r\n"
+		"; monster_x_offset_mode2=80.0\r\n"
+		"; monster_x_offset_mode3=150.0\r\n"
+		"; monster_x_offset_mode4=250.0\r\n"
+		"\r\n"
+		"[output]\r\n"
+		"; output_dir=\r\n"
+		"\r\n"
+		"[gui_log]\r\n"
+		"log_level=INFO\r\n"
+		"log_path=logs\\gui.log.jsonl\r\n"
+		"console_output=false\r\n";
+
+	WriteFile(file, content, static_cast<DWORD>(strlen(content)), &written, NULL);
+	CloseHandle(file);
+	return TRUE;
 }
 
 static BOOL GetFileLastWriteTime(const wchar_t* path, FILETIME* write_time) {
@@ -991,7 +1137,7 @@ static BOOL InitializeSharedMemory() {
 	}
 	DWORD pid = GetCurrentProcessId();
 	wchar_t name_buffer[64] = {0};
-	const wchar_t* prefixes[] = {kSharedMemoryNamePrefixGlobal, kSharedMemoryNamePrefixLocal};
+	const wchar_t* prefixes[] = {kSharedMemoryNamePrefixLocal, kSharedMemoryNamePrefixGlobal};
 	for (int i = 0; i < 2; ++i) {
 		BuildSharedMemoryName(prefixes[i], name_buffer, sizeof(name_buffer) / sizeof(name_buffer[0]), pid);
 		if (name_buffer[0] == L'\0') {
@@ -1043,7 +1189,7 @@ static BOOL InitializeControlMemory() {
 	}
 	DWORD pid = GetCurrentProcessId();
 	wchar_t name_buffer[64] = {0};
-	const wchar_t* prefixes[] = {kControlMemoryNamePrefixGlobal, kControlMemoryNamePrefixLocal};
+	const wchar_t* prefixes[] = {kControlMemoryNamePrefixLocal, kControlMemoryNamePrefixGlobal};
 	for (int i = 0; i < 2; ++i) {
 		BuildSharedMemoryName(prefixes[i], name_buffer, sizeof(name_buffer) / sizeof(name_buffer[0]), pid);
 		if (name_buffer[0] == L'\0') {
@@ -1368,6 +1514,18 @@ static DWORD WINAPI ControlReaderThread(LPVOID param) {
 		HelperControlV1 snapshot = {0};
 		memcpy(&snapshot, g_control_memory_view, sizeof(snapshot));
 		if (snapshot.version != kControlMemoryVersion || snapshot.size != sizeof(HelperControlV1)) {
+			if (InterlockedCompareExchange(&g_control_protocol_logged, 1, 0) == 0) {
+				char message[160] = {0};
+				sprintf_s(
+					message,
+					sizeof(message),
+					"control_version=%lu control_size=%lu expected_version=%lu expected_size=%lu",
+					snapshot.version,
+					snapshot.size,
+					kControlMemoryVersion,
+					static_cast<unsigned long>(sizeof(HelperControlV1)));
+				LogEvent("WARN", "protocol_mismatch", message);
+			}
 			Sleep(1000);
 			continue;
 		}
@@ -1852,11 +2010,22 @@ static BOOL WriteSuccessFile(const wchar_t* directory_path) {
 	if (file == INVALID_HANDLE_VALUE) {
 		return FALSE;
 	}
+	// 记录成功文件路径，便于进程退出时清理。
+	if (wcscpy_s(g_success_file_path, MAX_PATH, file_path) != 0) {
+		g_success_file_path[0] = L'\0';
+	}
 
 	DWORD written = 0;
 	WriteFile(file, content, (DWORD)content_len, &written, NULL);
 	CloseHandle(file);
 	return TRUE;
+}
+
+static void RemoveSuccessFile() {
+	if (g_success_file_path[0] == L'\0') {
+		return;
+	}
+	DeleteFileW(g_success_file_path);
 }
 
 // 自动透明线程：复刻旧逻辑的状态机与节奏。
@@ -2234,6 +2403,16 @@ static DWORD WINAPI WorkerThread(LPVOID param) {
 	wchar_t module_directory[MAX_PATH] = {0};
 	BOOL has_module_directory = GetModuleDirectory(g_self_module, module_directory, MAX_PATH);
 	const wchar_t* default_output_directory = has_module_directory ? module_directory : (has_exe_directory ? exe_directory : NULL);
+	wchar_t log_directory[MAX_PATH] = {0};
+	if (has_module_directory && BuildLogsDirectoryPath(module_directory, log_directory, MAX_PATH)) {
+		if (EnsureDirectoryExists(log_directory)) {
+			default_output_directory = log_directory;
+		}
+	} else if (has_exe_directory && BuildLogsDirectoryPath(exe_directory, log_directory, MAX_PATH)) {
+		if (EnsureDirectoryExists(log_directory)) {
+			default_output_directory = log_directory;
+		}
+	}
 
 	HelperConfig config = GetDefaultHelperConfig();
 	BOOL config_loaded = FALSE;
@@ -2260,7 +2439,7 @@ static DWORD WINAPI WorkerThread(LPVOID param) {
 
 	const wchar_t* output_directory = default_output_directory;
 	if (config.output_directory_set) {
-		if (IsDirectoryValid(config.output_directory)) {
+		if (EnsureDirectoryExists(config.output_directory)) {
 			output_directory = config.output_directory;
 		} else {
 			output_directory = default_output_directory;
@@ -2365,20 +2544,36 @@ static DWORD WINAPI WorkerThread(LPVOID param) {
 	return 0;
 }
 
-BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
-	UNREFERENCED_PARAMETER(reserved);
+static void StartHelperInternal() {
+	HMODULE module = NULL;
+	if (!GetModuleHandleExW(
+		GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		reinterpret_cast<LPCWSTR>(&StartHelperInternal),
+		&module)) {
+		module = NULL;
+	}
 
-	if (reason == DLL_PROCESS_ATTACH) {
+	if (module != NULL) {
 		g_self_module = module;
 		// 先断链隐藏模块，降低被模块枚举发现的概率。
 		g_hide_module_result = HideModule(module);
 		// 避免线程通知开销，并把工作放到新线程，降低加载期风险。
 		DisableThreadLibraryCalls(module);
-		HANDLE thread = CreateThread(NULL, 0, WorkerThread, NULL, 0, NULL);
-		if (thread != NULL) {
-			CloseHandle(thread);
-		}
 	}
 
-	return TRUE;
+	HANDLE thread = CreateThread(NULL, 0, WorkerThread, NULL, 0, NULL);
+	if (thread != NULL) {
+		CloseHandle(thread);
+	}
+}
+
+namespace Helper {
+	void Start() {
+		StartHelperInternal();
+	}
+
+	void Stop() {
+		// 进程退出时清理 successfile，避免残留误判。
+		RemoveSuccessFile();
+	}
 }

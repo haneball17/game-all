@@ -2,6 +2,9 @@
 #define COBJMACROS
 
 #include <windows.h>
+#ifndef DIRECTINPUT_VERSION
+#define DIRECTINPUT_VERSION 0x0800
+#endif
 #include <dinput.h>
 #include <objbase.h>
 #include <strsafe.h>
@@ -103,6 +106,7 @@ static DWORD g_lastSharedAttemptTick = 0;
 static LONG g_sharedReadyLogged = 0;
 static LONG g_sharedErrorLogged = 0;
 static LONG g_sharedVersionLogged = 0;
+static LONG g_sharedSizeLogged = 0;
 static uint32_t g_lastEdgeCounter[256] = {};
 static uint8_t g_lastRawKeyboardState[256] = {};
 static uint32_t g_lastProfileId = 0;
@@ -126,6 +130,20 @@ static ULONGLONG g_injectTick = 0;
 static LONG g_spoofDelayMs = -1;
 static LONG g_spoofDelayLogged = 0;
 static LONG g_spoofDelayEndLogged = 0;
+
+static SIZE_T GetViewRegionSize(void* view)
+{
+    if (!view)
+    {
+        return 0;
+    }
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (VirtualQuery(view, &mbi, sizeof(mbi)) == 0)
+    {
+        return 0;
+    }
+    return mbi.RegionSize;
+}
 
 // ------------------------------
 // MinHook 目标函数指针
@@ -272,8 +290,11 @@ static std::wstring GetModuleBaseName()
 
 static std::wstring BuildSuccessFilePath()
 {
-    // success file 仍放在 DLL 所在目录，便于外部工具检测。
-    std::wstring logDir = GetModuleDirectory();
+    // success file 统一放到 logs 子目录，避免和其他产物混放。
+    std::wstring baseDir = GetModuleDirectory();
+    std::wstring logDir = baseDir + L"\\logs";
+    // 尝试创建目录（允许已存在）
+    CreateDirectoryW(logDir.c_str(), nullptr);
     std::wstring dllName = GetModuleBaseName();
     std::wstring fileName = L"successfile_" + dllName + L"_" + std::to_wstring(GetCurrentProcessId()) + L".txt";
     return logDir + L"\\" + fileName;
@@ -358,7 +379,7 @@ static std::string WideToUtf8(const std::wstring& input)
         return std::string();
     }
     std::string output(static_cast<size_t>(size - 1), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, input.c_str(), -1, output.data(), size - 1, nullptr, nullptr);
+    WideCharToMultiByte(CP_UTF8, 0, input.c_str(), -1, &output[0], size - 1, nullptr, nullptr);
     return output;
 }
 
@@ -411,6 +432,19 @@ static void LogError(const std::wstring& message)
     WriteLogLine(L"[ERROR] " + GetTimestamp() + L" " + message);
 }
 
+static void LogProtocolMismatch(const wchar_t* reason, uint32_t expected, uint64_t actual)
+{
+    wchar_t buffer[200] = {0};
+    StringCchPrintfW(
+        buffer,
+        ARRAYSIZE(buffer),
+        L"protocol_mismatch: %s expected=%lu actual=%llu",
+        reason,
+        expected,
+        static_cast<unsigned long long>(actual));
+    LogError(buffer);
+}
+
 static std::wstring AnsiToWide(const char* text)
 {
     if (!text)
@@ -423,7 +457,7 @@ static std::wstring AnsiToWide(const char* text)
         return L"";
     }
     std::wstring output(static_cast<size_t>(size - 1), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text, -1, output.data(), size - 1);
+    MultiByteToWideChar(CP_UTF8, 0, text, -1, &output[0], size - 1);
     return output;
 }
 
@@ -628,6 +662,18 @@ static bool EnsureSharedMemory()
         return false;
     }
 
+    SIZE_T regionSize = GetViewRegionSize(view);
+    if (regionSize < sizeof(SharedKeyboardStateV2))
+    {
+        if (InterlockedCompareExchange(&g_sharedSizeLogged, 1, 0) == 0)
+        {
+            LogProtocolMismatch(L"size_mismatch", static_cast<uint32_t>(sizeof(SharedKeyboardStateV2)), regionSize);
+        }
+        UnmapViewOfFile(view);
+        CloseHandle(mapping);
+        return false;
+    }
+
     g_sharedMapping = mapping;
     g_sharedState = static_cast<SharedKeyboardStateV2*>(view);
 
@@ -650,7 +696,7 @@ static bool ReadSharedSnapshot(SharedSnapshot& snapshot)
     {
         if (InterlockedCompareExchange(&g_sharedVersionLogged, 1, 0) == 0)
         {
-            LogError(L"共享内存版本不匹配，已停止伪造");
+            LogProtocolMismatch(L"version_mismatch", kSharedVersion, g_sharedState->version);
         }
         return false;
     }
@@ -2225,15 +2271,14 @@ static DWORD WINAPI WorkerThread(LPVOID)
     return 0;
 }
 
-// ------------------------------
-// DllMain
-// ------------------------------
-
-BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
+static void StartSyncInternal()
 {
-    if (reason == DLL_PROCESS_ATTACH)
+    HMODULE module = nullptr;
+    if (GetModuleHandleExW(
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        reinterpret_cast<LPCWSTR>(&StartSyncInternal),
+        &module))
     {
-        // 关键点：DllMain 内只做最小动作，避免触发 Loader Lock 风险
         g_module = module;
         // 记录注入时间，用于伪造延迟计时。
         g_injectTick = GetTickCount64();
@@ -2241,19 +2286,24 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
 
         // 断链：降低被模块枚举发现的概率
         UnlinkFromPeb(module);
-
-        HANDLE thread = CreateThread(nullptr, 0, WorkerThread, nullptr, 0, nullptr);
-        if (thread)
-        {
-            CloseHandle(thread);
-        }
     }
-    else if (reason == DLL_PROCESS_DETACH)
+
+    HANDLE thread = CreateThread(nullptr, 0, WorkerThread, nullptr, 0, nullptr);
+    if (thread)
+    {
+        CloseHandle(thread);
+    }
+}
+
+namespace Sync {
+    void Start()
+    {
+        StartSyncInternal();
+    }
+
+    void Stop()
     {
         InterlockedExchange(&g_shouldStop, 1);
-        // 进程退出时清理 success file，避免残留误判
         RemoveSuccessFile();
     }
-
-    return TRUE;
 }

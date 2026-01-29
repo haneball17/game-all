@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
+using System.Threading;
 using GameHelperGUI.Models;
 
 namespace GameHelperGUI.Services;
@@ -18,11 +20,12 @@ public sealed class SharedMemoryStatusReader
 {
     private static readonly string[] MappingPrefixes =
     {
-        "Global\\GameHelperStatus_",
-        "Local\\GameHelperStatus_"
+        "Local\\GameHelperStatus_",
+        "Global\\GameHelperStatus_"
     };
 
     private const uint ExpectedVersion = 3;
+    private static int _protocolLogged;
 
     public SharedMemoryReadStatus TryRead(uint pid, out HelperStatusSnapshot snapshot)
     {
@@ -51,6 +54,17 @@ public sealed class SharedMemoryStatusReader
             uint expectedSize = (uint)Marshal.SizeOf<HelperStatusV2>();
             if (raw.Version != ExpectedVersion || raw.Size != expectedSize)
             {
+                if (Interlocked.Exchange(ref _protocolLogged, 1) == 0)
+                {
+                    GuiLogger.Warn("protocol_mismatch", "helper_status_mismatch", new Dictionary<string, object?>
+                    {
+                        ["expected_version"] = ExpectedVersion,
+                        ["expected_size"] = expectedSize,
+                        ["actual_version"] = raw.Version,
+                        ["actual_size"] = raw.Size,
+                        ["mapping"] = mappingName
+                    });
+                }
                 return SharedMemoryReadStatus.VersionMismatch;
             }
             HelperStatusV2* ptr = &raw;

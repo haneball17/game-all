@@ -8,6 +8,7 @@ desktop.ini
 *.log
 *.bak
 *.swp
+*.dmp
 
 # ============================
 # IDE / 编辑器
@@ -23,6 +24,8 @@ desktop.ini
 *.VC.opendb
 ipch/
 .serena/
+*.DotSettings.user
+*.sln.DotSettings.user
 
 # ============================
 # C# / .NET
@@ -33,6 +36,8 @@ ipch/
 *.snupkg
 project.lock.json
 project.fragment.lock.json
+TestResults/
+packages/
 artifacts/
 
 # ============================
@@ -54,12 +59,24 @@ x64/
 *.iobj
 *.ipdb
 *.obj
+*.pch
+*.res
+*.tlog
+*.lastbuildstate
+*.cache
 
 # ============================
 # 可执行输出
 # ============================
 *.exe
 *.dll
+
+# ============================
+# 运行时输出 / 日志
+# ============================
+logs/
+**/logs/
+*.jsonl
 
 # ============================
 # 发布/打包输出
@@ -70,3 +87,9 @@ x64/
 # 原项目参考目录（如需提交可移除）
 # ============================
 references/
+
+# ============================
+# 可选：若需要提交 MinHook 预编译库，取消忽略
+# ============================
+# !Payload/lib/minhook/build/**/lib/*.lib
+# !Payload/lib/minhook/lib/*.lib
