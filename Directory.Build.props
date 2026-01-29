@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <!-- 统一 .NET 输出目录，便于收敛构建产物 -->
+    <BaseOutputPath>$(MSBuildThisFileDirectory)artifacts\bin\</BaseOutputPath>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)artifacts\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+  </PropertyGroup>
+</Project>

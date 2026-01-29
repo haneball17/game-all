@@ -1,9 +1,0 @@
-E:\code\dnf-syn\src\DNFSyncBox\obj\Debug\net6.0-windows\MainWindow.baml
-E:\code\dnf-syn\src\DNFSyncBox\obj\Debug\net6.0-windows\MainWindow.g.cs
-E:\code\dnf-syn\src\DNFSyncBox\obj\Debug\net6.0-windows\App.g.cs
-E:\code\dnf-syn\src\DNFSyncBox\obj\Debug\net6.0-windows\DNFSyncBox_MarkupCompile.cache
-E:\code\dnf-syn\src\DNFSyncBox\obj\Debug\net6.0-windows\DNFSyncBox.g.resources
-E:\code\dnf-syn\src\DNFSyncBox\obj\Debug\net6.0-windows\DNFSyncBox.GeneratedMSBuildEditorConfig.editorconfig
-E:\code\dnf-syn\src\DNFSyncBox\obj\Debug\net6.0-windows\DNFSyncBox.AssemblyInfoInputs.cache
-E:\code\dnf-syn\src\DNFSyncBox\obj\Debug\net6.0-windows\DNFSyncBox.AssemblyInfo.cs
-E:\code\dnf-syn\src\DNFSyncBox\obj\Debug\net6.0-windows\DNFSyncBox.csproj.CoreCompileInputs.cache

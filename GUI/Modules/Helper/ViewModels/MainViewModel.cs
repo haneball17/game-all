@@ -14,8 +14,10 @@ namespace GameHelperGUI.ViewModels;
 public sealed class MainViewModel : INotifyPropertyChanged
 {
     private const long ConnectionTimeoutMs = 3000;
+    private const long SyncHeartbeatTimeoutMs = 2000;
     private const string TargetProcessName = "dnf";
     private readonly SharedMemoryStatusReader _reader = new();
+    private readonly SyncStatusReader _syncReader = new();
     private readonly DispatcherTimer _timer;
     private readonly Dictionary<uint, SharedMemoryReadStatus> _lastStatusByPid = new();
     private int _lastOnlineCount = -1;
@@ -96,6 +98,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private void RefreshStatus()
     {
         var processes = Process.GetProcessesByName(TargetProcessName);
+        var syncStatus = _syncReader.TryRead(out var syncSnapshot);
+        var syncNow = Environment.TickCount64;
+        bool syncOnline = syncStatus == SyncReadStatus.Ok &&
+                          syncNow - (long)syncSnapshot.LastTick <= SyncHeartbeatTimeoutMs;
         int online = 0;
         int offline = 0;
         int incompatible = 0;
@@ -113,7 +119,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 bool isStale = delta > ConnectionTimeoutMs;
                 string statusText = isStale ? "离线(超时)" : "在线";
                 string lastUpdateText = isStale ? $">{ConnectionTimeoutMs}ms" : $"{Math.Max(0, delta)}ms";
-                var vm = ProcessStatusViewModel.FromSnapshot(snapshot, statusText, lastUpdateText, !isStale);
+                string injectText = BuildInjectText(status, isStale);
+                string syncText = BuildSyncText(syncStatus, syncOnline, syncSnapshot.ActivePid, pid);
+                var vm = ProcessStatusViewModel.FromSnapshot(snapshot, statusText, lastUpdateText, !isStale, injectText, syncText);
                 Processes.Add(vm);
                 if (isStale)
                 {
@@ -127,12 +135,16 @@ public sealed class MainViewModel : INotifyPropertyChanged
             }
 
             string fallbackStatus = status == SharedMemoryReadStatus.VersionMismatch ? "版本不兼容" : "未连接";
+            string injectFallback = BuildInjectText(status, isStale: true);
+            string syncFallback = BuildSyncText(syncStatus, syncOnline, syncSnapshot.ActivePid, pid);
             var fallbackVm = new ProcessStatusViewModel
             {
                 Pid = pid,
                 PlayerName = string.Empty,
                 StatusText = fallbackStatus,
                 LastUpdateText = "-",
+                InjectText = injectFallback,
+                SyncText = syncFallback,
                 IsOnline = false,
                 IsCompatible = status != SharedMemoryReadStatus.VersionMismatch
             };
@@ -181,6 +193,30 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
         WindowTitle = $"Game Helper GUI - {SelectedProcess.DisplayName} (PID {SelectedProcess.Pid})";
+    }
+
+    private static string BuildInjectText(SharedMemoryReadStatus status, bool isStale)
+    {
+        return status switch
+        {
+            SharedMemoryReadStatus.Ok => isStale ? "心跳超时" : "已注入",
+            SharedMemoryReadStatus.VersionMismatch => "协议不匹配",
+            SharedMemoryReadStatus.NotFound => "未注入",
+            _ => "读取失败"
+        };
+    }
+
+    private static string BuildSyncText(SyncReadStatus status, bool online, uint activePid, uint pid)
+    {
+        return status switch
+        {
+            SyncReadStatus.Ok => online
+                ? (activePid == pid ? "同步中" : "未激活")
+                : "心跳超时",
+            SyncReadStatus.VersionMismatch => "协议不匹配",
+            SyncReadStatus.NotFound => "未连接",
+            _ => "读取失败"
+        };
     }
 
     private void LogStatusChange(uint pid, SharedMemoryReadStatus status)

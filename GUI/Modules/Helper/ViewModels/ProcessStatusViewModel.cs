@@ -9,6 +9,8 @@ public sealed class ProcessStatusViewModel
     public string PlayerName { get; init; } = string.Empty;
     public string StatusText { get; init; } = "未知";
     public string LastUpdateText { get; init; } = "-";
+    public string InjectText { get; init; } = "-";
+    public string SyncText { get; init; } = "-";
     public bool IsOnline { get; init; }
     public bool IsCompatible { get; init; }
 
@@ -36,6 +38,8 @@ public sealed class ProcessStatusViewModel
             builder.AppendLine($"PID：{Pid}");
             builder.AppendLine($"状态：{StatusText}");
             builder.AppendLine($"最近更新：{LastUpdateText}");
+            builder.AppendLine($"注入：{InjectText}");
+            builder.AppendLine($"同步：{SyncText}");
             builder.AppendLine($"全屏攻击：目标={(FullscreenAttackTarget ? "开" : "关")} / 当前={(FullscreenAttackPatchOn ? "开" : "关")}");
             builder.AppendLine($"自动透明：{(AutoTransparentEnabled ? "开" : "关")}");
             builder.AppendLine($"吸怪模式：{AttractMode}，方向：{(AttractPositive ? "正向" : "负向")}");
@@ -47,7 +51,7 @@ public sealed class ProcessStatusViewModel
         }
     }
 
-    public static ProcessStatusViewModel FromSnapshot(HelperStatusSnapshot snapshot, string statusText, string lastUpdateText, bool isOnline)
+    public static ProcessStatusViewModel FromSnapshot(HelperStatusSnapshot snapshot, string statusText, string lastUpdateText, bool isOnline, string injectText, string syncText)
     {
         return new ProcessStatusViewModel
         {
@@ -55,6 +59,8 @@ public sealed class ProcessStatusViewModel
             PlayerName = snapshot.PlayerName,
             StatusText = statusText,
             LastUpdateText = lastUpdateText,
+            InjectText = injectText,
+            SyncText = syncText,
             IsOnline = isOnline,
             IsCompatible = true,
             AutoTransparentEnabled = snapshot.AutoTransparentEnabled,

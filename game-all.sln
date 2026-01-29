@@ -1,0 +1,42 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "game-master", "GUI\\GameMasterGUI.csproj", "{853D2727-9780-47DA-80CB-162CF39C6652}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "GameHelperGUI", "GUI\\Modules\\Helper\\GameHelperGUI.csproj", "{AF1CC682-F466-4FD5-B2DA-99D48D19F53C}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "DNFSyncBox", "GUI\\Modules\\Sync\\DNFSyncBox.csproj", "{0745F824-AE6F-4443-B249-AFBDEDCA505A}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "game-payload", "Payload\\Payload.vcxproj", "{B7F6838A-8FFC-4A5C-A21D-DC0B8F14352E}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "game-injector", "Injector\\Injector.vcxproj", "{350D6ECF-64DB-442A-8208-D6B75CD2592E}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x86 = Debug|x86
+		Release|x86 = Release|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{853D2727-9780-47DA-80CB-162CF39C6652}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{853D2727-9780-47DA-80CB-162CF39C6652}.Debug|x86.Build.0 = Debug|Any CPU
+		{853D2727-9780-47DA-80CB-162CF39C6652}.Release|x86.ActiveCfg = Release|Any CPU
+		{853D2727-9780-47DA-80CB-162CF39C6652}.Release|x86.Build.0 = Release|Any CPU
+		{AF1CC682-F466-4FD5-B2DA-99D48D19F53C}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{AF1CC682-F466-4FD5-B2DA-99D48D19F53C}.Debug|x86.Build.0 = Debug|Any CPU
+		{AF1CC682-F466-4FD5-B2DA-99D48D19F53C}.Release|x86.ActiveCfg = Release|Any CPU
+		{AF1CC682-F466-4FD5-B2DA-99D48D19F53C}.Release|x86.Build.0 = Release|Any CPU
+		{0745F824-AE6F-4443-B249-AFBDEDCA505A}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{0745F824-AE6F-4443-B249-AFBDEDCA505A}.Debug|x86.Build.0 = Debug|Any CPU
+		{0745F824-AE6F-4443-B249-AFBDEDCA505A}.Release|x86.ActiveCfg = Release|Any CPU
+		{0745F824-AE6F-4443-B249-AFBDEDCA505A}.Release|x86.Build.0 = Release|Any CPU
+		{B7F6838A-8FFC-4A5C-A21D-DC0B8F14352E}.Debug|x86.ActiveCfg = Debug|Win32
+		{B7F6838A-8FFC-4A5C-A21D-DC0B8F14352E}.Debug|x86.Build.0 = Debug|Win32
+		{B7F6838A-8FFC-4A5C-A21D-DC0B8F14352E}.Release|x86.ActiveCfg = Release|Win32
+		{B7F6838A-8FFC-4A5C-A21D-DC0B8F14352E}.Release|x86.Build.0 = Release|Win32
+		{350D6ECF-64DB-442A-8208-D6B75CD2592E}.Debug|x86.ActiveCfg = Debug|Win32
+		{350D6ECF-64DB-442A-8208-D6B75CD2592E}.Debug|x86.Build.0 = Debug|Win32
+		{350D6ECF-64DB-442A-8208-D6B75CD2592E}.Release|x86.ActiveCfg = Release|Win32
+		{350D6ECF-64DB-442A-8208-D6B75CD2592E}.Release|x86.Build.0 = Release|Win32
+	EndGlobalSection
+EndGlobal

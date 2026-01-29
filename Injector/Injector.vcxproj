@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{350D6ECF-64DB-442A-8208-D6B75CD2592E}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>gameinjector</RootNamespace>
+    <ProjectName>game-injector</ProjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <!-- 统一输出目录 -->
+    <OutDir>$(SolutionDir)artifacts\bin\injector\</OutDir>
+    <IntDir>$(SolutionDir)artifacts\obj\injector\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <!-- 暂时关闭清单嵌入，避免 mt.exe 阻塞测试流程 -->
+      <GenerateManifest>false</GenerateManifest>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <!-- 暂时关闭清单嵌入，避免 mt.exe 阻塞测试流程 -->
+      <GenerateManifest>false</GenerateManifest>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp" />
+  </ItemGroup>
+  <Target Name="PostBuildCopyToRun" AfterTargets="Build">
+    <PropertyGroup>
+      <RepoRoot Condition="'$(SolutionDir)' != ''">$(SolutionDir)</RepoRoot>
+      <RepoRoot Condition="'$(SolutionDir)' == ''">$(MSBuildProjectDirectory)\..</RepoRoot>
+      <RunDir>$(RepoRoot)artifacts\run\</RunDir>
+      <RunConfigDir>$(RunDir)config\</RunConfigDir>
+      <ConfigTemplatesDir>$(RepoRoot)config-templates\</ConfigTemplatesDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <RunOutputFiles Include="$(TargetDir)*.*" />
+    </ItemGroup>
+    <MakeDir Directories="$(RunDir)" />
+    <MakeDir Directories="$(RunConfigDir)" />
+    <Copy SourceFiles="@(RunOutputFiles)" DestinationFolder="$(RunDir)" SkipUnchangedFiles="true" />
+    <Exec Command="xcopy /D /Y &quot;$(ConfigTemplatesDir)*.*&quot; &quot;$(RunConfigDir)&quot; &gt;nul" Condition="Exists('$(ConfigTemplatesDir)')" />
+  </Target>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

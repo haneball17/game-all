@@ -9,12 +9,9 @@ namespace DNFSyncBox;
 
 public sealed class SyncController : IDisposable
 {
-    private const bool VerboseLogging = true;
+    private static readonly bool VerboseLogging = true;
     private static readonly object LogFileLock = new();
-    private static readonly string LogDirectory = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "DNFSyncBox",
-        "logs");
+    private static readonly string LogDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
     private static readonly string LogFilePath = Path.Combine(LogDirectory, "latest.log");
 
     // 统一保护核心状态（窗口快照、暂停状态、按键状态）。
