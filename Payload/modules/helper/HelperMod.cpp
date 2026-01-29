@@ -756,6 +756,8 @@ static BOOL WriteDefaultConfigFile(const wchar_t* config_path) {
 	return TRUE;
 }
 
+static BOOL LoadHelperConfig(const wchar_t* config_path, HelperConfig* config);
+
 static BOOL TryLoadHelperConfigFromDirectory(const wchar_t* directory_path,
 	BOOL use_config_dir,
 	HelperConfig* config,

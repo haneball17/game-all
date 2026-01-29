@@ -41,19 +41,29 @@ public sealed class MainViewModel : INotifyPropertyChanged
         get => _selectedProcess;
         set
         {
-            if (SetField(ref _selectedProcess, value))
+            if (Equals(_selectedProcess, value))
             {
-                UpdateWindowTitle();
-                OnPropertyChanged(nameof(SelectedDetailText));
-                ControlPanel.UpdateTarget(value);
-                if (value != null)
+                return;
+            }
+            if (_selectedProcess != null)
+            {
+                _selectedProcess.PropertyChanged -= OnSelectedProcessPropertyChanged;
+            }
+            SetField(ref _selectedProcess, value);
+            if (_selectedProcess != null)
+            {
+                _selectedProcess.PropertyChanged += OnSelectedProcessPropertyChanged;
+            }
+            UpdateWindowTitle();
+            OnPropertyChanged(nameof(SelectedDetailText));
+            ControlPanel.UpdateTarget(value);
+            if (value != null)
+            {
+                GuiLogger.Info("selection", "process_selected", new Dictionary<string, object?>
                 {
-                    GuiLogger.Info("selection", "process_selected", new Dictionary<string, object?>
-                    {
-                        ["pid"] = value.Pid,
-                        ["player_name"] = value.DisplayName
-                    });
-                }
+                    ["pid"] = value.Pid,
+                    ["player_name"] = value.DisplayName
+                });
             }
         }
     }
@@ -98,6 +108,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private void RefreshStatus()
     {
         var processes = Process.GetProcessesByName(TargetProcessName);
+        var existing = Processes.ToDictionary(item => item.Pid);
+        var alive = new HashSet<uint>();
         var syncStatus = _syncReader.TryRead(out var syncSnapshot);
         var syncNow = Environment.TickCount64;
         bool syncOnline = syncStatus == SyncReadStatus.Ok &&
@@ -106,10 +118,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
         int offline = 0;
         int incompatible = 0;
 
-        Processes.Clear();
         foreach (var process in processes)
         {
             uint pid = (uint)process.Id;
+            alive.Add(pid);
             var status = _reader.TryRead(pid, out var snapshot);
             LogStatusChange(pid, status);
             if (status == SharedMemoryReadStatus.Ok)
@@ -121,8 +133,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 string lastUpdateText = isStale ? $">{ConnectionTimeoutMs}ms" : $"{Math.Max(0, delta)}ms";
                 string injectText = BuildInjectText(status, isStale);
                 string syncText = BuildSyncText(syncStatus, syncOnline, syncSnapshot.ActivePid, pid);
-                var vm = ProcessStatusViewModel.FromSnapshot(snapshot, statusText, lastUpdateText, !isStale, injectText, syncText);
-                Processes.Add(vm);
+                if (existing.TryGetValue(pid, out var vm))
+                {
+                    vm.UpdateFromSnapshot(snapshot, statusText, lastUpdateText, !isStale, injectText, syncText);
+                }
+                else
+                {
+                    var newVm = ProcessStatusViewModel.FromSnapshot(snapshot, statusText, lastUpdateText, !isStale, injectText, syncText);
+                    Processes.Add(newVm);
+                }
                 if (isStale)
                 {
                     offline++;
@@ -137,18 +156,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
             string fallbackStatus = status == SharedMemoryReadStatus.VersionMismatch ? "版本不兼容" : "未连接";
             string injectFallback = BuildInjectText(status, isStale: true);
             string syncFallback = BuildSyncText(syncStatus, syncOnline, syncSnapshot.ActivePid, pid);
-            var fallbackVm = new ProcessStatusViewModel
+            if (existing.TryGetValue(pid, out var fallbackVm))
             {
-                Pid = pid,
-                PlayerName = string.Empty,
-                StatusText = fallbackStatus,
-                LastUpdateText = "-",
-                InjectText = injectFallback,
-                SyncText = syncFallback,
-                IsOnline = false,
-                IsCompatible = status != SharedMemoryReadStatus.VersionMismatch
-            };
-            Processes.Add(fallbackVm);
+                fallbackVm.UpdateFallback(fallbackStatus, "-", status != SharedMemoryReadStatus.VersionMismatch, injectFallback, syncFallback);
+            }
+            else
+            {
+                var newVm = ProcessStatusViewModel.CreateFallback(pid, fallbackStatus, "-", status != SharedMemoryReadStatus.VersionMismatch, injectFallback, syncFallback);
+                Processes.Add(newVm);
+            }
             if (status == SharedMemoryReadStatus.VersionMismatch)
             {
                 incompatible++;
@@ -156,6 +172,16 @@ public sealed class MainViewModel : INotifyPropertyChanged
             else
             {
                 offline++;
+            }
+        }
+
+        for (int i = Processes.Count - 1; i >= 0; i--)
+        {
+            var item = Processes[i];
+            if (!alive.Contains(item.Pid))
+            {
+                Processes.RemoveAt(i);
+                _lastStatusByPid.Remove(item.Pid);
             }
         }
 
@@ -169,6 +195,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (Processes.Count == 0)
         {
             SelectedProcess = null;
+            return;
+        }
+        if (SelectedProcess != null && Processes.Contains(SelectedProcess))
+        {
             return;
         }
         if (SelectedProcess != null)
@@ -193,6 +223,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
         WindowTitle = $"Game Helper GUI - {SelectedProcess.DisplayName} (PID {SelectedProcess.Pid})";
+    }
+
+    private void OnSelectedProcessPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        UpdateWindowTitle();
+        OnPropertyChanged(nameof(SelectedDetailText));
     }
 
     private static string BuildInjectText(SharedMemoryReadStatus status, bool isStale)

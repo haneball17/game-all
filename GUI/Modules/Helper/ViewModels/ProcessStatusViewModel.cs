@@ -1,29 +1,136 @@
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using System.Text;
 using GameHelperGUI.Models;
 
 namespace GameHelperGUI.ViewModels;
 
-public sealed class ProcessStatusViewModel
+public sealed class ProcessStatusViewModel : INotifyPropertyChanged
 {
-    public uint Pid { get; init; }
-    public string PlayerName { get; init; } = string.Empty;
-    public string StatusText { get; init; } = "未知";
-    public string LastUpdateText { get; init; } = "-";
-    public string InjectText { get; init; } = "-";
-    public string SyncText { get; init; } = "-";
-    public bool IsOnline { get; init; }
-    public bool IsCompatible { get; init; }
+    private string _playerName = string.Empty;
+    private string _statusText = "未知";
+    private string _lastUpdateText = "-";
+    private string _injectText = "-";
+    private string _syncText = "-";
+    private bool _isOnline;
+    private bool _isCompatible = true;
+    private bool _autoTransparentEnabled;
+    private bool _fullscreenAttackTarget;
+    private bool _fullscreenAttackPatchOn;
+    private int _attractMode;
+    private bool _attractPositive;
+    private bool _summonEnabled;
+    private bool _fullscreenSkillEnabled;
+    private bool _fullscreenSkillActive;
+    private uint _fullscreenSkillHotkey;
+    private bool _hotkeyEnabled;
 
-    public bool AutoTransparentEnabled { get; init; }
-    public bool FullscreenAttackTarget { get; init; }
-    public bool FullscreenAttackPatchOn { get; init; }
-    public int AttractMode { get; init; }
-    public bool AttractPositive { get; init; }
-    public bool SummonEnabled { get; init; }
-    public bool FullscreenSkillEnabled { get; init; }
-    public bool FullscreenSkillActive { get; init; }
-    public uint FullscreenSkillHotkey { get; init; }
-    public bool HotkeyEnabled { get; init; }
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    public uint Pid { get; }
+
+    public string PlayerName
+    {
+        get => _playerName;
+        private set => SetField(ref _playerName, value);
+    }
+
+    public string StatusText
+    {
+        get => _statusText;
+        private set => SetField(ref _statusText, value);
+    }
+
+    public string LastUpdateText
+    {
+        get => _lastUpdateText;
+        private set => SetField(ref _lastUpdateText, value);
+    }
+
+    public string InjectText
+    {
+        get => _injectText;
+        private set => SetField(ref _injectText, value);
+    }
+
+    public string SyncText
+    {
+        get => _syncText;
+        private set => SetField(ref _syncText, value);
+    }
+
+    public bool IsOnline
+    {
+        get => _isOnline;
+        private set => SetField(ref _isOnline, value);
+    }
+
+    public bool IsCompatible
+    {
+        get => _isCompatible;
+        private set => SetField(ref _isCompatible, value);
+    }
+
+    public bool AutoTransparentEnabled
+    {
+        get => _autoTransparentEnabled;
+        private set => SetField(ref _autoTransparentEnabled, value);
+    }
+
+    public bool FullscreenAttackTarget
+    {
+        get => _fullscreenAttackTarget;
+        private set => SetField(ref _fullscreenAttackTarget, value);
+    }
+
+    public bool FullscreenAttackPatchOn
+    {
+        get => _fullscreenAttackPatchOn;
+        private set => SetField(ref _fullscreenAttackPatchOn, value);
+    }
+
+    public int AttractMode
+    {
+        get => _attractMode;
+        private set => SetField(ref _attractMode, value);
+    }
+
+    public bool AttractPositive
+    {
+        get => _attractPositive;
+        private set => SetField(ref _attractPositive, value);
+    }
+
+    public bool SummonEnabled
+    {
+        get => _summonEnabled;
+        private set => SetField(ref _summonEnabled, value);
+    }
+
+    public bool FullscreenSkillEnabled
+    {
+        get => _fullscreenSkillEnabled;
+        private set => SetField(ref _fullscreenSkillEnabled, value);
+    }
+
+    public bool FullscreenSkillActive
+    {
+        get => _fullscreenSkillActive;
+        private set => SetField(ref _fullscreenSkillActive, value);
+    }
+
+    public uint FullscreenSkillHotkey
+    {
+        get => _fullscreenSkillHotkey;
+        private set => SetField(ref _fullscreenSkillHotkey, value);
+    }
+
+    public bool HotkeyEnabled
+    {
+        get => _hotkeyEnabled;
+        private set => SetField(ref _hotkeyEnabled, value);
+    }
 
     public string DisplayName => string.IsNullOrWhiteSpace(PlayerName) ? "未知角色" : PlayerName;
     public string PidText => Pid.ToString();
@@ -51,28 +158,101 @@ public sealed class ProcessStatusViewModel
         }
     }
 
+    public ProcessStatusViewModel(uint pid)
+    {
+        Pid = pid;
+    }
+
     public static ProcessStatusViewModel FromSnapshot(HelperStatusSnapshot snapshot, string statusText, string lastUpdateText, bool isOnline, string injectText, string syncText)
     {
-        return new ProcessStatusViewModel
+        var vm = new ProcessStatusViewModel(snapshot.Pid);
+        vm.UpdateFromSnapshot(snapshot, statusText, lastUpdateText, isOnline, injectText, syncText);
+        return vm;
+    }
+
+    public static ProcessStatusViewModel CreateFallback(uint pid, string statusText, string lastUpdateText, bool isCompatible, string injectText, string syncText)
+    {
+        var vm = new ProcessStatusViewModel(pid);
+        vm.UpdateFallback(statusText, lastUpdateText, isCompatible, injectText, syncText);
+        return vm;
+    }
+
+    public void UpdateFromSnapshot(HelperStatusSnapshot snapshot, string statusText, string lastUpdateText, bool isOnline, string injectText, string syncText)
+    {
+        bool changed = false;
+        changed |= SetField(ref _playerName, snapshot.PlayerName, nameof(PlayerName));
+        changed |= SetField(ref _statusText, statusText, nameof(StatusText));
+        changed |= SetField(ref _lastUpdateText, lastUpdateText, nameof(LastUpdateText));
+        changed |= SetField(ref _injectText, injectText, nameof(InjectText));
+        changed |= SetField(ref _syncText, syncText, nameof(SyncText));
+        changed |= SetField(ref _isOnline, isOnline, nameof(IsOnline));
+        changed |= SetField(ref _isCompatible, true, nameof(IsCompatible));
+        changed |= SetField(ref _autoTransparentEnabled, snapshot.AutoTransparentEnabled, nameof(AutoTransparentEnabled));
+        changed |= SetField(ref _fullscreenAttackTarget, snapshot.FullscreenAttackTarget, nameof(FullscreenAttackTarget));
+        changed |= SetField(ref _fullscreenAttackPatchOn, snapshot.FullscreenAttackPatchOn, nameof(FullscreenAttackPatchOn));
+        changed |= SetField(ref _attractMode, snapshot.AttractMode, nameof(AttractMode));
+        changed |= SetField(ref _attractPositive, snapshot.AttractPositive, nameof(AttractPositive));
+        changed |= SetField(ref _summonEnabled, snapshot.SummonEnabled, nameof(SummonEnabled));
+        changed |= SetField(ref _fullscreenSkillEnabled, snapshot.FullscreenSkillEnabled, nameof(FullscreenSkillEnabled));
+        changed |= SetField(ref _fullscreenSkillActive, snapshot.FullscreenSkillActive, nameof(FullscreenSkillActive));
+        changed |= SetField(ref _fullscreenSkillHotkey, snapshot.FullscreenSkillHotkey, nameof(FullscreenSkillHotkey));
+        changed |= SetField(ref _hotkeyEnabled, snapshot.HotkeyEnabled, nameof(HotkeyEnabled));
+        if (changed)
         {
-            Pid = snapshot.Pid,
-            PlayerName = snapshot.PlayerName,
-            StatusText = statusText,
-            LastUpdateText = lastUpdateText,
-            InjectText = injectText,
-            SyncText = syncText,
-            IsOnline = isOnline,
-            IsCompatible = true,
-            AutoTransparentEnabled = snapshot.AutoTransparentEnabled,
-            FullscreenAttackTarget = snapshot.FullscreenAttackTarget,
-            FullscreenAttackPatchOn = snapshot.FullscreenAttackPatchOn,
-            AttractMode = snapshot.AttractMode,
-            AttractPositive = snapshot.AttractPositive,
-            SummonEnabled = snapshot.SummonEnabled,
-            FullscreenSkillEnabled = snapshot.FullscreenSkillEnabled,
-            FullscreenSkillActive = snapshot.FullscreenSkillActive,
-            FullscreenSkillHotkey = snapshot.FullscreenSkillHotkey,
-            HotkeyEnabled = snapshot.HotkeyEnabled
-        };
+            NotifyDerived();
+        }
+    }
+
+    public void UpdateFallback(string statusText, string lastUpdateText, bool isCompatible, string injectText, string syncText)
+    {
+        bool changed = false;
+        changed |= SetField(ref _playerName, string.Empty, nameof(PlayerName));
+        changed |= SetField(ref _statusText, statusText, nameof(StatusText));
+        changed |= SetField(ref _lastUpdateText, lastUpdateText, nameof(LastUpdateText));
+        changed |= SetField(ref _injectText, injectText, nameof(InjectText));
+        changed |= SetField(ref _syncText, syncText, nameof(SyncText));
+        changed |= SetField(ref _isOnline, false, nameof(IsOnline));
+        changed |= SetField(ref _isCompatible, isCompatible, nameof(IsCompatible));
+        changed |= SetField(ref _autoTransparentEnabled, false, nameof(AutoTransparentEnabled));
+        changed |= SetField(ref _fullscreenAttackTarget, false, nameof(FullscreenAttackTarget));
+        changed |= SetField(ref _fullscreenAttackPatchOn, false, nameof(FullscreenAttackPatchOn));
+        changed |= SetField(ref _attractMode, 0, nameof(AttractMode));
+        changed |= SetField(ref _attractPositive, false, nameof(AttractPositive));
+        changed |= SetField(ref _summonEnabled, false, nameof(SummonEnabled));
+        changed |= SetField(ref _fullscreenSkillEnabled, false, nameof(FullscreenSkillEnabled));
+        changed |= SetField(ref _fullscreenSkillActive, false, nameof(FullscreenSkillActive));
+        changed |= SetField(ref _fullscreenSkillHotkey, 0u, nameof(FullscreenSkillHotkey));
+        changed |= SetField(ref _hotkeyEnabled, false, nameof(HotkeyEnabled));
+        if (changed)
+        {
+            NotifyDerived();
+        }
+    }
+
+    private bool SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value))
+        {
+            return false;
+        }
+        field = value;
+        OnPropertyChanged(name);
+        return true;
+    }
+
+    private void NotifyDerived()
+    {
+        OnPropertyChanged(nameof(DisplayName));
+        OnPropertyChanged(nameof(FullscreenAttackSummary));
+        OnPropertyChanged(nameof(DetailSummary));
+    }
+
+    private void OnPropertyChanged(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return;
+        }
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 }
