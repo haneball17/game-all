@@ -91,5 +91,5 @@ references/
 # ============================
 # 可选：若需要提交 MinHook 预编译库，取消忽略
 # ============================
-# !Payload/lib/minhook/build/**/lib/*.lib
-# !Payload/lib/minhook/lib/*.lib
+!Payload/lib/minhook/build/**/lib/*.lib
+!Payload/lib/minhook/lib/*.lib
