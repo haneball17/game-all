@@ -64,7 +64,7 @@ static const uint32_t kFlagPaused = 0x1;
 static const uint32_t kFlagClear = 0x2;
 // 共享内存心跳超时（毫秒），可通过环境变量覆盖。
 static const wchar_t* kSharedTimeoutEnvName = L"DNFSYNC_HEARTBEAT_TIMEOUT_MS";
-static const DWORD kDefaultSharedTimeoutMs = 500;
+static const DWORD kDefaultSharedTimeoutMs = 200;
 // 共享内存快照缓存（毫秒），降低高频 Hook 读取成本。
 static const wchar_t* kSnapshotCacheEnvName = L"DNFSYNC_SNAPSHOT_CACHE_MS";
 static const DWORD kDefaultSnapshotCacheMs = 2;
@@ -130,8 +130,14 @@ static LONG g_sharedVersionLogged = 0;
 static LONG g_sharedSizeLogged = 0;
 static uint32_t g_lastEdgeCounter[256] = {};
 static uint8_t g_lastRawKeyboardState[256] = {};
+static uint8_t g_mappingSentState[256] = {};
+static int8_t g_mappingPendingState[256] = {};
+static uint32_t g_mappingLastEdgeCounter[256] = {};
+static ULONGLONG g_mappingLastSentTick[256] = {};
 static uint32_t g_lastProfileId = 0;
 static uint32_t g_lastProfileMode = 0;
+static uint32_t g_mappingProfileId = 0;
+static uint32_t g_mappingProfileMode = 0;
 static uint32_t g_lastClearSeq = 0;
 static uint32_t g_lastRawClearSeq = 0;
 static volatile LONG g_countSpoofAsync = 0;
@@ -139,6 +145,19 @@ static volatile LONG g_countSpoofKeyboard = 0;
 static volatile LONG g_countSpoofDeviceState = 0;
 static int g_rawScanCursor = 0;
 static LONG g_seenRawInputBuffer = 0;
+
+static const int kMappingEventQueueSize = 512;
+struct MappingEvent
+{
+    uint8_t vKey;
+    uint8_t isDown;
+};
+static MappingEvent g_mappingEvents[kMappingEventQueueSize] = {};
+static int g_mappingEventHead = 0;
+static int g_mappingEventTail = 0;
+static int g_mappingEventCount = 0;
+static LONG g_mappingQueueLogged = 0;
+static const DWORD kMappingReleaseTimeoutMs = 200;
 
 static int g_vkeyToDik[256] = {};
 static LONG g_vkeyMapReady = 0;
@@ -151,6 +170,12 @@ static LONG g_rawInputLogIntervalMs = -1;
 static LONGLONG g_rawInputLogLastTick = 0;
 static LONG g_statsEnabled = -1;
 static LONG g_statsIntervalMs = -1;
+static LONG g_debugConfigLoaded = 0;
+static LONG g_cfgRawInputLog = -1;
+static LONG g_cfgRawInputLogIntervalMs = -1;
+static LONG g_cfgStatsEnabled = -1;
+static LONG g_cfgStatsIntervalMs = -1;
+static LONG g_cfgSpoofDelayMs = -1;
 
 // 窗口缓存只由后台线程更新，Hook 回调仅做只读访问
 static volatile HWND g_selfWindowCache = nullptr;
@@ -174,6 +199,8 @@ static DWORD GetSharedTimeoutMs();
 static DWORD GetSnapshotCacheMs();
 static bool IsRawInputLogEnabled();
 static bool ShouldLogRawInput();
+static std::wstring BuildDebugConfigPath();
+static void LoadDebugConfig();
 
 static SIZE_T GetViewRegionSize(void* view)
 {
@@ -344,10 +371,190 @@ static std::wstring BuildSuccessFilePath()
     return logDir + L"\\" + fileName;
 }
 
+static std::wstring BuildDebugConfigPath()
+{
+    // 调试配置统一放到 DLL 所在目录的 config 子目录。
+    std::wstring baseDir = GetModuleDirectory();
+    std::wstring configDir = baseDir + L"\\config";
+    return configDir + L"\\sync_debug.ini";
+}
+
 // 提前声明，避免在 success file 写入处触发未声明错误
 static void WriteUtf8BomIfEmpty(HANDLE file);
 static std::wstring GetTimestamp();
 static std::string WideToUtf8(const std::wstring& input);
+
+static void TrimWhitespace(wchar_t* text)
+{
+    if (!text)
+    {
+        return;
+    }
+    size_t len = wcslen(text);
+    size_t start = 0;
+    while (start < len && iswspace(text[start]))
+    {
+        start++;
+    }
+    size_t end = len;
+    while (end > start && iswspace(text[end - 1]))
+    {
+        end--;
+    }
+    if (start > 0 && start < len)
+    {
+        memmove(text, text + start, (end - start) * sizeof(wchar_t));
+    }
+    text[end - start] = L'\0';
+}
+
+static bool TryParseBool(const wchar_t* text, bool* valueOut)
+{
+    if (!text || !valueOut)
+    {
+        return false;
+    }
+    while (*text && iswspace(*text))
+    {
+        text++;
+    }
+    if (*text == L'\0')
+    {
+        return false;
+    }
+
+    if (_wcsicmp(text, L"1") == 0 || _wcsicmp(text, L"true") == 0 ||
+        _wcsicmp(text, L"yes") == 0 || _wcsicmp(text, L"on") == 0)
+    {
+        *valueOut = true;
+        return true;
+    }
+    if (_wcsicmp(text, L"0") == 0 || _wcsicmp(text, L"false") == 0 ||
+        _wcsicmp(text, L"no") == 0 || _wcsicmp(text, L"off") == 0)
+    {
+        *valueOut = false;
+        return true;
+    }
+
+    wchar_t* end = nullptr;
+    long parsed = wcstol(text, &end, 10);
+    if (end != text)
+    {
+        *valueOut = parsed != 0;
+        return true;
+    }
+
+    return false;
+}
+
+static bool TryParseInt(const wchar_t* text, long* valueOut)
+{
+    if (!text || !valueOut)
+    {
+        return false;
+    }
+    while (*text && iswspace(*text))
+    {
+        text++;
+    }
+    if (*text == L'\0')
+    {
+        return false;
+    }
+    wchar_t* end = nullptr;
+    long parsed = wcstol(text, &end, 10);
+    if (end == text)
+    {
+        return false;
+    }
+    *valueOut = parsed;
+    return true;
+}
+
+static bool ReadConfigValue(const std::wstring& path, const wchar_t* section, const wchar_t* key, wchar_t* out, DWORD outSize)
+{
+    if (!out || outSize == 0)
+    {
+        return false;
+    }
+    out[0] = L'\0';
+    DWORD len = GetPrivateProfileStringW(section, key, L"", out, outSize, path.c_str());
+    if (len == 0)
+    {
+        return false;
+    }
+    TrimWhitespace(out);
+    return out[0] != L'\0';
+}
+
+static void LoadDebugConfig()
+{
+    if (InterlockedCompareExchange(&g_debugConfigLoaded, 1, 0) != 0)
+    {
+        return;
+    }
+
+    std::wstring path = BuildDebugConfigPath();
+    DWORD attr = GetFileAttributesW(path.c_str());
+    if (attr == INVALID_FILE_ATTRIBUTES)
+    {
+        return;
+    }
+
+    wchar_t value[64] = {0};
+    bool boolValue = false;
+    long intValue = 0;
+
+    if (ReadConfigValue(path, L"Debug", L"RawInputLog", value, ARRAYSIZE(value)) &&
+        TryParseBool(value, &boolValue))
+    {
+        g_cfgRawInputLog = boolValue ? 1 : 0;
+    }
+    if (ReadConfigValue(path, L"Debug", L"RawInputLogIntervalMs", value, ARRAYSIZE(value)) &&
+        TryParseInt(value, &intValue))
+    {
+        if (intValue < 0)
+        {
+            intValue = 0;
+        }
+        if (intValue > 5000)
+        {
+            intValue = 5000;
+        }
+        g_cfgRawInputLogIntervalMs = static_cast<LONG>(intValue);
+    }
+    if (ReadConfigValue(path, L"Debug", L"Stats", value, ARRAYSIZE(value)) &&
+        TryParseBool(value, &boolValue))
+    {
+        g_cfgStatsEnabled = boolValue ? 1 : 0;
+    }
+    if (ReadConfigValue(path, L"Debug", L"StatsIntervalMs", value, ARRAYSIZE(value)) &&
+        TryParseInt(value, &intValue))
+    {
+        if (intValue < 0)
+        {
+            intValue = 0;
+        }
+        if (intValue > 60000)
+        {
+            intValue = 60000;
+        }
+        g_cfgStatsIntervalMs = static_cast<LONG>(intValue);
+    }
+    if (ReadConfigValue(path, L"Debug", L"SpoofDelayMs", value, ARRAYSIZE(value)) &&
+        TryParseInt(value, &intValue))
+    {
+        if (intValue < 0)
+        {
+            intValue = 0;
+        }
+        if (intValue > 600000)
+        {
+            intValue = 600000;
+        }
+        g_cfgSpoofDelayMs = static_cast<LONG>(intValue);
+    }
+}
 
 // 注入成功后创建 success file，写入时间戳便于外部判断
 static void WriteSuccessFile()
@@ -795,6 +1002,11 @@ static void ApplyClearIfNeeded(const SharedSnapshot& snapshot)
     }
 }
 
+static void ResetMappingQueue();
+static void EnqueueMappingReleaseAll();
+static bool HasMappingMask(const SharedSnapshot& snapshot);
+static bool IsMappingTarget(const SharedSnapshot& snapshot, bool hasMappingMask, int vKey);
+
 static void ApplyRawClearIfNeeded(const SharedSnapshot& snapshot)
 {
     if ((snapshot.flags & kFlagClear) == 0)
@@ -810,6 +1022,209 @@ static void ApplyRawClearIfNeeded(const SharedSnapshot& snapshot)
     g_lastRawClearSeq = snapshot.seq;
     // 清键时重置 RawInput 伪造态，避免后台出现卡键或残留按下。
     memset(g_lastRawKeyboardState, 0, sizeof(g_lastRawKeyboardState));
+    // 同步清理 Mapping 事件队列，并补发抬起，避免映射模式粘键。
+    ResetMappingQueue();
+    EnqueueMappingReleaseAll();
+    for (int i = 0; i < 256; i++)
+    {
+        g_mappingLastEdgeCounter[i] = snapshot.edgeCounter[i];
+        g_mappingLastSentTick[i] = 0;
+    }
+}
+
+static void ResetMappingQueue()
+{
+    g_mappingEventHead = 0;
+    g_mappingEventTail = 0;
+    g_mappingEventCount = 0;
+    memset(g_mappingPendingState, 0, sizeof(g_mappingPendingState));
+}
+
+static bool EnqueueMappingEvent(int vKey, bool isDown)
+{
+    if (vKey < 0 || vKey >= 256)
+    {
+        return false;
+    }
+    if (g_mappingEventCount >= kMappingEventQueueSize)
+    {
+        if (InterlockedCompareExchange(&g_mappingQueueLogged, 1, 0) == 0)
+        {
+            LogInfo(L"[SYNC] Mapping 事件队列溢出，已丢弃事件");
+        }
+        return false;
+    }
+
+    g_mappingEvents[g_mappingEventTail].vKey = static_cast<uint8_t>(vKey);
+    g_mappingEvents[g_mappingEventTail].isDown = isDown ? 1 : 0;
+    g_mappingEventTail = (g_mappingEventTail + 1) % kMappingEventQueueSize;
+    g_mappingEventCount++;
+    return true;
+}
+
+static bool DequeueMappingEvent(int* vKeyOut, bool* isDownOut)
+{
+    if (!vKeyOut || !isDownOut)
+    {
+        return false;
+    }
+    if (g_mappingEventCount <= 0)
+    {
+        return false;
+    }
+
+    MappingEvent ev = g_mappingEvents[g_mappingEventHead];
+    g_mappingEventHead = (g_mappingEventHead + 1) % kMappingEventQueueSize;
+    g_mappingEventCount--;
+
+    int vKey = static_cast<int>(ev.vKey);
+    bool isDown = ev.isDown != 0;
+    g_mappingSentState[vKey] = isDown ? 0x80 : 0x00;
+    g_mappingPendingState[vKey] = 0;
+    g_mappingLastSentTick[vKey] = GetTickCount64();
+
+    *vKeyOut = vKey;
+    *isDownOut = isDown;
+    return true;
+}
+
+static void EnqueueMappingReleaseAll()
+{
+    for (int i = 0; i < 256; i++)
+    {
+        if ((g_mappingSentState[i] & 0x80) == 0)
+        {
+            continue;
+        }
+        if (g_mappingPendingState[i] == 2)
+        {
+            continue;
+        }
+        if (EnqueueMappingEvent(i, false))
+        {
+            g_mappingPendingState[i] = 2;
+        }
+    }
+}
+
+static void RefreshMappingProfileState(const SharedSnapshot& snapshot)
+{
+    if (snapshot.profileId == g_mappingProfileId &&
+        snapshot.profileMode == g_mappingProfileMode)
+    {
+        return;
+    }
+
+    ResetMappingQueue();
+    EnqueueMappingReleaseAll();
+    g_mappingProfileId = snapshot.profileId;
+    g_mappingProfileMode = snapshot.profileMode;
+}
+
+static void ScheduleMappingEvents(const SharedSnapshot& snapshot, bool alive, bool paused)
+{
+    RefreshMappingProfileState(snapshot);
+
+    const bool hasMappingMask = HasMappingMask(snapshot);
+    const bool allowDown = alive && !paused;
+    if (!allowDown)
+    {
+        EnqueueMappingReleaseAll();
+        return;
+    }
+
+    ULONGLONG now = GetTickCount64();
+
+    // 先补抬起，避免粘键。
+    for (int i = 0; i < 256; i++)
+    {
+        bool lastDown = (g_mappingSentState[i] & 0x80) != 0;
+        if (!lastDown)
+        {
+            continue;
+        }
+
+        bool desiredDown = false;
+        if (IsMappingTarget(snapshot, hasMappingMask, i))
+        {
+            desiredDown = (snapshot.keyboardState[i] & 0x80) != 0;
+        }
+
+        if (!desiredDown)
+        {
+            if (g_mappingPendingState[i] != 2)
+            {
+                if (EnqueueMappingEvent(i, false))
+                {
+                    g_mappingPendingState[i] = 2;
+                }
+            }
+            continue;
+        }
+
+        // 超时兜底：若长时间未收到抬起，强制补一次释放。
+        if (g_mappingLastSentTick[i] != 0 &&
+            now - g_mappingLastSentTick[i] > kMappingReleaseTimeoutMs &&
+            g_mappingPendingState[i] != 2)
+        {
+            if (EnqueueMappingEvent(i, false))
+            {
+                g_mappingPendingState[i] = 2;
+            }
+        }
+    }
+
+    // 短按补偿：边沿变化但当前已抬起。
+    for (int i = 0; i < 256; i++)
+    {
+        if (!IsMappingTarget(snapshot, hasMappingMask, i))
+        {
+            continue;
+        }
+        uint32_t edge = snapshot.edgeCounter[i];
+        if (edge == g_mappingLastEdgeCounter[i])
+        {
+            continue;
+        }
+        g_mappingLastEdgeCounter[i] = edge;
+        bool desiredDown = (snapshot.keyboardState[i] & 0x80) != 0;
+        bool lastDown = (g_mappingSentState[i] & 0x80) != 0;
+        if (!desiredDown && !lastDown)
+        {
+            if (g_mappingPendingState[i] == 0)
+            {
+                if (EnqueueMappingEvent(i, true))
+                {
+                    g_mappingPendingState[i] = 1;
+                }
+                if (EnqueueMappingEvent(i, false))
+                {
+                    g_mappingPendingState[i] = 2;
+                }
+            }
+        }
+    }
+
+    // 再补按下。
+    for (int i = 0; i < 256; i++)
+    {
+        if (!IsMappingTarget(snapshot, hasMappingMask, i))
+        {
+            continue;
+        }
+        bool desiredDown = (snapshot.keyboardState[i] & 0x80) != 0;
+        bool lastDown = (g_mappingSentState[i] & 0x80) != 0;
+        if (desiredDown && !lastDown)
+        {
+            if (g_mappingPendingState[i] != 1)
+            {
+                if (EnqueueMappingEvent(i, true))
+                {
+                    g_mappingPendingState[i] = 1;
+                }
+            }
+        }
+    }
 }
 
 static void BuildRawKeyboardEvent(int vKey, bool isDown, RAWKEYBOARD& keyboard)
@@ -868,33 +1283,7 @@ static bool TryPickMappingRawKey(
     const bool allowDown = alive && !paused;
     int start = g_rawScanCursor & 0xFF;
 
-    // 先补发抬起：优先清理已经按下但当前不再允许的键，避免粘键。
-    for (int i = 0; i < 256; i++)
-    {
-        int idx = (start + i) & 0xFF;
-        bool lastDown = (g_lastRawKeyboardState[idx] & 0x80) != 0;
-        if (!lastDown)
-        {
-            continue;
-        }
-
-        bool desiredDown = false;
-        if (allowDown && snapshot.targetMask[idx] != 0)
-        {
-            desiredDown = (snapshot.keyboardState[idx] & 0x80) != 0;
-        }
-
-        if (!desiredDown)
-        {
-            g_lastRawKeyboardState[idx] = 0x00;
-            g_rawScanCursor = (idx + 1) & 0xFF;
-            *vKeyOut = idx;
-            *isDownOut = false;
-            return true;
-        }
-    }
-
-    // 优先发送目标键的状态变化（按下），避免丢失边沿。
+    // 优先发送目标键状态变化，确保抬起/按下不会丢失。
     for (int i = 0; i < 256; i++)
     {
         int idx = (start + i) & 0xFF;
@@ -905,7 +1294,7 @@ static bool TryPickMappingRawKey(
 
         bool desiredDown = allowDown && (snapshot.keyboardState[idx] & 0x80) != 0;
         bool lastDown = (g_lastRawKeyboardState[idx] & 0x80) != 0;
-        if (desiredDown && !lastDown)
+        if (desiredDown != lastDown)
         {
             g_lastRawKeyboardState[idx] = desiredDown ? 0x80 : 0x00;
             g_rawScanCursor = (idx + 1) & 0xFF;
@@ -915,7 +1304,7 @@ static bool TryPickMappingRawKey(
         }
     }
 
-    // 如果没有变化，复用一个仍处于按下状态的键，用于保持连续移动。
+    // 如果没有变化，复用一个仍处于按下状态的键，保持连续输入。
     if (allowDown)
     {
         for (int i = 0; i < 256; i++)
@@ -996,6 +1385,39 @@ static bool IsBypassProcessLite(const SharedSnapshotLite& snapshot)
     return snapshot.activePid == GetCurrentProcessId();
 }
 
+static bool HasMappingMask(const SharedSnapshot& snapshot)
+{
+    if (snapshot.profileMode != kProfileModeMapping)
+    {
+        return false;
+    }
+
+    for (int i = 0; i < 256; i++)
+    {
+        if ((snapshot.blockMask[i] & 0x02) != 0)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool IsMappingTarget(const SharedSnapshot& snapshot, bool hasMappingMask, int vKey)
+{
+    if (vKey < 0 || vKey >= 256)
+    {
+        return false;
+    }
+
+    if (snapshot.profileMode == kProfileModeMapping && hasMappingMask)
+    {
+        return (snapshot.blockMask[vKey] & 0x02) != 0;
+    }
+
+    return snapshot.targetMask[vKey] != 0;
+}
+
 static bool ShouldBlockKey(const SharedSnapshot& snapshot, int vKey, bool alive, bool paused)
 {
     // 仅对控制端显式标记的拦截键生效，避免误伤非黑名单键。
@@ -1009,7 +1431,7 @@ static bool ShouldBlockKey(const SharedSnapshot& snapshot, int vKey, bool alive,
         return false;
     }
 
-    return snapshot.blockMask[vKey] != 0;
+    return (snapshot.blockMask[vKey] & 0x01) != 0;
 }
 
 static void EnsureVkeyToDikMap()
@@ -1138,6 +1560,13 @@ static DWORD GetSnapshotCacheMs()
 
 static bool IsRawInputLogEnabled()
 {
+    LoadDebugConfig();
+    LONG cfg = InterlockedCompareExchange(&g_cfgRawInputLog, -1, -1);
+    if (cfg >= 0)
+    {
+        return cfg != 0;
+    }
+
     LONG cached = InterlockedCompareExchange(&g_rawInputLogEnabled, -1, -1);
     if (cached != -1)
     {
@@ -1159,6 +1588,13 @@ static bool IsRawInputLogEnabled()
 
 static DWORD GetRawInputLogIntervalMs()
 {
+    LoadDebugConfig();
+    LONG cfg = InterlockedCompareExchange(&g_cfgRawInputLogIntervalMs, -1, -1);
+    if (cfg >= 0)
+    {
+        return static_cast<DWORD>(cfg);
+    }
+
     LONG cached = InterlockedCompareExchange(&g_rawInputLogIntervalMs, -1, -1);
     if (cached != -1)
     {
@@ -1212,6 +1648,13 @@ static bool ShouldLogRawInput()
 
 static bool IsStatsEnabled()
 {
+    LoadDebugConfig();
+    LONG cfg = InterlockedCompareExchange(&g_cfgStatsEnabled, -1, -1);
+    if (cfg >= 0)
+    {
+        return cfg != 0;
+    }
+
     LONG cached = InterlockedCompareExchange(&g_statsEnabled, -1, -1);
     if (cached >= 0)
     {
@@ -1237,6 +1680,13 @@ static bool IsStatsEnabled()
 
 static DWORD GetStatsIntervalMs()
 {
+    LoadDebugConfig();
+    LONG cfg = InterlockedCompareExchange(&g_cfgStatsIntervalMs, -1, -1);
+    if (cfg >= 0)
+    {
+        return static_cast<DWORD>(cfg);
+    }
+
     LONG cached = InterlockedCompareExchange(&g_statsIntervalMs, -1, -1);
     if (cached >= 0)
     {
@@ -1394,6 +1844,13 @@ static bool ReadSharedSnapshotCached(SharedSnapshot& snapshot)
 /// </summary>
 static DWORD GetSpoofDelayMs()
 {
+    LoadDebugConfig();
+    LONG cfg = InterlockedCompareExchange(&g_cfgSpoofDelayMs, -1, -1);
+    if (cfg >= 0)
+    {
+        return static_cast<DWORD>(cfg);
+    }
+
     LONG cached = InterlockedCompareExchange(&g_spoofDelayMs, -1, -1);
     if (cached != -1)
     {
@@ -1567,13 +2024,13 @@ static bool ShouldSpoofFocus()
     }
 
     // 仅在后台且共享内存存活/未暂停时伪造焦点，避免影响前台与暂停态。
-    SharedSnapshotLite snapshot = {};
-    if (!ReadSharedSnapshotLiteCached(snapshot))
+    SharedSnapshot snapshot = {};
+    if (!ReadSharedSnapshotCached(snapshot))
     {
         return false;
     }
 
-    if (!IsSnapshotAliveLite(snapshot))
+    if (!IsSnapshotAlive(snapshot))
     {
         return false;
     }
@@ -1588,7 +2045,7 @@ static bool ShouldSpoofFocus()
         return false;
     }
 
-    if (IsBypassProcessLite(snapshot))
+    if (IsBypassProcess(snapshot))
     {
         return false;
     }
@@ -1671,22 +2128,6 @@ static SHORT WINAPI Hook_GetAsyncKeyState(int vKey)
         return original;
     }
 
-    SharedSnapshotLite lite = {};
-    if (!ReadSharedSnapshotLiteCached(lite))
-    {
-        return original;
-    }
-
-    const bool paused = (lite.flags & kFlagPaused) != 0;
-    if (!IsSnapshotAliveLite(lite) || IsBypassProcessLite(lite))
-    {
-        return original;
-    }
-    if (lite.activePid == 0 && !paused)
-    {
-        return original;
-    }
-
     SharedSnapshot snapshot = {};
     if (!ReadSharedSnapshotCached(snapshot))
     {
@@ -1751,22 +2192,6 @@ static BOOL WINAPI Hook_GetKeyboardState(PBYTE lpKeyState)
     }
 
     if (IsSpoofDelayActive())
-    {
-        return ok;
-    }
-
-    SharedSnapshotLite lite = {};
-    if (!ReadSharedSnapshotLiteCached(lite))
-    {
-        return ok;
-    }
-
-    const bool paused = (lite.flags & kFlagPaused) != 0;
-    if (!IsSnapshotAliveLite(lite) || IsBypassProcessLite(lite))
-    {
-        return ok;
-    }
-    if (lite.activePid == 0 && !paused)
     {
         return ok;
     }
@@ -1848,14 +2273,8 @@ static UINT WINAPI Hook_GetRawInputBuffer(PRAWINPUT data, PUINT size, UINT heade
 
     InterlockedExchange(&g_seenRawInputBuffer, 1);
 
-    SharedSnapshotLite lite = {};
-    const bool hasLite = ReadSharedSnapshotLiteCached(lite);
-    const bool paused = hasLite && (lite.flags & kFlagPaused) != 0;
-    const bool shouldReadFull = hasLite && IsSnapshotAliveLite(lite) && !IsBypassProcessLite(lite) &&
-        (lite.activePid != 0 || paused);
-
     SharedSnapshot snapshot = {};
-    const bool hasSnapshot = shouldReadFull && ReadSharedSnapshotCached(snapshot);
+    const bool hasSnapshot = ReadSharedSnapshotCached(snapshot);
     if (hasSnapshot)
     {
         ApplyClearIfNeeded(snapshot);
@@ -1874,21 +2293,21 @@ static UINT WINAPI Hook_GetRawInputBuffer(PRAWINPUT data, PUINT size, UINT heade
                 const bool alive = IsSnapshotAlive(snapshot);
                 const bool paused = (snapshot.flags & kFlagPaused) != 0;
 
-                    if (snapshot.profileMode == kProfileModeMapping)
-                    {
-                        // 映射模式下用目标键序列重写 RawInput，确保后台能收到映射后的按键事件。
-                        int vKey = 0;
-                        bool isDown = false;
+                if (snapshot.profileMode == kProfileModeMapping)
+                {
+                    // 映射模式下用目标键序列重写 RawInput，确保后台能收到映射后的按键事件。
+                    int vKey = 0;
+                    bool isDown = false;
                     if (TryPickMappingRawKey(snapshot, alive, paused, &vKey, &isDown))
                     {
                         BuildRawKeyboardEvent(vKey, isDown, raw->data.keyboard);
                         spoofed = true;
                     }
-                    }
-                    else
-                    {
-                        int vKey = static_cast<int>(raw->data.keyboard.VKey);
-                        if (vKey >= 0 && vKey < 256)
+                }
+                else
+                {
+                    int vKey = static_cast<int>(raw->data.keyboard.VKey);
+                    if (vKey >= 0 && vKey < 256)
                         {
                             if (ShouldBlockKey(snapshot, vKey, alive, paused))
                             {
@@ -1965,13 +2384,7 @@ static UINT WINAPI Hook_GetRawInputData(HRAWINPUT hRawInput, UINT command, LPVOI
             SharedSnapshot snapshot = {};
             bool spoofed = false;
 
-            SharedSnapshotLite lite = {};
-            const bool hasLite = ReadSharedSnapshotLiteCached(lite);
-            const bool paused = hasLite && (lite.flags & kFlagPaused) != 0;
-            const bool shouldReadFull = hasLite && IsSnapshotAliveLite(lite) && !IsBypassProcessLite(lite) &&
-                (lite.activePid != 0 || paused);
-
-            if (shouldReadFull && ReadSharedSnapshotCached(snapshot))
+            if (ReadSharedSnapshotCached(snapshot))
             {
                 ApplyClearIfNeeded(snapshot);
                 ApplyRawClearIfNeeded(snapshot);
@@ -2232,22 +2645,6 @@ static HRESULT STDMETHODCALLTYPE Hook_GetDeviceState(IDirectInputDevice8W* devic
     }
 
     if (IsSpoofDelayActive())
-    {
-        return hr;
-    }
-
-    SharedSnapshotLite lite = {};
-    if (!ReadSharedSnapshotLiteCached(lite))
-    {
-        return hr;
-    }
-
-    const bool paused = (lite.flags & kFlagPaused) != 0;
-    if (!IsSnapshotAliveLite(lite) || IsBypassProcessLite(lite))
-    {
-        return hr;
-    }
-    if (lite.activePid == 0 && !paused)
     {
         return hr;
     }

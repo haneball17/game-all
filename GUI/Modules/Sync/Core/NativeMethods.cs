@@ -10,7 +10,7 @@ internal static class NativeMethods
     public const uint WM_KEYDOWN = 0x0100;
     public const uint WM_KEYUP = 0x0101;
     public const uint WM_SYSKEYDOWN = 0x0104;
-    public const uint WM_SYSKEYUP = 0x0105;
+public const uint WM_SYSKEYUP = 0x0105;
 
     // 低级键盘钩子
     public const int WH_KEYBOARD_LL = 13;
@@ -83,6 +83,11 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetKeyboardState(byte[] lpKeyState);
+
+    // 获取异步键盘状态（高位表示按下）
+    [DllImport("user32.dll")]
+    public static extern short GetAsyncKeyState(int vKey);
+
 
     // 前台窗口句柄
     [DllImport("user32.dll")]

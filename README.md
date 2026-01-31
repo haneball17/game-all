@@ -218,6 +218,7 @@ Payload 相关环境变量：
 - `DNFSYNC_SNAPSHOT_CACHE_MS`：共享快照缓存时间（毫秒）
 - `DNFSYNC_RAWINPUT_LOG`：RawInput 日志开关（1/true/yes/on）
 - `DNFSYNC_RAWINPUT_LOG_INTERVAL_MS`：RawInput 日志采样间隔（毫秒）
+- `config/sync_debug.ini`：优先级高于环境变量的调试配置（若存在）
 - `DNFSYNC_FORCE_DI_OK`：DirectInput 返回 DIERR_NOTACQUIRED 时强制 DI_OK
 
 ---
