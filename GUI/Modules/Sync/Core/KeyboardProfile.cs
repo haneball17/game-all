@@ -138,6 +138,46 @@ internal sealed class KeyboardProfile
     }
 
     /// <summary>
+    /// 生成映射目标掩码（用于 Mapping 模式下的目标键过滤）。
+    /// </summary>
+    public void BuildMappingMask(byte[] maskOut)
+    {
+        Array.Clear(maskOut, 0, maskOut.Length);
+        if (_mappings.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var mapping in _mappings)
+        {
+            if (mapping.Target >= 0 && mapping.Target < SharedMemoryConstants.KeyCount)
+            {
+                maskOut[mapping.Target] = 1;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 生成映射源键掩码（用于 Replace/Mapping 时拦截源键，避免穿透）。
+    /// </summary>
+    public void BuildMappingSourceMask(byte[] maskOut)
+    {
+        Array.Clear(maskOut, 0, maskOut.Length);
+        if (_mappings.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var mapping in _mappings)
+        {
+            if (mapping.Source >= 0 && mapping.Source < SharedMemoryConstants.KeyCount)
+            {
+                maskOut[mapping.Source] = 1;
+            }
+        }
+    }
+
+    /// <summary>
     /// 按方案生成键盘状态与边沿计数快照。
     /// </summary>
     public void Apply(bool[] down, uint[] edgeCounter, byte[] toggleState, byte[] keyboardState, uint[] edgeOut, byte[] maskOut)

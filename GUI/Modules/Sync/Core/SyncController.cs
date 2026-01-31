@@ -15,6 +15,7 @@ public sealed class SyncController : IDisposable
     private static readonly string LogFilePath = Path.Combine(LogDirectory, "latest.log");
     private const int ForegroundProbeIntervalMs = 200;
     private const int ForegroundGraceMs = 800;
+    private const int RepeatLogIntervalMs = 200;
 
     // 统一保护核心状态（窗口快照、暂停状态、按键状态）。
     private readonly object _stateLock = new();
@@ -31,7 +32,12 @@ public sealed class SyncController : IDisposable
     private readonly uint[] _edgeCounter = new uint[SharedMemoryConstants.KeyCount];
     private readonly byte[] _targetMask = new byte[SharedMemoryConstants.KeyCount];
     private readonly byte[] _blockMask = new byte[SharedMemoryConstants.KeyCount];
+    private readonly byte[] _mappingMask = new byte[SharedMemoryConstants.KeyCount];
+    private readonly byte[] _mappingSourceMask = new byte[SharedMemoryConstants.KeyCount];
     private readonly byte[] _toggleState = new byte[SharedMemoryConstants.KeyCount];
+    private readonly byte[] _inputMask = new byte[SharedMemoryConstants.KeyCount];
+    private readonly byte[] _inputMappingSourceMask = new byte[SharedMemoryConstants.KeyCount];
+    private readonly byte[] _physicalDown = new byte[SharedMemoryConstants.KeyCount];
 
     private WindowSnapshot _snapshot = WindowSnapshot.Empty;
     private KeyboardProfile _activeProfile;
@@ -47,6 +53,8 @@ public sealed class SyncController : IDisposable
     private bool _hotkeyDown;
     private string _lastSnapshotSignature = string.Empty;
     private SyncHotkeyManager? _hotkeyManager;
+    private int _lastRepeatLogKey = -1;
+    private long _lastRepeatLogTickMs;
 
     /// <summary>
     /// 状态变化事件：用于 UI 展示。
@@ -267,14 +275,18 @@ public sealed class SyncController : IDisposable
 
         WindowSnapshot snapshot;
         bool paused;
+        bool effectiveForeground;
         bool changed;
 
         lock (_stateLock)
         {
             snapshot = _snapshot;
             paused = IsPausedLocked();
+            effectiveForeground = _effectiveForegroundIsDnf;
 
-            if (paused || !snapshot.ForegroundIsDnf)
+            // 仅在“有效前台”状态下处理按下事件，避免后台误同步。
+            // 抬起事件即使在后台也允许处理，用于清理可能的卡键状态。
+            if (isDown && (paused || !effectiveForeground))
             {
                 return;
             }
@@ -284,11 +296,17 @@ public sealed class SyncController : IDisposable
 
         if (!changed)
         {
-            LogVerbose($"忽略重复按键：{key}");
+            var now = Environment.TickCount64;
+            if (_lastRepeatLogKey != vKey || now - _lastRepeatLogTickMs >= RepeatLogIntervalMs)
+            {
+                _lastRepeatLogKey = vKey;
+                _lastRepeatLogTickMs = now;
+                LogVerbose($"忽略重复按键：{key}");
+            }
             return;
         }
 
-        LogVerbose($"键盘事件：{key} {(isDown ? "按下" : "抬起")} | 暂停={paused} | 前台DNF={snapshot.ForegroundIsDnf}");
+        LogVerbose($"键盘事件：{key} {(isDown ? "按下" : "抬起")} | 暂停={paused} | 前台DNF={effectiveForeground}");
         PublishSnapshot(forceClear: false);
     }
 
@@ -388,6 +406,25 @@ public sealed class SyncController : IDisposable
             reportedMode = KeyboardProfileMode.Mapping;
         }
 
+        if (reportedMode == KeyboardProfileMode.Mapping)
+        {
+            Array.Clear(_mappingMask, 0, _mappingMask.Length);
+            profile.BuildMappingMask(_mappingMask);
+            Array.Clear(_mappingSourceMask, 0, _mappingSourceMask.Length);
+            profile.BuildMappingSourceMask(_mappingSourceMask);
+            for (var i = 0; i < _blockMask.Length; i++)
+            {
+                if (_mappingMask[i] != 0)
+                {
+                    _blockMask[i] |= 0x02;
+                }
+                if (_mappingSourceMask[i] != 0)
+                {
+                    _blockMask[i] |= 0x01;
+                }
+            }
+        }
+
         _sharedMemory.PublishSnapshot(
             flags,
             activePid,
@@ -421,12 +458,90 @@ public sealed class SyncController : IDisposable
     {
         try
         {
+            AlignKeyStateWithPhysicalInput();
             PublishSnapshot(forceClear: false);
         }
         catch (Exception ex)
         {
             Log($"共享内存心跳异常：{ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// 按物理键状态对齐内部按键状态，修复丢失的抬起/按下。
+    /// </summary>
+    private void AlignKeyStateWithPhysicalInput()
+    {
+        KeyboardProfile profile;
+        bool paused;
+        bool effectiveForeground;
+
+        lock (_stateLock)
+        {
+            profile = _activeProfile;
+            paused = IsPausedLocked();
+            effectiveForeground = _effectiveForegroundIsDnf;
+        }
+
+        BuildInputMask(profile);
+
+        for (var i = 0; i < SharedMemoryConstants.KeyCount; i++)
+        {
+            _physicalDown[i] = _inputMask[i] == 0 ? (byte)0 : (byte)(IsPhysicallyDown(i) ? 1 : 0);
+        }
+
+        var anyChanged = false;
+        lock (_stateLock)
+        {
+            for (var i = 0; i < SharedMemoryConstants.KeyCount; i++)
+            {
+                if (_inputMask[i] == 0)
+                {
+                    continue;
+                }
+
+                var physicalDown = _physicalDown[i] != 0;
+                // 仅在前台且未暂停时接受“按下”补偿；抬起补偿不受前台/暂停限制。
+                if (!physicalDown && _keyState.SetState(i, false))
+                {
+                    anyChanged = true;
+                }
+                else if (physicalDown && !paused && effectiveForeground && _keyState.SetState(i, true))
+                {
+                    anyChanged = true;
+                }
+            }
+        }
+
+        if (anyChanged)
+        {
+            LogVerbose("物理键状态校准触发，已修正按键状态");
+        }
+    }
+
+    private void BuildInputMask(KeyboardProfile profile)
+    {
+        Array.Clear(_inputMask, 0, _inputMask.Length);
+        profile.BuildMask(_inputMask);
+
+        if (profile.Mode == KeyboardProfileMode.Mapping ||
+            profile.MappingBehavior == KeyboardMappingBehavior.Replace)
+        {
+            Array.Clear(_inputMappingSourceMask, 0, _inputMappingSourceMask.Length);
+            profile.BuildMappingSourceMask(_inputMappingSourceMask);
+            for (var i = 0; i < _inputMask.Length; i++)
+            {
+                if (_inputMappingSourceMask[i] != 0)
+                {
+                    _inputMask[i] = 1;
+                }
+            }
+        }
+    }
+
+    private static bool IsPhysicallyDown(int vKey)
+    {
+        return (NativeMethods.GetAsyncKeyState(vKey) & 0x8000) != 0;
     }
 
     private void ForegroundProbeTick(object? state)
