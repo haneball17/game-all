@@ -71,6 +71,9 @@ static const DWORD kDefaultSnapshotCacheMs = 2;
 // RawInput 日志开关与采样间隔。
 static const wchar_t* kRawInputLogEnvName = L"DNFSYNC_RAWINPUT_LOG";
 static const wchar_t* kRawInputLogIntervalEnvName = L"DNFSYNC_RAWINPUT_LOG_INTERVAL_MS";
+// 统计日志开关与输出间隔。
+static const wchar_t* kStatsEnvName = L"DNFSYNC_STATS";
+static const wchar_t* kStatsIntervalEnvName = L"DNFSYNC_STATS_INTERVAL_MS";
 // 与控制端 KeyboardProfileMode 枚举保持一致（Blacklist=2，Mapping=3）。
 static const uint32_t kProfileModeMapping = 3;
 // 伪造延迟（毫秒），用于在注入后短暂关闭输入伪造以降低崩溃风险。
@@ -108,6 +111,16 @@ struct SharedSnapshot
     uint8_t blockMask[256];
 };
 
+struct SharedSnapshotLite
+{
+    uint32_t seq;
+    uint32_t flags;
+    uint32_t activePid;
+    uint32_t profileId;
+    uint32_t profileMode;
+    uint64_t lastTick;
+};
+
 static HANDLE g_sharedMapping = nullptr;
 static SharedKeyboardStateV2* g_sharedState = nullptr;
 static DWORD g_lastSharedAttemptTick = 0;
@@ -136,6 +149,8 @@ static LONG g_snapshotCacheMs = -1;
 static LONG g_rawInputLogEnabled = -1;
 static LONG g_rawInputLogIntervalMs = -1;
 static LONGLONG g_rawInputLogLastTick = 0;
+static LONG g_statsEnabled = -1;
+static LONG g_statsIntervalMs = -1;
 
 // 窗口缓存只由后台线程更新，Hook 回调仅做只读访问
 static volatile HWND g_selfWindowCache = nullptr;
@@ -853,7 +868,33 @@ static bool TryPickMappingRawKey(
     const bool allowDown = alive && !paused;
     int start = g_rawScanCursor & 0xFF;
 
-    // 优先发送目标键的状态变化（按下/抬起），避免丢失边沿。
+    // 先补发抬起：优先清理已经按下但当前不再允许的键，避免粘键。
+    for (int i = 0; i < 256; i++)
+    {
+        int idx = (start + i) & 0xFF;
+        bool lastDown = (g_lastRawKeyboardState[idx] & 0x80) != 0;
+        if (!lastDown)
+        {
+            continue;
+        }
+
+        bool desiredDown = false;
+        if (allowDown && snapshot.targetMask[idx] != 0)
+        {
+            desiredDown = (snapshot.keyboardState[idx] & 0x80) != 0;
+        }
+
+        if (!desiredDown)
+        {
+            g_lastRawKeyboardState[idx] = 0x00;
+            g_rawScanCursor = (idx + 1) & 0xFF;
+            *vKeyOut = idx;
+            *isDownOut = false;
+            return true;
+        }
+    }
+
+    // 优先发送目标键的状态变化（按下），避免丢失边沿。
     for (int i = 0; i < 256; i++)
     {
         int idx = (start + i) & 0xFF;
@@ -864,7 +905,7 @@ static bool TryPickMappingRawKey(
 
         bool desiredDown = allowDown && (snapshot.keyboardState[idx] & 0x80) != 0;
         bool lastDown = (g_lastRawKeyboardState[idx] & 0x80) != 0;
-        if (desiredDown != lastDown)
+        if (desiredDown && !lastDown)
         {
             g_lastRawKeyboardState[idx] = desiredDown ? 0x80 : 0x00;
             g_rawScanCursor = (idx + 1) & 0xFF;
@@ -924,7 +965,28 @@ static bool IsSnapshotAlive(const SharedSnapshot& snapshot)
     return now - snapshot.lastTick <= static_cast<ULONGLONG>(GetSharedTimeoutMs());
 }
 
+static bool IsSnapshotAliveLite(const SharedSnapshotLite& snapshot)
+{
+    if (snapshot.lastTick == 0)
+    {
+        return false;
+    }
+
+    ULONGLONG now = GetTickCount64();
+    return now - snapshot.lastTick <= static_cast<ULONGLONG>(GetSharedTimeoutMs());
+}
+
 static bool IsBypassProcess(const SharedSnapshot& snapshot)
+{
+    if (snapshot.activePid == 0)
+    {
+        return false;
+    }
+
+    return snapshot.activePid == GetCurrentProcessId();
+}
+
+static bool IsBypassProcessLite(const SharedSnapshotLite& snapshot)
 {
     if (snapshot.activePid == 0)
     {
@@ -1148,6 +1210,137 @@ static bool ShouldLogRawInput()
     return false;
 }
 
+static bool IsStatsEnabled()
+{
+    LONG cached = InterlockedCompareExchange(&g_statsEnabled, -1, -1);
+    if (cached >= 0)
+    {
+        return cached != 0;
+    }
+
+    wchar_t value[16] = {0};
+    DWORD len = GetEnvironmentVariableW(kStatsEnvName, value, ARRAYSIZE(value));
+    bool enabled = false;
+    if (len > 0 && len < ARRAYSIZE(value))
+    {
+        if (_wcsicmp(value, L"1") == 0 ||
+            _wcsicmp(value, L"true") == 0 ||
+            _wcsicmp(value, L"yes") == 0 ||
+            _wcsicmp(value, L"on") == 0)
+        {
+            enabled = true;
+        }
+    }
+    InterlockedExchange(&g_statsEnabled, enabled ? 1 : 0);
+    return enabled;
+}
+
+static DWORD GetStatsIntervalMs()
+{
+    LONG cached = InterlockedCompareExchange(&g_statsIntervalMs, -1, -1);
+    if (cached >= 0)
+    {
+        return static_cast<DWORD>(cached);
+    }
+
+    DWORD interval = 1000;
+    wchar_t value[16] = {0};
+    DWORD len = GetEnvironmentVariableW(kStatsIntervalEnvName, value, ARRAYSIZE(value));
+    if (len > 0 && len < ARRAYSIZE(value))
+    {
+        DWORD parsed = _wtoi(value);
+        if (parsed > 0 && parsed <= 60000)
+        {
+            interval = parsed;
+        }
+    }
+    InterlockedExchange(&g_statsIntervalMs, static_cast<LONG>(interval));
+    return interval;
+}
+
+static void CountStat(volatile LONG* counter)
+{
+    if (!IsStatsEnabled())
+    {
+        return;
+    }
+    InterlockedIncrement(counter);
+}
+
+static bool ReadSharedSnapshotLite(SharedSnapshotLite& snapshot)
+{
+    if (!EnsureSharedMemory() || !g_sharedState)
+    {
+        return false;
+    }
+
+    if (g_sharedState->version != kSharedVersion)
+    {
+        if (InterlockedCompareExchange(&g_sharedVersionLogged, 1, 0) == 0)
+        {
+            LogProtocolMismatch(L"version_mismatch", kSharedVersion, g_sharedState->version);
+        }
+        return false;
+    }
+
+    for (int i = 0; i < 3; i++)
+    {
+        uint32_t seq1 = g_sharedState->seq;
+        if ((seq1 & 1) != 0)
+        {
+            continue;
+        }
+
+        snapshot.seq = seq1;
+        snapshot.flags = g_sharedState->flags;
+        snapshot.activePid = g_sharedState->activePid;
+        snapshot.profileId = g_sharedState->profileId;
+        snapshot.profileMode = g_sharedState->profileMode;
+        snapshot.lastTick = g_sharedState->lastTick;
+
+        uint32_t seq2 = g_sharedState->seq;
+        if (seq1 == seq2 && (seq2 & 1) == 0)
+        {
+            g_lastProfileId = snapshot.profileId;
+            g_lastProfileMode = snapshot.profileMode;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool ReadSharedSnapshotLiteCached(SharedSnapshotLite& snapshot)
+{
+    DWORD cacheMs = GetSnapshotCacheMs();
+    if (cacheMs == 0)
+    {
+        return ReadSharedSnapshotLite(snapshot);
+    }
+
+    thread_local SharedSnapshotLite cached = {};
+    thread_local ULONGLONG cachedTick = 0;
+    thread_local bool cachedValid = false;
+
+    ULONGLONG now = GetTickCount64();
+    if (cachedValid && now - cachedTick <= cacheMs)
+    {
+        snapshot = cached;
+        return true;
+    }
+
+    if (!ReadSharedSnapshotLite(cached))
+    {
+        cachedValid = false;
+        return false;
+    }
+
+    cachedTick = now;
+    cachedValid = true;
+    snapshot = cached;
+    return true;
+}
+
 static bool ReadSharedSnapshotCached(SharedSnapshot& snapshot)
 {
     DWORD cacheMs = GetSnapshotCacheMs();
@@ -1165,6 +1358,23 @@ static bool ReadSharedSnapshotCached(SharedSnapshot& snapshot)
     {
         snapshot = cached;
         return true;
+    }
+
+    SharedSnapshotLite lite = {};
+    if (cachedValid && ReadSharedSnapshotLite(lite))
+    {
+        if (lite.seq == cached.seq && (lite.seq & 1) == 0)
+        {
+            cached.seq = lite.seq;
+            cached.flags = lite.flags;
+            cached.activePid = lite.activePid;
+            cached.profileId = lite.profileId;
+            cached.profileMode = lite.profileMode;
+            cached.lastTick = lite.lastTick;
+            cachedTick = now;
+            snapshot = cached;
+            return true;
+        }
     }
 
     if (!ReadSharedSnapshot(cached))
@@ -1357,13 +1567,13 @@ static bool ShouldSpoofFocus()
     }
 
     // 仅在后台且共享内存存活/未暂停时伪造焦点，避免影响前台与暂停态。
-    SharedSnapshot snapshot = {};
-    if (!ReadSharedSnapshotCached(snapshot))
+    SharedSnapshotLite snapshot = {};
+    if (!ReadSharedSnapshotLiteCached(snapshot))
     {
         return false;
     }
 
-    if (!IsSnapshotAlive(snapshot))
+    if (!IsSnapshotAliveLite(snapshot))
     {
         return false;
     }
@@ -1378,7 +1588,7 @@ static bool ShouldSpoofFocus()
         return false;
     }
 
-    if (IsBypassProcess(snapshot))
+    if (IsBypassProcessLite(snapshot))
     {
         return false;
     }
@@ -1434,7 +1644,7 @@ static void FixWmInputMessage(MSG* msg)
     }
 
     msg->wParam = RIM_INPUT;
-    InterlockedIncrement(&g_countSpoofWmInput);
+    CountStat(&g_countSpoofWmInput);
 }
 
 // ------------------------------
@@ -1443,7 +1653,7 @@ static void FixWmInputMessage(MSG* msg)
 
 static SHORT WINAPI Hook_GetAsyncKeyState(int vKey)
 {
-    InterlockedIncrement(&g_countGetAsyncKeyState);
+    CountStat(&g_countGetAsyncKeyState);
 
     if (!g_origGetAsyncKeyState)
     {
@@ -1461,6 +1671,22 @@ static SHORT WINAPI Hook_GetAsyncKeyState(int vKey)
         return original;
     }
 
+    SharedSnapshotLite lite = {};
+    if (!ReadSharedSnapshotLiteCached(lite))
+    {
+        return original;
+    }
+
+    const bool paused = (lite.flags & kFlagPaused) != 0;
+    if (!IsSnapshotAliveLite(lite) || IsBypassProcessLite(lite))
+    {
+        return original;
+    }
+    if (lite.activePid == 0 && !paused)
+    {
+        return original;
+    }
+
     SharedSnapshot snapshot = {};
     if (!ReadSharedSnapshotCached(snapshot))
     {
@@ -1475,11 +1701,11 @@ static SHORT WINAPI Hook_GetAsyncKeyState(int vKey)
     }
 
     const bool alive = IsSnapshotAlive(snapshot);
-    const bool paused = (snapshot.flags & kFlagPaused) != 0;
+    const bool paused_full = (snapshot.flags & kFlagPaused) != 0;
 
     if (snapshot.targetMask[vKey] == 0)
     {
-        if (ShouldBlockKey(snapshot, vKey, alive, paused))
+        if (ShouldBlockKey(snapshot, vKey, alive, paused_full))
         {
             return 0;
         }
@@ -1487,7 +1713,7 @@ static SHORT WINAPI Hook_GetAsyncKeyState(int vKey)
         return original;
     }
 
-    if (!alive || paused)
+    if (!alive || paused_full)
     {
         return 0;
     }
@@ -1505,13 +1731,13 @@ static SHORT WINAPI Hook_GetAsyncKeyState(int vKey)
         result |= 0x0001;
     }
 
-    InterlockedIncrement(&g_countSpoofAsync);
+    CountStat(&g_countSpoofAsync);
     return result;
 }
 
 static BOOL WINAPI Hook_GetKeyboardState(PBYTE lpKeyState)
 {
-    InterlockedIncrement(&g_countGetKeyboardState);
+    CountStat(&g_countGetKeyboardState);
 
     if (!g_origGetKeyboardState)
     {
@@ -1525,6 +1751,22 @@ static BOOL WINAPI Hook_GetKeyboardState(PBYTE lpKeyState)
     }
 
     if (IsSpoofDelayActive())
+    {
+        return ok;
+    }
+
+    SharedSnapshotLite lite = {};
+    if (!ReadSharedSnapshotLiteCached(lite))
+    {
+        return ok;
+    }
+
+    const bool paused = (lite.flags & kFlagPaused) != 0;
+    if (!IsSnapshotAliveLite(lite) || IsBypassProcessLite(lite))
+    {
+        return ok;
+    }
+    if (lite.activePid == 0 && !paused)
     {
         return ok;
     }
@@ -1543,14 +1785,14 @@ static BOOL WINAPI Hook_GetKeyboardState(PBYTE lpKeyState)
     }
 
     const bool alive = IsSnapshotAlive(snapshot);
-    const bool paused = (snapshot.flags & kFlagPaused) != 0;
+    const bool paused_full = (snapshot.flags & kFlagPaused) != 0;
     bool spoofed = false;
 
     for (int i = 0; i < 256; i++)
     {
         if (snapshot.targetMask[i] != 0)
         {
-            if (!alive || paused)
+            if (!alive || paused_full)
             {
                 lpKeyState[i] &= static_cast<BYTE>(~0x81);
                 spoofed = true;
@@ -1563,7 +1805,7 @@ static BOOL WINAPI Hook_GetKeyboardState(PBYTE lpKeyState)
             continue;
         }
 
-        if (ShouldBlockKey(snapshot, i, alive, paused))
+        if (ShouldBlockKey(snapshot, i, alive, paused_full))
         {
             // 拦截键在同步生效时强制抬起，避免后台继续读到真实输入。
             lpKeyState[i] &= static_cast<BYTE>(~0x81);
@@ -1573,7 +1815,7 @@ static BOOL WINAPI Hook_GetKeyboardState(PBYTE lpKeyState)
 
     if (spoofed)
     {
-        InterlockedIncrement(&g_countSpoofKeyboard);
+        CountStat(&g_countSpoofKeyboard);
     }
 
     return ok;
@@ -1581,13 +1823,13 @@ static BOOL WINAPI Hook_GetKeyboardState(PBYTE lpKeyState)
 
 static BOOL WINAPI Hook_RegisterRawInputDevices(PCRAWINPUTDEVICE devices, UINT numDevices, UINT size)
 {
-    InterlockedIncrement(&g_countRegisterRawInput);
+    CountStat(&g_countRegisterRawInput);
     return g_origRegisterRawInputDevices ? g_origRegisterRawInputDevices(devices, numDevices, size) : FALSE;
 }
 
 static UINT WINAPI Hook_GetRawInputBuffer(PRAWINPUT data, PUINT size, UINT headerSize)
 {
-    InterlockedIncrement(&g_countGetRawInputBuffer);
+    CountStat(&g_countGetRawInputBuffer);
     if (!g_origGetRawInputBuffer)
     {
         return 0;
@@ -1606,8 +1848,14 @@ static UINT WINAPI Hook_GetRawInputBuffer(PRAWINPUT data, PUINT size, UINT heade
 
     InterlockedExchange(&g_seenRawInputBuffer, 1);
 
+    SharedSnapshotLite lite = {};
+    const bool hasLite = ReadSharedSnapshotLiteCached(lite);
+    const bool paused = hasLite && (lite.flags & kFlagPaused) != 0;
+    const bool shouldReadFull = hasLite && IsSnapshotAliveLite(lite) && !IsBypassProcessLite(lite) &&
+        (lite.activePid != 0 || paused);
+
     SharedSnapshot snapshot = {};
-    const bool hasSnapshot = ReadSharedSnapshotCached(snapshot);
+    const bool hasSnapshot = shouldReadFull && ReadSharedSnapshotCached(snapshot);
     if (hasSnapshot)
     {
         ApplyClearIfNeeded(snapshot);
@@ -1691,7 +1939,7 @@ static UINT WINAPI Hook_GetRawInputBuffer(PRAWINPUT data, PUINT size, UINT heade
 
 static UINT WINAPI Hook_GetRawInputData(HRAWINPUT hRawInput, UINT command, LPVOID data, PUINT size, UINT headerSize)
 {
-    InterlockedIncrement(&g_countGetRawInputData);
+    CountStat(&g_countGetRawInputData);
     if (!g_origGetRawInputData)
     {
         return 0;
@@ -1717,7 +1965,13 @@ static UINT WINAPI Hook_GetRawInputData(HRAWINPUT hRawInput, UINT command, LPVOI
             SharedSnapshot snapshot = {};
             bool spoofed = false;
 
-            if (ReadSharedSnapshotCached(snapshot))
+            SharedSnapshotLite lite = {};
+            const bool hasLite = ReadSharedSnapshotLiteCached(lite);
+            const bool paused = hasLite && (lite.flags & kFlagPaused) != 0;
+            const bool shouldReadFull = hasLite && IsSnapshotAliveLite(lite) && !IsBypassProcessLite(lite) &&
+                (lite.activePid != 0 || paused);
+
+            if (shouldReadFull && ReadSharedSnapshotCached(snapshot))
             {
                 ApplyClearIfNeeded(snapshot);
                 ApplyRawClearIfNeeded(snapshot);
@@ -1803,14 +2057,14 @@ static UINT WINAPI Hook_GetRawInputData(HRAWINPUT hRawInput, UINT command, LPVOI
 
 static BOOL WINAPI Hook_GetMessageW(LPMSG msg, HWND hwnd, UINT min, UINT max)
 {
-    InterlockedIncrement(&g_countGetMessage);
+    CountStat(&g_countGetMessage);
     if (!g_origGetMessageW)
     {
         return FALSE;
     }
 
     BOOL result = g_origGetMessageW(msg, hwnd, min, max);
-    if (result > 0 && msg)
+    if (result > 0 && msg && msg->message == WM_INPUT && msg->wParam == RIM_INPUTSINK)
     {
         FixWmInputMessage(msg);
     }
@@ -1820,14 +2074,14 @@ static BOOL WINAPI Hook_GetMessageW(LPMSG msg, HWND hwnd, UINT min, UINT max)
 
 static BOOL WINAPI Hook_GetMessageA(LPMSG msg, HWND hwnd, UINT min, UINT max)
 {
-    InterlockedIncrement(&g_countGetMessage);
+    CountStat(&g_countGetMessage);
     if (!g_origGetMessageA)
     {
         return FALSE;
     }
 
     BOOL result = g_origGetMessageA(msg, hwnd, min, max);
-    if (result > 0 && msg)
+    if (result > 0 && msg && msg->message == WM_INPUT && msg->wParam == RIM_INPUTSINK)
     {
         FixWmInputMessage(msg);
     }
@@ -1837,14 +2091,14 @@ static BOOL WINAPI Hook_GetMessageA(LPMSG msg, HWND hwnd, UINT min, UINT max)
 
 static BOOL WINAPI Hook_PeekMessageW(LPMSG msg, HWND hwnd, UINT min, UINT max, UINT remove)
 {
-    InterlockedIncrement(&g_countPeekMessage);
+    CountStat(&g_countPeekMessage);
     if (!g_origPeekMessageW)
     {
         return FALSE;
     }
 
     BOOL result = g_origPeekMessageW(msg, hwnd, min, max, remove);
-    if (result && msg)
+    if (result && msg && msg->message == WM_INPUT && msg->wParam == RIM_INPUTSINK)
     {
         FixWmInputMessage(msg);
     }
@@ -1854,14 +2108,14 @@ static BOOL WINAPI Hook_PeekMessageW(LPMSG msg, HWND hwnd, UINT min, UINT max, U
 
 static BOOL WINAPI Hook_PeekMessageA(LPMSG msg, HWND hwnd, UINT min, UINT max, UINT remove)
 {
-    InterlockedIncrement(&g_countPeekMessage);
+    CountStat(&g_countPeekMessage);
     if (!g_origPeekMessageA)
     {
         return FALSE;
     }
 
     BOOL result = g_origPeekMessageA(msg, hwnd, min, max, remove);
-    if (result && msg)
+    if (result && msg && msg->message == WM_INPUT && msg->wParam == RIM_INPUTSINK)
     {
         FixWmInputMessage(msg);
     }
@@ -1871,7 +2125,7 @@ static BOOL WINAPI Hook_PeekMessageA(LPMSG msg, HWND hwnd, UINT min, UINT max, U
 
 static HWND WINAPI Hook_GetForegroundWindow()
 {
-    InterlockedIncrement(&g_countGetForegroundWindow);
+    CountStat(&g_countGetForegroundWindow);
     HWND original = g_origGetForegroundWindow ? g_origGetForegroundWindow() : nullptr;
     if (!ShouldSpoofFocus())
     {
@@ -1890,13 +2144,13 @@ static HWND WINAPI Hook_GetForegroundWindow()
         return original;
     }
 
-    InterlockedIncrement(&g_countSpoofFocus);
+        CountStat(&g_countSpoofFocus);
     return selfWindow;
 }
 
 static HWND WINAPI Hook_GetActiveWindow()
 {
-    InterlockedIncrement(&g_countGetActiveWindow);
+    CountStat(&g_countGetActiveWindow);
     HWND original = g_origGetActiveWindow ? g_origGetActiveWindow() : nullptr;
     if (!ShouldSpoofFocus())
     {
@@ -1914,13 +2168,13 @@ static HWND WINAPI Hook_GetActiveWindow()
         return original;
     }
 
-    InterlockedIncrement(&g_countSpoofFocus);
+        CountStat(&g_countSpoofFocus);
     return selfWindow;
 }
 
 static HWND WINAPI Hook_GetFocus()
 {
-    InterlockedIncrement(&g_countGetFocus);
+    CountStat(&g_countGetFocus);
     HWND original = g_origGetFocus ? g_origGetFocus() : nullptr;
     if (!ShouldSpoofFocus())
     {
@@ -1938,13 +2192,13 @@ static HWND WINAPI Hook_GetFocus()
         return original;
     }
 
-    InterlockedIncrement(&g_countSpoofFocus);
+        CountStat(&g_countSpoofFocus);
     return selfWindow;
 }
 
 static HRESULT STDMETHODCALLTYPE Hook_GetDeviceState(IDirectInputDevice8W* device, DWORD size, LPVOID data)
 {
-    InterlockedIncrement(&g_countGetDeviceState);
+    CountStat(&g_countGetDeviceState);
 
     if (!g_origGetDeviceState)
     {
@@ -1955,10 +2209,10 @@ static HRESULT STDMETHODCALLTYPE Hook_GetDeviceState(IDirectInputDevice8W* devic
     bool forceOk = false;
     if (FAILED(hr))
     {
-        InterlockedIncrement(&g_countGetDeviceStateFailed);
+        CountStat(&g_countGetDeviceStateFailed);
         if (hr == DIERR_NOTACQUIRED)
         {
-            InterlockedIncrement(&g_countGetDeviceStateNotAcquired);
+            CountStat(&g_countGetDeviceStateNotAcquired);
             forceOk = ShouldForceDeviceStateOk();
             if (!forceOk)
             {
@@ -1982,6 +2236,22 @@ static HRESULT STDMETHODCALLTYPE Hook_GetDeviceState(IDirectInputDevice8W* devic
         return hr;
     }
 
+    SharedSnapshotLite lite = {};
+    if (!ReadSharedSnapshotLiteCached(lite))
+    {
+        return hr;
+    }
+
+    const bool paused = (lite.flags & kFlagPaused) != 0;
+    if (!IsSnapshotAliveLite(lite) || IsBypassProcessLite(lite))
+    {
+        return hr;
+    }
+    if (lite.activePid == 0 && !paused)
+    {
+        return hr;
+    }
+
     SharedSnapshot snapshot = {};
     if (!ReadSharedSnapshotCached(snapshot))
     {
@@ -1995,7 +2265,7 @@ static HRESULT STDMETHODCALLTYPE Hook_GetDeviceState(IDirectInputDevice8W* devic
     }
 
     const bool alive = IsSnapshotAlive(snapshot);
-    const bool paused = (snapshot.flags & kFlagPaused) != 0;
+    const bool paused_full = (snapshot.flags & kFlagPaused) != 0;
 
     // DNF 走 DirectInput 轮询时需要覆盖 GetDeviceState，否则后台状态无法被读取到。
     EnsureVkeyToDikMap();
@@ -2012,7 +2282,7 @@ static HRESULT STDMETHODCALLTYPE Hook_GetDeviceState(IDirectInputDevice8W* devic
 
         if (snapshot.targetMask[vKey] != 0)
         {
-            if (!alive || paused)
+            if (!alive || paused_full)
             {
                 state[dik] = 0;
                 spoofed = true;
@@ -2022,7 +2292,7 @@ static HRESULT STDMETHODCALLTYPE Hook_GetDeviceState(IDirectInputDevice8W* devic
             state[dik] = (snapshot.keyboardState[vKey] & 0x80) ? 0x80 : 0x00;
             spoofed = true;
         }
-        else if (ShouldBlockKey(snapshot, vKey, alive, paused))
+        else if (ShouldBlockKey(snapshot, vKey, alive, paused_full))
         {
             state[dik] = 0;
             spoofed = true;
@@ -2031,7 +2301,7 @@ static HRESULT STDMETHODCALLTYPE Hook_GetDeviceState(IDirectInputDevice8W* devic
 
     if (spoofed)
     {
-        InterlockedIncrement(&g_countSpoofDeviceState);
+        CountStat(&g_countSpoofDeviceState);
     }
 
     if (forceOk && spoofed)
@@ -2053,25 +2323,25 @@ static HRESULT STDMETHODCALLTYPE Hook_GetDeviceData(
     LPDWORD entries,
     DWORD flags)
 {
-    InterlockedIncrement(&g_countGetDeviceData);
+    CountStat(&g_countGetDeviceData);
     return g_origGetDeviceData ? g_origGetDeviceData(device, objectDataSize, data, entries, flags) : DIERR_GENERIC;
 }
 
 static HRESULT STDMETHODCALLTYPE Hook_Acquire(IDirectInputDevice8W* device)
 {
-    InterlockedIncrement(&g_countAcquire);
+    CountStat(&g_countAcquire);
     return g_origAcquire ? g_origAcquire(device) : DIERR_GENERIC;
 }
 
 static HRESULT STDMETHODCALLTYPE Hook_Unacquire(IDirectInputDevice8W* device)
 {
-    InterlockedIncrement(&g_countUnacquire);
+    CountStat(&g_countUnacquire);
     return g_origUnacquire ? g_origUnacquire(device) : DIERR_GENERIC;
 }
 
 static HRESULT STDMETHODCALLTYPE Hook_Poll(IDirectInputDevice8W* device)
 {
-    InterlockedIncrement(&g_countPoll);
+    CountStat(&g_countPoll);
     return g_origPoll ? g_origPoll(device) : DIERR_GENERIC;
 }
 
@@ -2145,7 +2415,7 @@ static HRESULT STDMETHODCALLTYPE Hook_CreateDevice(
     LPDIRECTINPUTDEVICE8W* device,
     LPUNKNOWN unkOuter)
 {
-    InterlockedIncrement(&g_countCreateDevice);
+    CountStat(&g_countCreateDevice);
     LogGuid(L"CreateDevice GUID:", rguid);
 
     HRESULT hr = g_origCreateDevice ? g_origCreateDevice(self, rguid, device, unkOuter) : DIERR_GENERIC;
@@ -2163,7 +2433,7 @@ static HRESULT WINAPI Hook_DirectInput8Create(
     LPVOID* out,
     LPUNKNOWN unkOuter)
 {
-    InterlockedIncrement(&g_countDirectInput8Create);
+    CountStat(&g_countDirectInput8Create);
 
     HRESULT hr = g_origDirectInput8Create ? g_origDirectInput8Create(hinst, version, riid, out, unkOuter) : DIERR_GENERIC;
     if (SUCCEEDED(hr) && out && *out)
@@ -2368,7 +2638,21 @@ static void InstallDirectInputHook()
 
 static void LogCountersOnce()
 {
-    // 每秒输出一次统计，避免在高频回调里写日志造成干扰
+    if (!IsStatsEnabled())
+    {
+        return;
+    }
+
+    static ULONGLONG lastTick = 0;
+    ULONGLONG now = GetTickCount64();
+    DWORD interval = GetStatsIntervalMs();
+    if (interval > 0 && now - lastTick < interval)
+    {
+        return;
+    }
+    lastTick = now;
+
+    // 输出统计，避免在高频回调里写日志造成干扰
     LONG getAsync = InterlockedExchange(&g_countGetAsyncKeyState, 0);
     LONG getKeyboard = InterlockedExchange(&g_countGetKeyboardState, 0);
     LONG diCreate = InterlockedExchange(&g_countDirectInput8Create, 0);

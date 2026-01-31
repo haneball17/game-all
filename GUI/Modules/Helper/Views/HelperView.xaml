@@ -9,6 +9,58 @@
   <UserControl.Resources>
     <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
     <converters:InverseBoolToVisibilityConverter x:Key="InverseBoolToVisibility" />
+    <Style x:Key="ToggleSwitchStyle" TargetType="ToggleButton">
+      <Setter Property="Width" Value="56" />
+      <Setter Property="Height" Value="24" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ToggleButton">
+            <Grid>
+              <Border x:Name="SwitchBorder" CornerRadius="12" Background="#D0D0D0" />
+              <Ellipse x:Name="SwitchThumb" Width="20" Height="20" Fill="White" Margin="2" HorizontalAlignment="Left" />
+              <TextBlock x:Name="SwitchText" Text="关" Foreground="White" FontSize="10" FontWeight="Bold"
+                         HorizontalAlignment="Center" VerticalAlignment="Center" />
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="SwitchBorder" Property="Background" Value="#4CAF50" />
+                <Setter TargetName="SwitchThumb" Property="HorizontalAlignment" Value="Right" />
+                <Setter TargetName="SwitchText" Property="Text" Value="开" />
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter TargetName="SwitchBorder" Property="Background" Value="#BDBDBD" />
+                <Setter TargetName="SwitchThumb" Property="Fill" Value="#EEEEEE" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style x:Key="AttractModeItemStyle" TargetType="ListBoxItem">
+      <Setter Property="Margin" Value="2" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ListBoxItem">
+            <Border x:Name="ItemBorder" CornerRadius="4" Background="#F0F0F0" Padding="6,2">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsSelected" Value="True">
+                <Setter TargetName="ItemBorder" Property="Background" Value="#4CAF50" />
+                <Setter Property="Foreground" Value="White" />
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter TargetName="ItemBorder" Property="Background" Value="#E0E0E0" />
+                <Setter Property="Foreground" Value="#888888" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
   </UserControl.Resources>
 
   <Grid>
@@ -57,59 +109,128 @@
               <Border Grid.Row="1" BorderBrush="LightGray" BorderThickness="1" Padding="12" Margin="0,12,0,0">
                 <StackPanel DataContext="{Binding ControlPanel}" IsEnabled="{Binding HasTarget}">
                   <TextBlock Text="功能控制" FontWeight="Bold" Margin="0,0,0,8" />
-                  <Grid>
-                    <Grid.ColumnDefinitions>
-                      <ColumnDefinition Width="140" />
-                      <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
-                    <Grid.RowDefinitions>
-                      <RowDefinition Height="Auto" />
-                      <RowDefinition Height="Auto" />
-                      <RowDefinition Height="Auto" />
-                      <RowDefinition Height="Auto" />
-                      <RowDefinition Height="Auto" />
-                      <RowDefinition Height="Auto" />
-                    </Grid.RowDefinitions>
+                  <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                      <TextBlock Text="全屏攻击" Width="120" VerticalAlignment="Center" />
+                      <ToggleButton Style="{StaticResource ToggleSwitchStyle}"
+                                    IsChecked="{Binding FullscreenAttackEnabled}"
+                                    IsEnabled="{Binding CanControlFullscreenAttack}" />
+                      <TextBlock Text="{Binding FullscreenAttackStateText}" Foreground="Gray" Margin="8,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
 
-                    <TextBlock Text="全屏攻击" Grid.Row="0" VerticalAlignment="Center" />
-                    <ComboBox Grid.Row="0" Grid.Column="1" Width="160"
-                              ItemsSource="{Binding OverrideOptions}"
-                              DisplayMemberPath="Label"
-                              SelectedValuePath="Value"
-                              SelectedValue="{Binding FullscreenAttackOverride}" />
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                      <TextBlock Text="全屏技能" Width="120" VerticalAlignment="Center" />
+                      <ToggleButton Style="{StaticResource ToggleSwitchStyle}"
+                                    IsChecked="{Binding FullscreenSkillActive}"
+                                    IsEnabled="{Binding CanControlFullscreenSkill}" />
+                      <TextBlock Text="{Binding FullscreenSkillStateText}" Foreground="Gray" Margin="8,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
 
-                    <TextBlock Text="全屏技能" Grid.Row="1" VerticalAlignment="Center" />
-                    <ComboBox Grid.Row="1" Grid.Column="1" Width="160"
-                              ItemsSource="{Binding OverrideOptions}"
-                              DisplayMemberPath="Label"
-                              SelectedValuePath="Value"
-                              SelectedValue="{Binding FullscreenSkillOverride}" />
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                      <TextBlock Text="自动透明" Width="120" VerticalAlignment="Center" />
+                      <ToggleButton Style="{StaticResource ToggleSwitchStyle}"
+                                    IsChecked="{Binding AutoTransparentEnabled}"
+                                    IsEnabled="{Binding CanControlAutoTransparent}" />
+                      <TextBlock Text="{Binding AutoTransparentStateText}" Foreground="Gray" Margin="8,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
 
-                    <TextBlock Text="自动透明" Grid.Row="2" VerticalAlignment="Center" />
-                    <ComboBox Grid.Row="2" Grid.Column="1" Width="160"
-                              ItemsSource="{Binding OverrideOptions}"
-                              DisplayMemberPath="Label"
-                              SelectedValuePath="Value"
-                              SelectedValue="{Binding AutoTransparentOverride}" />
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                      <TextBlock Text="热键响应" Width="120" VerticalAlignment="Center" />
+                      <ToggleButton Style="{StaticResource ToggleSwitchStyle}"
+                                    IsChecked="{Binding HotkeyEnabled}"
+                                    IsEnabled="{Binding CanControlHotkeyEnabled}" />
+                      <TextBlock Text="{Binding HotkeyEnabledStateText}" Foreground="Gray" Margin="8,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
 
-                    <TextBlock Text="吸怪" Grid.Row="3" VerticalAlignment="Center" />
-                    <ComboBox Grid.Row="3" Grid.Column="1" Width="160"
-                              ItemsSource="{Binding OverrideOptions}"
-                              DisplayMemberPath="Label"
-                              SelectedValuePath="Value"
-                              SelectedValue="{Binding AttractOverride}" />
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                      <TextBlock Text="人偶召唤" Width="120" VerticalAlignment="Center" />
+                      <Button Width="160" Content="召唤一次" Command="{Binding SummonCommand}" />
+                    </StackPanel>
 
-                    <TextBlock Text="热键响应" Grid.Row="4" VerticalAlignment="Center" />
-                    <ComboBox Grid.Row="4" Grid.Column="1" Width="160"
-                              ItemsSource="{Binding OverrideOptions}"
-                              DisplayMemberPath="Label"
-                              SelectedValuePath="Value"
-                              SelectedValue="{Binding HotkeyEnabledOverride}" />
+                    <Separator Margin="0,10,0,8" />
 
-                    <TextBlock Text="人偶召唤" Grid.Row="5" VerticalAlignment="Center" />
-                    <Button Grid.Row="5" Grid.Column="1" Width="160" Content="召唤一次"
-                            Command="{Binding SummonCommand}" />
-                  </Grid>
+                    <TextBlock Text="吸怪" FontWeight="Bold" Margin="0,0,0,4" />
+                    <StackPanel Orientation="Horizontal">
+                      <TextBlock Text="开关" Width="60" VerticalAlignment="Center" />
+                      <ToggleButton Style="{StaticResource ToggleSwitchStyle}"
+                                    IsChecked="{Binding AttractEnabled}"
+                                    IsEnabled="{Binding CanControlAttract}" />
+                      <TextBlock Text="{Binding AttractEnabledStateText}" Foreground="Gray" Margin="8,0,0,0" VerticalAlignment="Center" />
+
+                      <TextBlock Text="方向" Width="60" Margin="16,0,0,0" VerticalAlignment="Center" />
+                      <ToggleButton Style="{StaticResource ToggleSwitchStyle}"
+                                    IsChecked="{Binding AttractPositive}"
+                                    IsEnabled="{Binding CanControlAttract}" />
+                      <TextBlock Text="{Binding AttractDirectionText}" Foreground="Gray" Margin="8,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                      <TextBlock Text="档位" Width="60" VerticalAlignment="Center" />
+                      <ListBox ItemsSource="{Binding AttractModeOptions}"
+                               SelectedIndex="{Binding AttractModeIndex}"
+                               ItemContainerStyle="{StaticResource AttractModeItemStyle}"
+                               BorderThickness="0"
+                               Background="Transparent"
+                               IsEnabled="{Binding CanControlAttract}">
+                        <ListBox.ItemsPanel>
+                          <ItemsPanelTemplate>
+                            <UniformGrid Columns="4" />
+                          </ItemsPanelTemplate>
+                        </ListBox.ItemsPanel>
+                      </ListBox>
+                    </StackPanel>
+
+                    <Expander Header="高级控制（覆盖模式）" IsExpanded="False" Margin="0,10,0,0">
+                      <Grid Margin="0,8,0,0">
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="140" />
+                          <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                          <RowDefinition Height="Auto" />
+                          <RowDefinition Height="Auto" />
+                          <RowDefinition Height="Auto" />
+                          <RowDefinition Height="Auto" />
+                          <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Text="全屏攻击" Grid.Row="0" VerticalAlignment="Center" />
+                        <ComboBox Grid.Row="0" Grid.Column="1" Width="160"
+                                  ItemsSource="{Binding OverrideOptions}"
+                                  DisplayMemberPath="Label"
+                                  SelectedValuePath="Value"
+                                  SelectedValue="{Binding FullscreenAttackOverride}" />
+
+                        <TextBlock Text="全屏技能" Grid.Row="1" VerticalAlignment="Center" />
+                        <ComboBox Grid.Row="1" Grid.Column="1" Width="160"
+                                  ItemsSource="{Binding OverrideOptions}"
+                                  DisplayMemberPath="Label"
+                                  SelectedValuePath="Value"
+                                  SelectedValue="{Binding FullscreenSkillOverride}" />
+
+                        <TextBlock Text="自动透明" Grid.Row="2" VerticalAlignment="Center" />
+                        <ComboBox Grid.Row="2" Grid.Column="1" Width="160"
+                                  ItemsSource="{Binding OverrideOptions}"
+                                  DisplayMemberPath="Label"
+                                  SelectedValuePath="Value"
+                                  SelectedValue="{Binding AutoTransparentOverride}" />
+
+                        <TextBlock Text="吸怪" Grid.Row="3" VerticalAlignment="Center" />
+                        <ComboBox Grid.Row="3" Grid.Column="1" Width="160"
+                                  ItemsSource="{Binding OverrideOptions}"
+                                  DisplayMemberPath="Label"
+                                  SelectedValuePath="Value"
+                                  SelectedValue="{Binding AttractOverride}" />
+
+                        <TextBlock Text="热键响应" Grid.Row="4" VerticalAlignment="Center" />
+                        <ComboBox Grid.Row="4" Grid.Column="1" Width="160"
+                                  ItemsSource="{Binding OverrideOptions}"
+                                  DisplayMemberPath="Label"
+                                  SelectedValuePath="Value"
+                                  SelectedValue="{Binding HotkeyEnabledOverride}" />
+                      </Grid>
+                    </Expander>
+                  </StackPanel>
 
                   <TextBlock Text="{Binding StatusMessage}" Foreground="Gray" FontSize="11" Margin="0,8,0,0" />
                 </StackPanel>

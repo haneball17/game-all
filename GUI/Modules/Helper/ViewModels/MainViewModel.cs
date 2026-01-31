@@ -57,6 +57,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             UpdateWindowTitle();
             OnPropertyChanged(nameof(SelectedDetailText));
             ControlPanel.UpdateTarget(value);
+            ControlPanel.UpdateStatus(value);
             if (value != null)
             {
                 GuiLogger.Info("selection", "process_selected", new Dictionary<string, object?>
@@ -229,6 +230,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         UpdateWindowTitle();
         OnPropertyChanged(nameof(SelectedDetailText));
+        ControlPanel.UpdateStatus(SelectedProcess);
     }
 
     private static string BuildInjectText(SharedMemoryReadStatus status, bool isStale)
