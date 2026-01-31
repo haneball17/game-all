@@ -61,6 +61,30 @@ typedef struct _HelperControlV1 {
 	BYTE reserved[3];
 	DWORD summon_sequence;
 } HelperControlV1;
+
+typedef struct _HelperControlV2 {
+	DWORD version;
+	DWORD size;
+	DWORD pid;
+	DWORD last_update_tick;
+	BYTE fullscreen_attack;
+	BYTE fullscreen_skill;
+	BYTE auto_transparent;
+	BYTE attract;
+	BYTE hotkey_enabled;
+	BYTE reserved[3];
+	DWORD summon_sequence;
+	DWORD action_sequence;
+	DWORD action_mask;
+	BYTE desired_fullscreen_attack;
+	BYTE desired_fullscreen_skill;
+	BYTE desired_auto_transparent;
+	BYTE desired_attract_enabled;
+	BYTE desired_attract_mode;
+	BYTE desired_attract_positive;
+	BYTE desired_hotkey_enabled;
+	BYTE reserved2;
+} HelperControlV2;
 #pragma pack(pop)
 
 static const LONG kHideModuleResultNotAttempted = -1;
@@ -199,11 +223,13 @@ static const DWORD kSharedMemoryVersion = 3;
 static const DWORD kSharedMemoryWriteIntervalMs = 500;
 static const wchar_t kControlMemoryNamePrefixGlobal[] = L"Global\\GameHelperControl_";
 static const wchar_t kControlMemoryNamePrefixLocal[] = L"Local\\GameHelperControl_";
-static const DWORD kControlMemoryVersion = 1;
+static const DWORD kControlMemoryVersionV1 = 1;
+static const DWORD kControlMemoryVersionV2 = 2;
 static const DWORD kControlMemoryReadIntervalMs = 200;
 
 // 输入轮询间隔
 static const DWORD kInputPollIntervalMs = 30;
+static const DWORD kInputPollIdleIntervalMs = 120;
 // 配置热重载间隔
 static const DWORD kConfigReloadIntervalMs = 1000;
 
@@ -292,11 +318,19 @@ static BOOL g_fullscreen_attack_off_patch_set = FALSE;
 static volatile LONG g_fullscreen_attack_target_enabled = 0;
 static DWORD g_fullscreen_attack_poll_interval_ms = kFullscreenAttackPollIntervalMs;
 static DWORD g_control_last_summon_sequence = 0;
+static DWORD g_control_last_action_sequence = 0;
 static BYTE g_control_fullscreen_attack = kControlFollow;
 static BYTE g_control_fullscreen_skill = kControlFollow;
 static BYTE g_control_auto_transparent = kControlFollow;
 static BYTE g_control_attract = kControlFollow;
 static BYTE g_control_hotkey_enabled = kControlFollow;
+static const DWORD kActionMaskFullscreenAttack = 1 << 0;
+static const DWORD kActionMaskFullscreenSkill = 1 << 1;
+static const DWORD kActionMaskAutoTransparent = 1 << 2;
+static const DWORD kActionMaskAttractEnabled = 1 << 3;
+static const DWORD kActionMaskAttractMode = 1 << 4;
+static const DWORD kActionMaskAttractPositive = 1 << 5;
+static const DWORD kActionMaskHotkeyEnabled = 1 << 6;
 // 共享内存写入句柄
 static HANDLE g_shared_memory_handle = NULL;
 static void* g_shared_memory_view = NULL;
@@ -319,6 +353,15 @@ static HANDLE g_log_file = INVALID_HANDLE_VALUE;
 static BOOL g_log_ready = FALSE;
 static wchar_t g_log_path[MAX_PATH] = {0};
 static wchar_t g_success_file_path[MAX_PATH] = {0};
+static const int kLogQueueCapacity = 256;
+static const int kLogLineMaxBytes = 1024;
+static char g_log_queue[kLogQueueCapacity][kLogLineMaxBytes] = {{0}};
+static LONG g_log_queue_head = 0;
+static LONG g_log_queue_tail = 0;
+static LONG g_log_queue_dropped = 0;
+
+static HANDLE g_config_change_handle = NULL;
+static wchar_t g_config_dir_path[MAX_PATH] = {0};
 
 static BOOL GetExeDirectory(wchar_t* directory_path, size_t directory_capacity) {
 	wchar_t exe_path[MAX_PATH] = {0};
@@ -475,6 +518,24 @@ static BOOL BuildLogsDirectoryPath(const wchar_t* base_dir, wchar_t* output, siz
 		}
 	}
 	return wcscat_s(output, output_capacity, L"logs") == 0;
+}
+
+static BOOL ExtractDirectoryFromPath(const wchar_t* path, wchar_t* output, size_t output_capacity) {
+	if (path == NULL || output == NULL || output_capacity == 0) {
+		return FALSE;
+	}
+	if (wcscpy_s(output, output_capacity, path) != 0) {
+		return FALSE;
+	}
+	wchar_t* last_slash = wcsrchr(output, L'\\');
+	if (last_slash == NULL) {
+		last_slash = wcsrchr(output, L'/');
+	}
+	if (last_slash == NULL) {
+		return FALSE;
+	}
+	*(last_slash + 1) = L'\0';
+	return TRUE;
 }
 
 static BOOL BuildSuccessFilePath(const wchar_t* directory_path,
@@ -919,6 +980,57 @@ static void EscapeJsonString(const char* input, char* output, size_t output_capa
 	output[out_index] = '\0';
 }
 
+static void EnqueueLogLine(const char* line) {
+	if (line == NULL) {
+		return;
+	}
+	LONG head = g_log_queue_head;
+	LONG tail = g_log_queue_tail;
+	LONG next_tail = (tail + 1) % kLogQueueCapacity;
+	if (next_tail == head) {
+		InterlockedIncrement(&g_log_queue_dropped);
+		return;
+	}
+	strncpy_s(g_log_queue[tail], kLogLineMaxBytes, line, _TRUNCATE);
+	InterlockedExchange(&g_log_queue_tail, next_tail);
+}
+
+static void FlushLogQueueLocked() {
+	if (!g_log_ready || g_log_file == INVALID_HANDLE_VALUE) {
+		return;
+	}
+	char line[kLogLineMaxBytes] = {0};
+	int flushed = 0;
+	while (g_log_queue_head != g_log_queue_tail && flushed < kLogQueueCapacity) {
+		LONG head = g_log_queue_head;
+		strncpy_s(line, sizeof(line), g_log_queue[head], _TRUNCATE);
+		ZeroMemory(g_log_queue[head], sizeof(g_log_queue[head]));
+		InterlockedExchange(&g_log_queue_head, (head + 1) % kLogQueueCapacity);
+		DWORD written = 0;
+		WriteFile(g_log_file, line, static_cast<DWORD>(strnlen(line, sizeof(line))), &written, NULL);
+		flushed++;
+	}
+
+	LONG dropped = InterlockedExchange(&g_log_queue_dropped, 0);
+	if (dropped > 0) {
+		char timestamp[32] = {0};
+		FormatTimestamp(timestamp, sizeof(timestamp));
+		char drop_line[256] = {0};
+		int length = sprintf_s(
+			drop_line,
+			sizeof(drop_line),
+			"{\"ts\":\"%s\",\"level\":\"WARN\",\"event\":\"log_queue\",\"message\":\"dropped=%ld\",\"pid\":%lu,\"tid\":%lu}\r\n",
+			timestamp,
+			dropped,
+			GetCurrentProcessId(),
+			GetCurrentThreadId());
+		if (length > 0) {
+			DWORD written = 0;
+			WriteFile(g_log_file, drop_line, static_cast<DWORD>(length), &written, NULL);
+		}
+	}
+}
+
 static void WriteLogLine(const char* level, const char* event, const char* message) {
 	if (!g_log_ready || g_log_file == INVALID_HANDLE_VALUE) {
 		return;
@@ -945,8 +1057,7 @@ static void WriteLogLine(const char* level, const char* event, const char* messa
 	if (length <= 0) {
 		return;
 	}
-	DWORD written = 0;
-	WriteFile(g_log_file, line, static_cast<DWORD>(length), &written, NULL);
+	EnqueueLogLine(line);
 }
 
 static void LogEvent(const char* level, const char* event, const char* message) {
@@ -955,6 +1066,15 @@ static void LogEvent(const char* level, const char* event, const char* message) 
 	}
 	EnterCriticalSection(&g_log_lock);
 	WriteLogLine(level, event, message);
+	LeaveCriticalSection(&g_log_lock);
+}
+
+static void FlushLogQueue() {
+	if (!g_log_lock_ready) {
+		return;
+	}
+	EnterCriticalSection(&g_log_lock);
+	FlushLogQueueLocked();
 	LeaveCriticalSection(&g_log_lock);
 }
 
@@ -1061,6 +1181,16 @@ static BOOL WriteFloatSafely(DWORD address, float value) {
 	return wrote;
 }
 
+// 快速写入 float：不切换页权限，仅在异常时失败返回。
+static BOOL WriteFloatFast(DWORD address, float value) {
+	__try {
+		*(float*)address = value;
+		return TRUE;
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		return FALSE;
+	}
+}
+
 // 评分相关暂未提供基址，保留占位实现，避免写入未知地址。
 static void ApplyScorePlaceholder() {
 	// 评分基址未提供，当前不做任何内存写入，确保稳定性。
@@ -1122,6 +1252,8 @@ static BOOL IsFullscreenAttackTargetEnabled();
 static void TrySummonDoll();
 static BYTE NormalizeControlValue(BYTE value);
 static void ApplyControlOverrides();
+static BOOL EnsureConfigChangeHandle();
+static void ReloadConfigIfChanged();
 
 // 判断是否为“关闭全屏攻击”的指令形态。
 static BOOL IsFullscreenAttackOffBytes(const BYTE* bytes) {
@@ -1244,7 +1376,7 @@ static BOOL InitializeControlMemory() {
 			NULL,
 			PAGE_READWRITE,
 			0,
-			static_cast<DWORD>(sizeof(HelperControlV1)),
+			static_cast<DWORD>(sizeof(HelperControlV2)),
 			name_buffer);
 		if (mapping == NULL) {
 			DWORD error = GetLastError();
@@ -1256,7 +1388,7 @@ static BOOL InitializeControlMemory() {
 			}
 			return FALSE;
 		}
-		void* view = MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, sizeof(HelperControlV1));
+		void* view = MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, sizeof(HelperControlV2));
 		if (view == NULL) {
 			DWORD error = GetLastError();
 			CloseHandle(mapping);
@@ -1267,10 +1399,10 @@ static BOOL InitializeControlMemory() {
 		}
 		g_control_memory_handle = mapping;
 		g_control_memory_view = view;
-		ZeroMemory(view, sizeof(HelperControlV1));
-		HelperControlV1 init = {0};
-		init.version = kControlMemoryVersion;
-		init.size = static_cast<DWORD>(sizeof(HelperControlV1));
+		ZeroMemory(view, sizeof(HelperControlV2));
+		HelperControlV2 init = {0};
+		init.version = kControlMemoryVersionV2;
+		init.size = static_cast<DWORD>(sizeof(HelperControlV2));
 		init.pid = pid;
 		memcpy(view, &init, sizeof(init));
 		InterlockedExchange(&g_control_memory_failed_logged, 0);
@@ -1537,79 +1669,166 @@ static void WriteSharedMemorySnapshot() {
 	memcpy(g_shared_memory_view, &snapshot, sizeof(snapshot));
 }
 
-// 共享内存写入线程：持续输出状态。
-static DWORD WINAPI SharedMemoryWriterThread(LPVOID param) {
-	UNREFERENCED_PARAMETER(param);
-	for (;;) {
-		WriteSharedMemorySnapshot();
-		Sleep(kSharedMemoryWriteIntervalMs);
-	}
-	return 0;
+// 共享内存写入任务：后台线程周期执行。
+static void SharedMemoryWriterTick() {
+	WriteSharedMemorySnapshot();
 }
 
-// 控制共享内存读取线程：读取 GUI 控制并应用。
-static DWORD WINAPI ControlReaderThread(LPVOID param) {
-	UNREFERENCED_PARAMETER(param);
-	for (;;) {
-		if (!InitializeControlMemory()) {
-			Sleep(1000);
-			continue;
+// 前置声明：动作应用依赖后面的控制函数实现。
+static void SetFullscreenAttackTargetEnabled(BOOL enabled);
+static void SetAutoTransparentEnabled(BOOL enabled);
+static void SetAttractEnabled(BOOL enabled);
+
+static void ApplyControlActions(const HelperControlV2& snapshot) {
+	if (g_control_fullscreen_attack == kControlFollow &&
+		(snapshot.action_mask & kActionMaskFullscreenAttack) != 0) {
+		SetFullscreenAttackTargetEnabled(snapshot.desired_fullscreen_attack != 0);
+	}
+
+	if (g_control_fullscreen_skill == kControlFollow &&
+		(snapshot.action_mask & kActionMaskFullscreenSkill) != 0) {
+		if (g_fullscreen_skill_enabled) {
+			g_fullscreen_skill_active = snapshot.desired_fullscreen_skill != 0;
 		}
-		HelperControlV1 snapshot = {0};
-		memcpy(&snapshot, g_control_memory_view, sizeof(snapshot));
-		if (snapshot.version != kControlMemoryVersion || snapshot.size != sizeof(HelperControlV1)) {
-			if (InterlockedCompareExchange(&g_control_protocol_logged, 1, 0) == 0) {
-				char message[160] = {0};
-				sprintf_s(
-					message,
-					sizeof(message),
-					"control_version=%lu control_size=%lu expected_version=%lu expected_size=%lu",
-					snapshot.version,
-					snapshot.size,
-					kControlMemoryVersion,
-					static_cast<unsigned long>(sizeof(HelperControlV1)));
-				LogEvent("WARN", "protocol_mismatch", message);
+	}
+
+	if (g_control_auto_transparent == kControlFollow &&
+		(snapshot.action_mask & kActionMaskAutoTransparent) != 0) {
+		SetAutoTransparentEnabled(snapshot.desired_auto_transparent != 0);
+	}
+
+	if (g_control_hotkey_enabled == kControlFollow &&
+		(snapshot.action_mask & kActionMaskHotkeyEnabled) != 0) {
+		g_hotkey_enabled = snapshot.desired_hotkey_enabled != 0;
+	}
+
+	if (g_control_attract == kControlFollow) {
+		if ((snapshot.action_mask & kActionMaskAttractMode) != 0) {
+			int mode = static_cast<int>(snapshot.desired_attract_mode);
+			if (mode < kAttractModeOff || mode > kAttractModeMax) {
+				mode = kAttractModeOff;
 			}
-			Sleep(1000);
-			continue;
+			if (mode == kAttractModeOff) {
+				g_attract_mode = kAttractModeOff;
+			} else {
+				g_attract_mode = mode;
+				g_attract_last_mode = mode;
+			}
 		}
-		snapshot.fullscreen_attack = NormalizeControlValue(snapshot.fullscreen_attack);
-		snapshot.fullscreen_skill = NormalizeControlValue(snapshot.fullscreen_skill);
-		snapshot.auto_transparent = NormalizeControlValue(snapshot.auto_transparent);
-		snapshot.attract = NormalizeControlValue(snapshot.attract);
-		snapshot.hotkey_enabled = NormalizeControlValue(snapshot.hotkey_enabled);
+		if ((snapshot.action_mask & kActionMaskAttractEnabled) != 0) {
+			if (snapshot.desired_attract_enabled != 0) {
+				SetAttractEnabled(TRUE);
+			} else {
+				SetAttractEnabled(FALSE);
+			}
+		}
+		if ((snapshot.action_mask & kActionMaskAttractPositive) != 0) {
+			g_attract_positive_enabled = snapshot.desired_attract_positive != 0;
+		}
+	}
+}
+
+// 控制共享内存读取任务：后台线程周期执行。
+static void ControlReaderTick() {
+	if (!InitializeControlMemory()) {
+		return;
+	}
+	HelperControlV2 snapshotV2 = {0};
+	memcpy(&snapshotV2, g_control_memory_view, sizeof(snapshotV2));
+	if (snapshotV2.version == kControlMemoryVersionV2 && snapshotV2.size >= sizeof(HelperControlV2)) {
+		snapshotV2.fullscreen_attack = NormalizeControlValue(snapshotV2.fullscreen_attack);
+		snapshotV2.fullscreen_skill = NormalizeControlValue(snapshotV2.fullscreen_skill);
+		snapshotV2.auto_transparent = NormalizeControlValue(snapshotV2.auto_transparent);
+		snapshotV2.attract = NormalizeControlValue(snapshotV2.attract);
+		snapshotV2.hotkey_enabled = NormalizeControlValue(snapshotV2.hotkey_enabled);
 
 		BOOL control_changed = FALSE;
-		if (snapshot.fullscreen_attack != g_control_fullscreen_attack) {
-			g_control_fullscreen_attack = snapshot.fullscreen_attack;
+		if (snapshotV2.fullscreen_attack != g_control_fullscreen_attack) {
+			g_control_fullscreen_attack = snapshotV2.fullscreen_attack;
 			control_changed = TRUE;
 		}
-		if (snapshot.fullscreen_skill != g_control_fullscreen_skill) {
-			g_control_fullscreen_skill = snapshot.fullscreen_skill;
+		if (snapshotV2.fullscreen_skill != g_control_fullscreen_skill) {
+			g_control_fullscreen_skill = snapshotV2.fullscreen_skill;
 			control_changed = TRUE;
 		}
-		if (snapshot.auto_transparent != g_control_auto_transparent) {
-			g_control_auto_transparent = snapshot.auto_transparent;
+		if (snapshotV2.auto_transparent != g_control_auto_transparent) {
+			g_control_auto_transparent = snapshotV2.auto_transparent;
 			control_changed = TRUE;
 		}
-		if (snapshot.attract != g_control_attract) {
-			g_control_attract = snapshot.attract;
+		if (snapshotV2.attract != g_control_attract) {
+			g_control_attract = snapshotV2.attract;
 			control_changed = TRUE;
 		}
-		if (snapshot.hotkey_enabled != g_control_hotkey_enabled) {
-			g_control_hotkey_enabled = snapshot.hotkey_enabled;
+		if (snapshotV2.hotkey_enabled != g_control_hotkey_enabled) {
+			g_control_hotkey_enabled = snapshotV2.hotkey_enabled;
 			control_changed = TRUE;
 		}
 		if (control_changed) {
 			ApplyControlOverrides();
 		}
-		if (snapshot.summon_sequence != g_control_last_summon_sequence) {
-			g_control_last_summon_sequence = snapshot.summon_sequence;
+		if (snapshotV2.summon_sequence != g_control_last_summon_sequence) {
+			g_control_last_summon_sequence = snapshotV2.summon_sequence;
 			TrySummonDoll();
 		}
-		Sleep(kControlMemoryReadIntervalMs);
+		if (snapshotV2.action_sequence != 0 &&
+			snapshotV2.action_sequence != g_control_last_action_sequence) {
+			g_control_last_action_sequence = snapshotV2.action_sequence;
+			ApplyControlActions(snapshotV2);
+		}
+		return;
 	}
-	return 0;
+
+	HelperControlV1 snapshot = {0};
+	memcpy(&snapshot, g_control_memory_view, sizeof(snapshot));
+	if (snapshot.version != kControlMemoryVersionV1 || snapshot.size != sizeof(HelperControlV1)) {
+		if (InterlockedCompareExchange(&g_control_protocol_logged, 1, 0) == 0) {
+			char message[160] = {0};
+			sprintf_s(
+				message,
+				sizeof(message),
+				"control_version=%lu control_size=%lu expected_version=%lu expected_size=%lu",
+				snapshot.version,
+				snapshot.size,
+				kControlMemoryVersionV1,
+				static_cast<unsigned long>(sizeof(HelperControlV1)));
+			LogEvent("WARN", "protocol_mismatch", message);
+		}
+		return;
+	}
+	snapshot.fullscreen_attack = NormalizeControlValue(snapshot.fullscreen_attack);
+	snapshot.fullscreen_skill = NormalizeControlValue(snapshot.fullscreen_skill);
+	snapshot.auto_transparent = NormalizeControlValue(snapshot.auto_transparent);
+	snapshot.attract = NormalizeControlValue(snapshot.attract);
+	snapshot.hotkey_enabled = NormalizeControlValue(snapshot.hotkey_enabled);
+
+	BOOL control_changed = FALSE;
+	if (snapshot.fullscreen_attack != g_control_fullscreen_attack) {
+		g_control_fullscreen_attack = snapshot.fullscreen_attack;
+		control_changed = TRUE;
+	}
+	if (snapshot.fullscreen_skill != g_control_fullscreen_skill) {
+		g_control_fullscreen_skill = snapshot.fullscreen_skill;
+		control_changed = TRUE;
+	}
+	if (snapshot.auto_transparent != g_control_auto_transparent) {
+		g_control_auto_transparent = snapshot.auto_transparent;
+		control_changed = TRUE;
+	}
+	if (snapshot.attract != g_control_attract) {
+		g_control_attract = snapshot.attract;
+		control_changed = TRUE;
+	}
+	if (snapshot.hotkey_enabled != g_control_hotkey_enabled) {
+		g_control_hotkey_enabled = snapshot.hotkey_enabled;
+		control_changed = TRUE;
+	}
+	if (control_changed) {
+		ApplyControlOverrides();
+	}
+	if (snapshot.summon_sequence != g_control_last_summon_sequence) {
+		g_control_last_summon_sequence = snapshot.summon_sequence;
+		TrySummonDoll();
+	}
 }
 
 // 读取全屏攻击目标状态，避免多线程竞态。
@@ -1638,18 +1857,9 @@ static void ToggleFullscreenAttack() {
 }
 
 // 全屏攻击状态轮询：与目标状态不一致时纠正。
-static DWORD WINAPI FullscreenAttackGuardThread(LPVOID param) {
-	UNREFERENCED_PARAMETER(param);
-	while (TRUE) {
-		BOOL target_enabled = IsFullscreenAttackTargetEnabled();
-		SetFullscreenAttackEnabled(target_enabled);
-		DWORD interval = g_fullscreen_attack_poll_interval_ms;
-		if (interval == 0) {
-			interval = 1;
-		}
-		Sleep(interval);
-	}
-	return 0;
+static void FullscreenAttackGuardTick() {
+	BOOL target_enabled = IsFullscreenAttackTargetEnabled();
+	SetFullscreenAttackEnabled(target_enabled);
 }
 
 // 吸怪聚物：根据配置把怪物/物品坐标拉到人物坐标或偏移位置。
@@ -1703,29 +1913,22 @@ static void AttractMonstersAndItems(int mode) {
 		}
 		if (type == kTypeItem) {
 			// 物品吸到人物坐标。
-			WriteFloatSafely(position_ptr + kObjectPositionXOffset, player_x);
-			WriteFloatSafely(position_ptr + kObjectPositionYOffset, player_y);
+			WriteFloatFast(position_ptr + kObjectPositionXOffset, player_x);
+			WriteFloatFast(position_ptr + kObjectPositionYOffset, player_y);
 			continue;
 		}
 		// 怪物/敌对 APC 的 X 坐标按配置偏移，Y 坐标与人物一致。
-		WriteFloatSafely(position_ptr + kObjectPositionXOffset, monster_x);
-		WriteFloatSafely(position_ptr + kObjectPositionYOffset, player_y);
+		WriteFloatFast(position_ptr + kObjectPositionXOffset, monster_x);
+		WriteFloatFast(position_ptr + kObjectPositionYOffset, player_y);
 	}
 }
 
-// 自动吸怪线程：开启时按固定间隔执行吸怪逻辑。
-static DWORD WINAPI AutoAttractThread(LPVOID param) {
-	UNREFERENCED_PARAMETER(param);
-	while (TRUE) {
-		int mode = g_attract_mode;
-		if (mode != kAttractModeOff) {
-			AttractMonstersAndItems(mode);
-			Sleep(kAttractLoopIntervalMs);
-		} else {
-			Sleep(kAttractIdleIntervalMs);
-		}
+// 自动吸怪任务：按需调用吸怪逻辑。
+static void AutoAttractTick() {
+	int mode = g_attract_mode;
+	if (mode != kAttractModeOff) {
+		AttractMonstersAndItems(mode);
 	}
-	return 0;
 }
 
 // 召唤人偶：内联汇编按 CE 脚本顺序压栈调用。
@@ -1816,64 +2019,100 @@ static void CallFullscreenSkill(DWORD x_raw, DWORD y_raw, int z, int damage, int
 	}
 }
 
-// 全屏技能遍历线程：遍历地图单位并执行技能。
-static DWORD WINAPI FullscreenSkillThread(LPVOID param) {
+// 全屏技能遍历：按当前地图对象执行技能。
+static void FullscreenSkillOnce() {
+	DWORD player_ptr = ReadDwordSafely(kPlayerBaseAddress);
+	if (player_ptr == 0) {
+		return;
+	}
+	DWORD map_ptr = ReadDwordSafely(player_ptr + kMapOffset);
+	if (map_ptr == 0) {
+		return;
+	}
+	DWORD start_ptr = ReadDwordSafely(map_ptr + kMapStartOffset);
+	DWORD end_ptr = ReadDwordSafely(map_ptr + kMapEndOffset);
+	if (start_ptr == 0 || end_ptr == 0 || end_ptr <= start_ptr || end_ptr < 4) {
+		return;
+	}
+	DWORD last_ptr = end_ptr - 4;
+	int count = (int)((end_ptr - start_ptr) / 4);
+	if (count <= 0 || count > kMaxObjectCount) {
+		return;
+	}
+	for (DWORD cursor = start_ptr; cursor <= last_ptr; cursor += 4) {
+		DWORD object_ptr = ReadDwordSafely(cursor);
+		if (object_ptr == 0) {
+			continue;
+		}
+		int faction = (int)ReadDwordSafely(object_ptr + kFactionOffset);
+		if (faction == 0) {
+			continue;
+		}
+		int type = (int)ReadDwordSafely(object_ptr + kFullscreenSkillTypeOffset);
+		if (type != kTypeMonster && type != kTypeApc) {
+			continue;
+		}
+		DWORD x_raw = ReadDwordSafely(object_ptr + kFullscreenSkillPosXOffset);
+		DWORD y_raw = ReadDwordSafely(object_ptr + kFullscreenSkillPosYOffset);
+		CallFullscreenSkill(x_raw, y_raw, 0,
+			static_cast<int>(g_fullscreen_skill_damage),
+			static_cast<int>(g_fullscreen_skill_code));
+	}
+}
+
+// 主逻辑线程：合并吸怪与全屏技能逻辑，按独立节奏调度。
+static DWORD WINAPI MainLogicThread(LPVOID param) {
 	UNREFERENCED_PARAMETER(param);
-	while (TRUE) {
+	ULONGLONG next_attract = 0;
+	ULONGLONG next_fullscreen = 0;
+	for (;;) {
+		ULONGLONG now = GetTickCount64();
+
+		DWORD attract_interval = (g_attract_mode != kAttractModeOff) ? kAttractLoopIntervalMs : kAttractIdleIntervalMs;
+		if (attract_interval == 0) {
+			attract_interval = 1;
+		}
+		if (now >= next_attract) {
+			AutoAttractTick();
+			next_attract = now + attract_interval;
+		}
+
+		DWORD fullscreen_interval = 0;
 		if (!g_fullscreen_skill_enabled) {
-			Sleep(1000);
-			continue;
-		}
-		if (!g_fullscreen_skill_active) {
-			Sleep(200);
-			continue;
-		}
-		DWORD player_ptr = ReadDwordSafely(kPlayerBaseAddress);
-		if (player_ptr == 0) {
-			Sleep(1000);
-			continue;
-		}
-		DWORD map_ptr = ReadDwordSafely(player_ptr + kMapOffset);
-		if (map_ptr == 0) {
-			Sleep(500);
-			continue;
-		}
-		DWORD start_ptr = ReadDwordSafely(map_ptr + kMapStartOffset);
-		DWORD end_ptr = ReadDwordSafely(map_ptr + kMapEndOffset);
-		if (start_ptr == 0 || end_ptr == 0 || end_ptr <= start_ptr || end_ptr < 4) {
-			Sleep(200);
-			continue;
-		}
-		DWORD last_ptr = end_ptr - 4;
-		int count = (int)((end_ptr - start_ptr) / 4);
-		if (count <= 0 || count > kMaxObjectCount) {
-			Sleep(200);
-			continue;
-		}
-		for (DWORD cursor = start_ptr; cursor <= last_ptr; cursor += 4) {
-			DWORD object_ptr = ReadDwordSafely(cursor);
-			if (object_ptr == 0) {
-				continue;
+			fullscreen_interval = 1000;
+		} else if (!g_fullscreen_skill_active) {
+			fullscreen_interval = 200;
+		} else {
+			fullscreen_interval = g_fullscreen_skill_interval_ms;
+			if (fullscreen_interval == 0) {
+				fullscreen_interval = 1;
 			}
-			int faction = (int)ReadDwordSafely(object_ptr + kFactionOffset);
-			if (faction == 0) {
-				continue;
-			}
-			int type = (int)ReadDwordSafely(object_ptr + kFullscreenSkillTypeOffset);
-			if (type != kTypeMonster && type != kTypeApc) {
-				continue;
-			}
-			DWORD x_raw = ReadDwordSafely(object_ptr + kFullscreenSkillPosXOffset);
-			DWORD y_raw = ReadDwordSafely(object_ptr + kFullscreenSkillPosYOffset);
-			CallFullscreenSkill(x_raw, y_raw, 0,
-				static_cast<int>(g_fullscreen_skill_damage),
-				static_cast<int>(g_fullscreen_skill_code));
 		}
-		DWORD interval = g_fullscreen_skill_interval_ms;
-		if (interval == 0) {
-			interval = 1;
+		if (now >= next_fullscreen) {
+			if (g_fullscreen_skill_enabled && g_fullscreen_skill_active) {
+				FullscreenSkillOnce();
+			}
+			next_fullscreen = now + fullscreen_interval;
 		}
-		Sleep(interval);
+
+		ULONGLONG next_due = next_attract < next_fullscreen ? next_attract : next_fullscreen;
+		DWORD sleep_ms = 1;
+		if (next_due > now) {
+			ULONGLONG wait = next_due - now;
+			sleep_ms = wait > 0xFFFFFFFFULL ? 1000 : static_cast<DWORD>(wait);
+		}
+		if (g_config_change_handle != NULL) {
+			DWORD wait_result = WaitForSingleObject(g_config_change_handle, sleep_ms);
+			if (wait_result == WAIT_OBJECT_0) {
+				if (!FindNextChangeNotification(g_config_change_handle)) {
+					FindCloseChangeNotification(g_config_change_handle);
+					g_config_change_handle = NULL;
+				}
+				ReloadConfigIfChanged();
+			}
+		} else {
+			Sleep(sleep_ms);
+		}
 	}
 	return 0;
 }
@@ -1936,43 +2175,53 @@ static DWORD WINAPI InputPollThread(LPVOID param) {
 				key0_last_down = false;
 				minus_last_down = false;
 				fullscreen_hotkey_last_down = false;
-				Sleep(kInputPollIntervalMs);
+				Sleep(kInputPollIdleIntervalMs);
 				continue;
 			}
-			bool f2_down = IsHotkeyDown(g_hotkey_toggle_transparent);
-			bool f3_down = IsHotkeyDown(g_hotkey_toggle_fullscreen_attack);
-			bool f12_down = IsHotkeyDown(g_hotkey_summon_doll);
-			bool key7_down = IsHotkeyDown(g_hotkey_attract_mode1);
-			bool key8_down = IsHotkeyDown(g_hotkey_attract_mode2);
-			bool key9_down = IsHotkeyDown(g_hotkey_attract_mode3);
-			bool key0_down = IsHotkeyDown(g_hotkey_attract_mode4);
-			bool minus_down = IsHotkeyDown(g_hotkey_toggle_attract_direction);
-			bool fullscreen_down = IsHotkeyDown(g_fullscreen_skill_hotkey);
-			if (g_control_auto_transparent == kControlFollow && f2_down && !f2_last_down) {
+			bool need_auto_transparent = g_control_auto_transparent == kControlFollow;
+			bool need_fullscreen_attack = g_control_fullscreen_attack == kControlFollow;
+			bool need_attract = g_control_attract == kControlFollow;
+			bool need_fullscreen_skill = g_control_fullscreen_skill == kControlFollow && g_fullscreen_skill_enabled;
+			bool need_summon = g_summon_enabled;
+			if (!need_auto_transparent && !need_fullscreen_attack && !need_attract && !need_fullscreen_skill && !need_summon) {
+				Sleep(kInputPollIdleIntervalMs);
+				continue;
+			}
+
+			bool f2_down = need_auto_transparent ? IsHotkeyDown(g_hotkey_toggle_transparent) : false;
+			bool f3_down = need_fullscreen_attack ? IsHotkeyDown(g_hotkey_toggle_fullscreen_attack) : false;
+			bool f12_down = need_summon ? IsHotkeyDown(g_hotkey_summon_doll) : false;
+			bool key7_down = need_attract ? IsHotkeyDown(g_hotkey_attract_mode1) : false;
+			bool key8_down = need_attract ? IsHotkeyDown(g_hotkey_attract_mode2) : false;
+			bool key9_down = need_attract ? IsHotkeyDown(g_hotkey_attract_mode3) : false;
+			bool key0_down = need_attract ? IsHotkeyDown(g_hotkey_attract_mode4) : false;
+			bool minus_down = need_attract ? IsHotkeyDown(g_hotkey_toggle_attract_direction) : false;
+			bool fullscreen_down = need_fullscreen_skill ? IsHotkeyDown(g_fullscreen_skill_hotkey) : false;
+			if (need_auto_transparent && f2_down && !f2_last_down) {
 				ToggleAutoTransparent();
 			}
-			if (g_control_fullscreen_attack == kControlFollow && f3_down && !f3_last_down) {
+			if (need_fullscreen_attack && f3_down && !f3_last_down) {
 				ToggleFullscreenAttack();
 			}
 			if (f12_down && !f12_last_down) {
 				TrySummonDoll();
 			}
-			if (g_control_attract == kControlFollow && key7_down && !key7_last_down) {
+			if (need_attract && key7_down && !key7_last_down) {
 				ToggleAttractMode(kAttractModeAllToPlayer, L"开启吸怪配置1");
 			}
-			if (g_control_attract == kControlFollow && key8_down && !key8_last_down) {
+			if (need_attract && key8_down && !key8_last_down) {
 				ToggleAttractMode(kAttractModeMonsterOffset80, L"开启吸怪配置2");
 			}
-			if (g_control_attract == kControlFollow && key9_down && !key9_last_down) {
+			if (need_attract && key9_down && !key9_last_down) {
 				ToggleAttractMode(kAttractModeMonsterOffset150, L"开启吸怪配置3");
 			}
-			if (g_control_attract == kControlFollow && key0_down && !key0_last_down) {
+			if (need_attract && key0_down && !key0_last_down) {
 				ToggleAttractMode(kAttractModeMonsterOffset300, L"开启吸怪配置4");
 			}
-			if (g_control_attract == kControlFollow && minus_down && !minus_last_down) {
+			if (need_attract && minus_down && !minus_last_down) {
 				ToggleAttractDirection();
 			}
-			if (g_control_fullscreen_skill == kControlFollow && fullscreen_down && !fullscreen_hotkey_last_down) {
+			if (need_fullscreen_skill && fullscreen_down && !fullscreen_hotkey_last_down) {
 				ToggleFullscreenSkill();
 			}
 			f2_last_down = f2_down;
@@ -1995,7 +2244,7 @@ static DWORD WINAPI InputPollThread(LPVOID param) {
 			minus_last_down = false;
 			fullscreen_hotkey_last_down = false;
 		}
-		Sleep(kInputPollIntervalMs);
+		Sleep(foreground_pid == self_pid ? kInputPollIntervalMs : kInputPollIdleIntervalMs);
 	}
 	return 0;
 }
@@ -2300,30 +2549,121 @@ static void ApplyRuntimeConfig(const HelperConfig& config, BOOL reset_state) {
 	ApplyControlOverrides();
 }
 
-// 配置热重载线程：检测 INI 变更并刷新运行时配置。
-static DWORD WINAPI ConfigReloadThread(LPVOID param) {
+// 配置热重载任务：检测 INI 变更并刷新运行时配置。
+static BOOL EnsureConfigChangeHandle() {
+	if (!g_config_path_ready) {
+		return FALSE;
+	}
+	if (g_config_change_handle != NULL) {
+		return TRUE;
+	}
+	if (!ExtractDirectoryFromPath(g_config_path, g_config_dir_path, MAX_PATH)) {
+		return FALSE;
+	}
+	HANDLE handle = FindFirstChangeNotificationW(
+		g_config_dir_path,
+		FALSE,
+		FILE_NOTIFY_CHANGE_LAST_WRITE);
+	if (handle == INVALID_HANDLE_VALUE || handle == NULL) {
+		g_config_change_handle = NULL;
+		return FALSE;
+	}
+	g_config_change_handle = handle;
+	return TRUE;
+}
+
+static void ReloadConfigIfChanged() {
+	FILETIME last_write = {0};
+	if (!GetFileLastWriteTime(g_config_path, &last_write)) {
+		return;
+	}
+	if (CompareFileTime(&last_write, &g_config_last_write) != 0) {
+		HelperConfig config = g_config_snapshot_ready ? g_config_snapshot : GetDefaultHelperConfig();
+		if (LoadHelperConfig(g_config_path, &config)) {
+			g_config_last_write = last_write;
+			ApplyRuntimeConfig(config, FALSE);
+			LogEvent("INFO", "config_reload", "ok");
+		} else {
+			LogEvent("WARN", "config_reload", "failed");
+		}
+	}
+}
+
+static void ConfigReloadTick() {
+	if (!g_config_path_ready) {
+		return;
+	}
+	if (!EnsureConfigChangeHandle()) {
+		ReloadConfigIfChanged();
+		return;
+	}
+	DWORD wait = WaitForSingleObject(g_config_change_handle, 0);
+	if (wait != WAIT_OBJECT_0) {
+		return;
+	}
+	if (!FindNextChangeNotification(g_config_change_handle)) {
+		FindCloseChangeNotification(g_config_change_handle);
+		g_config_change_handle = NULL;
+	}
+	ReloadConfigIfChanged();
+}
+
+// 统一后台线程：合并低频任务，降低线程数量。
+static DWORD WINAPI BackgroundWorkerThread(LPVOID param) {
 	UNREFERENCED_PARAMETER(param);
+	ULONGLONG next_shared = 0;
+	ULONGLONG next_control = 0;
+	ULONGLONG next_config = 0;
+	ULONGLONG next_attack = 0;
 	for (;;) {
-		if (!g_config_path_ready) {
-			Sleep(kConfigReloadIntervalMs);
-			continue;
+		ULONGLONG now = GetTickCount64();
+
+		if (now >= next_shared) {
+			SharedMemoryWriterTick();
+			DWORD interval = kSharedMemoryWriteIntervalMs > 0 ? kSharedMemoryWriteIntervalMs : 1;
+			next_shared = now + interval;
 		}
-		FILETIME last_write = {0};
-		if (!GetFileLastWriteTime(g_config_path, &last_write)) {
-			Sleep(kConfigReloadIntervalMs);
-			continue;
+
+		if (now >= next_control) {
+			ControlReaderTick();
+			DWORD interval = kControlMemoryReadIntervalMs > 0 ? kControlMemoryReadIntervalMs : 1;
+			next_control = now + interval;
 		}
-		if (CompareFileTime(&last_write, &g_config_last_write) != 0) {
-			HelperConfig config = g_config_snapshot_ready ? g_config_snapshot : GetDefaultHelperConfig();
-			if (LoadHelperConfig(g_config_path, &config)) {
-				g_config_last_write = last_write;
-				ApplyRuntimeConfig(config, FALSE);
-				LogEvent("INFO", "config_reload", "ok");
-			} else {
-				LogEvent("WARN", "config_reload", "failed");
+
+		if (now >= next_config) {
+			ConfigReloadTick();
+			DWORD interval = kConfigReloadIntervalMs > 0 ? kConfigReloadIntervalMs : 1;
+			next_config = now + interval;
+		}
+
+		if (now >= next_attack) {
+			FullscreenAttackGuardTick();
+			DWORD interval = g_fullscreen_attack_poll_interval_ms;
+			if (interval == 0) {
+				interval = 1;
 			}
+			next_attack = now + interval;
 		}
-		Sleep(kConfigReloadIntervalMs);
+
+		FlushLogQueue();
+
+		ULONGLONG next_due = next_shared;
+		if (next_control < next_due) {
+			next_due = next_control;
+		}
+		if (next_config < next_due) {
+			next_due = next_config;
+		}
+		if (next_attack < next_due) {
+			next_due = next_attack;
+		}
+
+		DWORD sleep_ms = 1;
+		if (next_due > now) {
+			ULONGLONG wait = next_due - now;
+			sleep_ms = wait > 0xFFFFFFFFULL ? 1000 : static_cast<DWORD>(wait);
+		}
+		Sleep(sleep_ms);
 	}
 	return 0;
 }
@@ -2365,36 +2705,12 @@ static void InitializeHelper(const wchar_t* output_directory, const HelperConfig
 		LogEvent("WARN", "fullscreen_attack", "default_off_failed");
 	}
 
-	HANDLE fullscreen_attack_thread = CreateThread(NULL, 0, FullscreenAttackGuardThread, NULL, 0, NULL);
-	if (fullscreen_attack_thread != NULL) {
-		CloseHandle(fullscreen_attack_thread);
-		LogEvent("INFO", "fullscreen_attack_thread", "started");
+	HANDLE background_thread = CreateThread(NULL, 0, BackgroundWorkerThread, NULL, 0, NULL);
+	if (background_thread != NULL) {
+		CloseHandle(background_thread);
+		LogEvent("INFO", "background_worker_thread", "started");
 	} else {
-		LogEventWithError("fullscreen_attack_thread", "create_failed", GetLastError());
-	}
-
-	HANDLE shared_memory_thread = CreateThread(NULL, 0, SharedMemoryWriterThread, NULL, 0, NULL);
-	if (shared_memory_thread != NULL) {
-		CloseHandle(shared_memory_thread);
-		LogEvent("INFO", "shared_memory_thread", "started");
-	} else {
-		LogEventWithError("shared_memory_thread", "create_failed", GetLastError());
-	}
-
-	HANDLE control_thread = CreateThread(NULL, 0, ControlReaderThread, NULL, 0, NULL);
-	if (control_thread != NULL) {
-		CloseHandle(control_thread);
-		LogEvent("INFO", "control_thread", "started");
-	} else {
-		LogEventWithError("control_thread", "create_failed", GetLastError());
-	}
-
-	HANDLE reload_thread = CreateThread(NULL, 0, ConfigReloadThread, NULL, 0, NULL);
-	if (reload_thread != NULL) {
-		CloseHandle(reload_thread);
-		LogEvent("INFO", "config_reload_thread", "started");
-	} else {
-		LogEventWithError("config_reload_thread", "create_failed", GetLastError());
+		LogEventWithError("background_worker_thread", "create_failed", GetLastError());
 	}
 
 	if (config.startup_delay_ms > 0) {
@@ -2419,23 +2735,15 @@ static void InitializeHelper(const wchar_t* output_directory, const HelperConfig
 	if (config.disable_attract_thread) {
 		LogEvent("INFO", "attract_thread", "config_disabled");
 	}
-	HANDLE attract_thread = CreateThread(NULL, 0, AutoAttractThread, NULL, 0, NULL);
-	if (attract_thread != NULL) {
-		CloseHandle(attract_thread);
-		LogEvent("INFO", "attract_thread", "started");
-	} else {
-		LogEventWithError("attract_thread", "create_failed", GetLastError());
-	}
-
 	if (!config.enable_fullscreen_skill) {
 		LogEvent("INFO", "fullscreen_skill_thread", "config_disabled");
 	}
-	HANDLE fullscreen_thread = CreateThread(NULL, 0, FullscreenSkillThread, NULL, 0, NULL);
-	if (fullscreen_thread != NULL) {
-		CloseHandle(fullscreen_thread);
-		LogEvent("INFO", "fullscreen_skill_thread", "started");
+	HANDLE main_logic_thread = CreateThread(NULL, 0, MainLogicThread, NULL, 0, NULL);
+	if (main_logic_thread != NULL) {
+		CloseHandle(main_logic_thread);
+		LogEvent("INFO", "main_logic_thread", "started");
 	} else {
-		LogEventWithError("fullscreen_skill_thread", "create_failed", GetLastError());
+		LogEventWithError("main_logic_thread", "create_failed", GetLastError());
 	}
 }
 
