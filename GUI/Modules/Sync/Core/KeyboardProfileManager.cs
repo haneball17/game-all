@@ -134,6 +134,20 @@ internal sealed class KeyboardProfileManager
         var keys = ParseKeys(activeDefinition.Keys, warnings);
         var mappings = ParseMappings(activeDefinition.Mappings, warnings);
         var mappingBehavior = ParseMappingBehavior(activeDefinition.MappingBehavior, warnings);
+        var repeatKeys = ParseKeys(activeDefinition.RepeatKeys, warnings);
+        var repeatIntervalMs = ParseRepeatInterval(activeDefinition.RepeatIntervalMs, warnings);
+        var hasRepeatConfig = activeDefinition.RepeatKeys != null || activeDefinition.RepeatIntervalMs.HasValue;
+        if (!hasRepeatConfig && repeatKeys.Count == 0 && repeatIntervalMs <= 0)
+        {
+            repeatKeys.Add((int)Keys.X);
+            repeatIntervalMs = 80;
+            warnings.Add("未配置连发键，默认启用 X 连发(80ms)");
+        }
+        else if (repeatKeys.Count == 0 || repeatIntervalMs <= 0)
+        {
+            repeatKeys.Clear();
+            repeatIntervalMs = 0;
+        }
 
         if (mode == KeyboardProfileMode.Mapping && mappings.Count == 0)
         {
@@ -146,7 +160,7 @@ internal sealed class KeyboardProfileManager
             mappingBehavior = KeyboardMappingBehavior.None;
         }
 
-        return new KeyboardProfile(activeDefinition.Id, mode, keys, mappings, mappingBehavior);
+        return new KeyboardProfile(activeDefinition.Id, mode, keys, mappings, mappingBehavior, repeatKeys, repeatIntervalMs);
     }
 
     private static KeyboardProfileMode ParseMode(string? text)
@@ -264,6 +278,36 @@ internal sealed class KeyboardProfileManager
                 new KeyboardProfile.KeyMapping((int)Keys.G, (int)Keys.Oem7),
                 new KeyboardProfile.KeyMapping((int)Keys.C, (int)Keys.Oem6)
             },
-            KeyboardMappingBehavior.Replace);
+            KeyboardMappingBehavior.Replace,
+            new[] { (int)Keys.X },
+            80);
+    }
+
+    private static int ParseRepeatInterval(int? intervalMs, List<string> warnings)
+    {
+        if (!intervalMs.HasValue)
+        {
+            return 0;
+        }
+
+        var value = intervalMs.Value;
+        if (value <= 0)
+        {
+            return 0;
+        }
+
+        if (value < 30)
+        {
+            warnings.Add($"连发间隔过小:{value}ms，已调整为 30ms");
+            return 30;
+        }
+
+        if (value > 1000)
+        {
+            warnings.Add($"连发间隔过大:{value}ms，已调整为 1000ms");
+            return 1000;
+        }
+
+        return value;
     }
 }

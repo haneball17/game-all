@@ -30,7 +30,9 @@ internal sealed class KeyboardProfileConfig
                         { "G", "Oem7" },
                         { "C", "Oem6" }
                     },
-                    MappingBehavior = "Replace"
+                    MappingBehavior = "Replace",
+                    RepeatKeys = new List<string> { "X" },
+                    RepeatIntervalMs = 80
                 }
             }
         };
@@ -47,4 +49,6 @@ internal sealed class KeyboardProfileDefinition
     public List<string>? Keys { get; set; }
     public Dictionary<string, string>? Mappings { get; set; }
     public string? MappingBehavior { get; set; }
+    public List<string>? RepeatKeys { get; set; }
+    public int? RepeatIntervalMs { get; set; }
 }

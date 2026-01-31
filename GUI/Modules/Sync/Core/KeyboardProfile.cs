@@ -31,13 +31,17 @@ internal sealed class KeyboardProfile
     private readonly HashSet<int> _keys;
     private readonly List<KeyMapping> _mappings;
     private readonly KeyboardMappingBehavior _mappingBehavior;
+    private readonly bool[] _repeatMask;
+    private readonly int _repeatIntervalMs;
 
     public KeyboardProfile(
         string id,
         KeyboardProfileMode mode,
         IEnumerable<int> keys,
         IEnumerable<KeyMapping> mappings,
-        KeyboardMappingBehavior mappingBehavior)
+        KeyboardMappingBehavior mappingBehavior,
+        IEnumerable<int> repeatKeys,
+        int repeatIntervalMs)
     {
         Id = string.IsNullOrWhiteSpace(id) ? "default" : id.Trim();
         Mode = mode;
@@ -45,12 +49,23 @@ internal sealed class KeyboardProfile
         _keys = new HashSet<int>(keys);
         _mappings = new List<KeyMapping>(mappings);
         _mappingBehavior = mappingBehavior;
+        _repeatMask = new bool[SharedMemoryConstants.KeyCount];
+        foreach (var key in repeatKeys)
+        {
+            if (key >= 0 && key < SharedMemoryConstants.KeyCount)
+            {
+                _repeatMask[key] = true;
+            }
+        }
+        _repeatIntervalMs = repeatIntervalMs;
     }
 
     public string Id { get; }
     public KeyboardProfileMode Mode { get; }
     public uint ProfileId { get; }
     public KeyboardMappingBehavior MappingBehavior => _mappingBehavior;
+    public bool[] RepeatMask => _repeatMask;
+    public int RepeatIntervalMs => _repeatIntervalMs;
 
     /// <summary>
     /// 根据方案生成目标键掩码（1 表示覆盖该键）。

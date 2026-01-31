@@ -13,6 +13,8 @@ public sealed class SyncController : IDisposable
     private static readonly object LogFileLock = new();
     private static readonly string LogDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
     private static readonly string LogFilePath = Path.Combine(LogDirectory, "latest.log");
+    private const int ForegroundProbeIntervalMs = 200;
+    private const int ForegroundGraceMs = 800;
 
     // 统一保护核心状态（窗口快照、暂停状态、按键状态）。
     private readonly object _stateLock = new();
@@ -23,6 +25,7 @@ public sealed class SyncController : IDisposable
     private readonly KeyboardProfileManager _profileManager = new();
     private readonly DispatcherTimer _scanTimer;
     private readonly System.Threading.Timer _heartbeatTimer;
+    private readonly System.Threading.Timer _foregroundTimer;
 
     private readonly byte[] _keyboardState = new byte[SharedMemoryConstants.KeyCount];
     private readonly uint[] _edgeCounter = new uint[SharedMemoryConstants.KeyCount];
@@ -34,6 +37,10 @@ public sealed class SyncController : IDisposable
     private KeyboardProfile _activeProfile;
     private bool _userPaused;
     private bool _autoPaused = true;
+    private uint _effectiveForegroundPid;
+    private bool _effectiveForegroundIsDnf;
+    private int _lastForegroundPid;
+    private long _lastForegroundTickMs;
     private bool _altDown;
     private bool _ctrlDown;
     private bool _shiftDown;
@@ -62,6 +69,7 @@ public sealed class SyncController : IDisposable
         };
         _scanTimer.Tick += (_, _) => RefreshWindows();
         _heartbeatTimer = new System.Threading.Timer(HeartbeatTick, null, Timeout.Infinite, Timeout.Infinite);
+        _foregroundTimer = new System.Threading.Timer(ForegroundProbeTick, null, Timeout.Infinite, Timeout.Infinite);
     }
 
     /// <summary>
@@ -82,6 +90,7 @@ public sealed class SyncController : IDisposable
         RefreshWindows();
         _scanTimer.Start();
         _heartbeatTimer.Change(0, SharedMemoryConstants.HeartbeatIntervalMs);
+        _foregroundTimer.Change(0, ForegroundProbeIntervalMs);
     }
 
     /// <summary>
@@ -92,14 +101,28 @@ public sealed class SyncController : IDisposable
         ReloadProfileIfNeeded(force: false);
 
         var snapshot = _windowManager.Refresh();
+        var now = Environment.TickCount64;
+        if (snapshot.ForegroundIsDnf && snapshot.ForegroundProcessId != 0)
+        {
+            Interlocked.Exchange(ref _lastForegroundPid, unchecked((int)snapshot.ForegroundProcessId));
+            Interlocked.Exchange(ref _lastForegroundTickMs, now);
+        }
+
+        var lastPid = (uint)Interlocked.CompareExchange(ref _lastForegroundPid, 0, 0);
+        var lastTick = Interlocked.Read(ref _lastForegroundTickMs);
+        var graceActive = lastPid != 0 && now - lastTick <= ForegroundGraceMs;
+        var effectiveForegroundIsDnf = snapshot.ForegroundIsDnf || graceActive;
+        var effectivePid = snapshot.ForegroundIsDnf ? snapshot.ForegroundProcessId : (graceActive ? lastPid : 0u);
         var autoPausedChanged = false;
         bool autoPaused;
 
         lock (_stateLock)
         {
             _snapshot = snapshot;
+            _effectiveForegroundPid = effectivePid;
+            _effectiveForegroundIsDnf = effectiveForegroundIsDnf;
             // 前台不是 DNF 时进入自动暂停，防止误同步。
-            var newAutoPaused = !snapshot.ForegroundIsDnf;
+            var newAutoPaused = !effectiveForegroundIsDnf;
             if (newAutoPaused != _autoPaused)
             {
                 _autoPaused = newAutoPaused;
@@ -290,19 +313,21 @@ public sealed class SyncController : IDisposable
         WindowSnapshot snapshot;
         bool paused;
         bool autoPaused;
+        bool effectiveForeground;
 
         lock (_stateLock)
         {
             snapshot = _snapshot;
             paused = IsPausedLocked();
             autoPaused = _autoPaused;
+            effectiveForeground = _effectiveForegroundIsDnf;
         }
 
         StatusChanged?.Invoke(new SyncStatus
         {
             IsPaused = paused,
             IsAutoPaused = autoPaused,
-            ForegroundIsDnf = snapshot.ForegroundIsDnf,
+            ForegroundIsDnf = effectiveForeground,
             MasterHandle = snapshot.MasterHandle,
             SlaveCount = snapshot.SlaveHandles.Count,
             TotalCount = snapshot.TotalCount
@@ -322,12 +347,14 @@ public sealed class SyncController : IDisposable
         WindowSnapshot snapshot;
         KeyboardProfile profile;
         bool paused;
+        uint activePid;
 
         lock (_stateLock)
         {
             snapshot = _snapshot;
             profile = _activeProfile;
             paused = IsPausedLocked();
+            activePid = _effectiveForegroundIsDnf ? _effectiveForegroundPid : 0u;
 
             UpdateToggleState();
 
@@ -340,7 +367,7 @@ public sealed class SyncController : IDisposable
             }
             else
             {
-                _keyState.ApplyProfile(profile, _toggleState, _keyboardState, _edgeCounter, _targetMask);
+                _keyState.ApplyProfile(profile, _toggleState, _keyboardState, _edgeCounter, _targetMask, Environment.TickCount64);
                 profile.BuildBlockMask(_blockMask);
             }
         }
@@ -351,7 +378,6 @@ public sealed class SyncController : IDisposable
             flags |= SharedMemoryConstants.FlagClear;
         }
 
-        var activePid = snapshot.ForegroundIsDnf ? snapshot.ForegroundProcessId : 0u;
         var tick = (ulong)Environment.TickCount64;
 
         // Replace 映射依赖 RawInput 事件路径；上报 Mapping 模式可触发注入端生成映射事件。
@@ -400,6 +426,22 @@ public sealed class SyncController : IDisposable
         catch (Exception ex)
         {
             Log($"共享内存心跳异常：{ex.Message}");
+        }
+    }
+
+    private void ForegroundProbeTick(object? state)
+    {
+        try
+        {
+            if (_windowManager.TryGetForegroundInfo(out var pid, out var isDnf) && isDnf)
+            {
+                Interlocked.Exchange(ref _lastForegroundPid, unchecked((int)pid));
+                Interlocked.Exchange(ref _lastForegroundTickMs, Environment.TickCount64);
+            }
+        }
+        catch (Exception ex)
+        {
+            LogVerbose($"前台快速检测异常：{ex.Message}");
         }
     }
 
@@ -530,6 +572,8 @@ public sealed class SyncController : IDisposable
         _keyboardHook.Dispose();
         _heartbeatTimer.Change(Timeout.Infinite, Timeout.Infinite);
         _heartbeatTimer.Dispose();
+        _foregroundTimer.Change(Timeout.Infinite, Timeout.Infinite);
+        _foregroundTimer.Dispose();
         _sharedMemory.Dispose();
         _hotkeyManager?.Dispose();
     }

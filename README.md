@@ -116,8 +116,13 @@ artifacts/run/config/
 注入器配置，关键参数：
 - `process_name`：目标进程名
 - `dll_path`：DLL 路径（默认 `game-payload.dll`，相对注入器输出目录）
+- `window_wait_timeout_ms`：等待窗口出现的超时
+- `window_poll_interval_ms`：窗口检测轮询间隔
+- `post_window_delay_ms`：窗口出现后固定等待时间
+- `inject_delay_ms`：额外延迟（可选）
 - `watch_mode`：常驻监听
 - `idle_exit_seconds`：无新进程退出阈值
+- `max_concurrent_tasks`：并发注入任务上限
 
 ### 2) `mastergui.json`
 MasterGUI 配置：
@@ -140,6 +145,24 @@ Helper GUI 参数面板的元数据。
 ### 5) `sync_hotkey.ini`
 Sync 热键配置（支持热更新）。  
 默认热键为 **Alt + .**，可修改为如 `Ctrl+F10`。
+
+### 6) `profiles.json`
+Sync 按键方案配置（热更新）。默认路径：
+```
+%AppData%\DNFSyncBox\profiles.json
+```
+模板文件：`config-templates/profiles.json`
+
+关键字段：
+- `RepeatKeys`：需要连发的键（如 `["X"]`）
+- `RepeatIntervalMs`：连发间隔（毫秒）
+
+### 7) `payload.ini`
+Payload 模块总开关（运行目录 `config` 下）：
+- `EnableHelper`：是否启用 Helper 模块
+- `EnableSync`：是否启用 Sync 模块
+
+> 关闭模块后仍会写入 successfile，用于保持注入判定一致。
 
 ---
 
@@ -184,6 +207,18 @@ Shared/Protocols/协议说明.md
 - `payload_debug.log`（Debug）
 - `game_helper.jsonl`
 - `dnfinput_<pid>.log`
+
+---
+
+## 运行参数（环境变量）
+
+Payload 相关环境变量：
+- `DNFSYNC_SPOOF_DELAY_MS`：注入后伪造延迟（毫秒）
+- `DNFSYNC_HEARTBEAT_TIMEOUT_MS`：共享心跳超时（毫秒）
+- `DNFSYNC_SNAPSHOT_CACHE_MS`：共享快照缓存时间（毫秒）
+- `DNFSYNC_RAWINPUT_LOG`：RawInput 日志开关（1/true/yes/on）
+- `DNFSYNC_RAWINPUT_LOG_INTERVAL_MS`：RawInput 日志采样间隔（毫秒）
+- `DNFSYNC_FORCE_DI_OK`：DirectInput 返回 DIERR_NOTACQUIRED 时强制 DI_OK
 
 ---
 

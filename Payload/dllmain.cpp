@@ -14,8 +14,11 @@ namespace Sync   { void Start(); void Stop(); }
 // 原子锁：APC 注入可能会触发多次 LoadLibrary，必须防止重复初始化
 std::atomic<bool> g_IsInitialized(false);
 static HMODULE g_selfModule = nullptr;
+static bool g_enableHelper = true;
+static bool g_enableSync = true;
+static std::wstring g_payloadSuccessFilePath;
+static bool g_payloadSuccessWritten = false;
 
-#ifdef _DEBUG
 static std::wstring GetModuleDirectory(HMODULE module)
 {
     if (module == nullptr)
@@ -39,6 +42,126 @@ static std::wstring GetModuleDirectory(HMODULE module)
     return path;
 }
 
+static std::wstring JoinPath(const std::wstring& left, const std::wstring& right)
+{
+    if (left.empty())
+    {
+        return right;
+    }
+    if (right.empty())
+    {
+        return left;
+    }
+    std::wstring result = left;
+    wchar_t last = result[result.size() - 1];
+    if (last != L'\\' && last != L'/')
+    {
+        result.push_back(L'\\');
+    }
+    result.append(right);
+    return result;
+}
+
+static bool ReadIniBool(const std::wstring& path, const wchar_t* key, bool defaultValue)
+{
+    wchar_t buffer[16] = {0};
+    DWORD read = GetPrivateProfileStringW(L"payload", key, defaultValue ? L"true" : L"false", buffer,
+        static_cast<DWORD>(sizeof(buffer) / sizeof(buffer[0])), path.c_str());
+    if (read == 0)
+    {
+        return defaultValue;
+    }
+    if (_wcsicmp(buffer, L"1") == 0 || _wcsicmp(buffer, L"true") == 0 ||
+        _wcsicmp(buffer, L"yes") == 0 || _wcsicmp(buffer, L"on") == 0)
+    {
+        return true;
+    }
+    if (_wcsicmp(buffer, L"0") == 0 || _wcsicmp(buffer, L"false") == 0 ||
+        _wcsicmp(buffer, L"no") == 0 || _wcsicmp(buffer, L"off") == 0)
+    {
+        return false;
+    }
+    return defaultValue;
+}
+
+static void LoadPayloadConfig()
+{
+    std::wstring baseDir = GetModuleDirectory(g_selfModule);
+    std::wstring configPath = JoinPath(JoinPath(baseDir, L"config"), L"payload.ini");
+    g_enableHelper = ReadIniBool(configPath, L"EnableHelper", true);
+    g_enableSync = ReadIniBool(configPath, L"EnableSync", true);
+}
+
+static std::wstring BuildPayloadSuccessFilePath()
+{
+    std::wstring baseDir = GetModuleDirectory(g_selfModule);
+    std::wstring logDir = JoinPath(baseDir, L"logs");
+    CreateDirectoryW(logDir.c_str(), nullptr);
+
+    wchar_t modulePath[MAX_PATH] = {0};
+    DWORD length = GetModuleFileNameW(g_selfModule, modulePath, MAX_PATH);
+    std::wstring fileName = L"game-payload";
+    if (length > 0 && length < MAX_PATH)
+    {
+        wchar_t* lastSlash = wcsrchr(modulePath, L'\\');
+        if (!lastSlash)
+        {
+            lastSlash = wcsrchr(modulePath, L'/');
+        }
+        fileName = lastSlash ? (lastSlash + 1) : modulePath;
+        size_t dot = fileName.rfind(L'.');
+        if (dot != std::wstring::npos)
+        {
+            fileName = fileName.substr(0, dot);
+        }
+    }
+
+    std::wstring successName = L"successfile_" + fileName + L"_" + std::to_wstring(GetCurrentProcessId()) + L".txt";
+    return JoinPath(logDir, successName);
+}
+
+static void WritePayloadSuccessFile()
+{
+    if (g_payloadSuccessWritten)
+    {
+        return;
+    }
+
+    g_payloadSuccessFilePath = BuildPayloadSuccessFilePath();
+    HANDLE file = CreateFileW(
+        g_payloadSuccessFilePath.c_str(),
+        FILE_GENERIC_WRITE,
+        FILE_SHARE_READ,
+        nullptr,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+    {
+        return;
+    }
+
+    SYSTEMTIME time;
+    GetLocalTime(&time);
+    wchar_t buffer[64] = {0};
+    swprintf_s(buffer, L"%04u-%02u-%02u %02u:%02u:%02u.%03u\r\n",
+        time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute, time.wSecond, time.wMilliseconds);
+    DWORD written = 0;
+    WriteFile(file, buffer, static_cast<DWORD>(wcslen(buffer) * sizeof(wchar_t)), &written, nullptr);
+    CloseHandle(file);
+    g_payloadSuccessWritten = true;
+}
+
+static void RemovePayloadSuccessFile()
+{
+    if (g_payloadSuccessFilePath.empty())
+    {
+        return;
+    }
+    DeleteFileW(g_payloadSuccessFilePath.c_str());
+}
+
+#ifdef _DEBUG
 static void AppendPayloadDebugLog(const std::wstring& message)
 {
     std::wstring baseDir = GetModuleDirectory(g_selfModule);
@@ -91,16 +214,37 @@ DWORD WINAPI UnifiedWorkerThread(LPVOID lpParam) {
     // Debug 模式记录 payload 启动信息。
     AppendPayloadDebugLog(L"payload 线程启动");
 #endif
+    LoadPayloadConfig();
+    // 即使模块被禁用也需要写入 successfile，保证注入判定一致。
+    WritePayloadSuccessFile();
+#ifdef _DEBUG
+    AppendPayloadDebugLog(std::wstring(L"配置载入：EnableSync=") + (g_enableSync ? L"true" : L"false") +
+        L" EnableHelper=" + (g_enableHelper ? L"true" : L"false"));
+#endif
     // 1. 启动同步模块 (通常 Hook 底层输入建议先启动)
     try {
-        Sync::Start();
+        if (g_enableSync)
+        {
+            Sync::Start();
+        }
+        else
+        {
+            OutputDebugStringW(L"[Unified] Sync 模块已禁用");
+        }
     } catch (...) {
         OutputDebugStringA("[Unified] Sync module failed to start.");
     }
 
     // 2. 启动辅助模块 (Helper)
     try {
-        Helper::Start();
+        if (g_enableHelper)
+        {
+            Helper::Start();
+        }
+        else
+        {
+            OutputDebugStringW(L"[Unified] Helper 模块已禁用");
+        }
     } catch (...) {
         OutputDebugStringA("[Unified] Helper module failed to start.");
     }
@@ -132,13 +276,20 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         // 进程退出时清理 successfile 等轻量资源。
         if (g_IsInitialized.load()) {
             try {
-                Sync::Stop();
+                if (g_enableSync)
+                {
+                    Sync::Stop();
+                }
             } catch (...) {
             }
             try {
-                Helper::Stop();
+                if (g_enableHelper)
+                {
+                    Helper::Stop();
+                }
             } catch (...) {
             }
+            RemovePayloadSuccessFile();
         }
         break;
     }
