@@ -81,6 +81,29 @@ public sealed class WindowManager
         return new WindowSnapshot(master, slaveHandles, foregroundIsDnf, processCount, activePid);
     }
 
+    /// <summary>
+    /// 快速获取前台窗口是否为 DNF 进程。
+    /// </summary>
+    public bool TryGetForegroundInfo(out uint pid, out bool isDnf)
+    {
+        pid = 0;
+        isDnf = false;
+
+        var foreground = NativeMethods.GetForegroundWindow();
+        if (foreground == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        if (!TryGetProcessInfo(foreground, out var processName, out pid))
+        {
+            return false;
+        }
+
+        isDnf = string.Equals(processName, _processName, _comparison);
+        return true;
+    }
+
     private IntPtr ChooseBestHandle(List<WindowInfo> windows, uint pid)
     {
         if (pid == 0)

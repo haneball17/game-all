@@ -62,7 +62,15 @@ static const wchar_t* kSharedMemoryName = L"Local\\DNFSyncBox.KeyboardState.V2";
 static const uint32_t kSharedVersion = 2;
 static const uint32_t kFlagPaused = 0x1;
 static const uint32_t kFlagClear = 0x2;
-static const ULONGLONG kSharedTimeoutMs = 200;
+// 共享内存心跳超时（毫秒），可通过环境变量覆盖。
+static const wchar_t* kSharedTimeoutEnvName = L"DNFSYNC_HEARTBEAT_TIMEOUT_MS";
+static const DWORD kDefaultSharedTimeoutMs = 500;
+// 共享内存快照缓存（毫秒），降低高频 Hook 读取成本。
+static const wchar_t* kSnapshotCacheEnvName = L"DNFSYNC_SNAPSHOT_CACHE_MS";
+static const DWORD kDefaultSnapshotCacheMs = 2;
+// RawInput 日志开关与采样间隔。
+static const wchar_t* kRawInputLogEnvName = L"DNFSYNC_RAWINPUT_LOG";
+static const wchar_t* kRawInputLogIntervalEnvName = L"DNFSYNC_RAWINPUT_LOG_INTERVAL_MS";
 // 与控制端 KeyboardProfileMode 枚举保持一致（Blacklist=2，Mapping=3）。
 static const uint32_t kProfileModeMapping = 3;
 // 伪造延迟（毫秒），用于在注入后短暂关闭输入伪造以降低崩溃风险。
@@ -123,6 +131,11 @@ static int g_vkeyToDik[256] = {};
 static LONG g_vkeyMapReady = 0;
 static LONG g_forceDeviceStateOk = -1;
 static LONG g_forceDeviceStateLogged = 0;
+static LONG g_sharedTimeoutMs = -1;
+static LONG g_snapshotCacheMs = -1;
+static LONG g_rawInputLogEnabled = -1;
+static LONG g_rawInputLogIntervalMs = -1;
+static LONGLONG g_rawInputLogLastTick = 0;
 
 // 窗口缓存只由后台线程更新，Hook 回调仅做只读访问
 static volatile HWND g_selfWindowCache = nullptr;
@@ -141,6 +154,11 @@ static ULONGLONG g_injectTick = 0;
 static LONG g_spoofDelayMs = -1;
 static LONG g_spoofDelayLogged = 0;
 static LONG g_spoofDelayEndLogged = 0;
+
+static DWORD GetSharedTimeoutMs();
+static DWORD GetSnapshotCacheMs();
+static bool IsRawInputLogEnabled();
+static bool ShouldLogRawInput();
 
 static SIZE_T GetViewRegionSize(void* view)
 {
@@ -903,7 +921,7 @@ static bool IsSnapshotAlive(const SharedSnapshot& snapshot)
     }
 
     ULONGLONG now = GetTickCount64();
-    return now - snapshot.lastTick <= kSharedTimeoutMs;
+    return now - snapshot.lastTick <= static_cast<ULONGLONG>(GetSharedTimeoutMs());
 }
 
 static bool IsBypassProcess(const SharedSnapshot& snapshot)
@@ -986,6 +1004,179 @@ static bool ShouldForceDeviceStateOk()
 
     InterlockedExchange(&g_forceDeviceStateOk, enabled ? 1 : 0);
     return enabled;
+}
+
+/// <summary>
+/// 读取共享内存心跳超时配置（单位毫秒）。
+/// </summary>
+static DWORD GetSharedTimeoutMs()
+{
+    LONG cached = InterlockedCompareExchange(&g_sharedTimeoutMs, -1, -1);
+    if (cached != -1)
+    {
+        return static_cast<DWORD>(cached);
+    }
+
+    DWORD timeout = kDefaultSharedTimeoutMs;
+    wchar_t value[16] = {0};
+    DWORD len = GetEnvironmentVariableW(kSharedTimeoutEnvName, value, ARRAYSIZE(value));
+    if (len > 0)
+    {
+        wchar_t* end = nullptr;
+        unsigned long parsed = wcstoul(value, &end, 10);
+        if (end != value)
+        {
+            if (parsed < 50)
+            {
+                parsed = 50;
+            }
+            if (parsed > 60000)
+            {
+                parsed = 60000;
+            }
+            timeout = static_cast<DWORD>(parsed);
+        }
+    }
+
+    InterlockedExchange(&g_sharedTimeoutMs, static_cast<LONG>(timeout));
+    return timeout;
+}
+
+/// <summary>
+/// 读取共享内存快照缓存时间（单位毫秒），用于降低高频读取成本。
+/// </summary>
+static DWORD GetSnapshotCacheMs()
+{
+    LONG cached = InterlockedCompareExchange(&g_snapshotCacheMs, -1, -1);
+    if (cached != -1)
+    {
+        return static_cast<DWORD>(cached);
+    }
+
+    DWORD cacheMs = kDefaultSnapshotCacheMs;
+    wchar_t value[16] = {0};
+    DWORD len = GetEnvironmentVariableW(kSnapshotCacheEnvName, value, ARRAYSIZE(value));
+    if (len > 0)
+    {
+        wchar_t* end = nullptr;
+        unsigned long parsed = wcstoul(value, &end, 10);
+        if (end != value)
+        {
+            if (parsed > 50)
+            {
+                parsed = 50;
+            }
+            cacheMs = static_cast<DWORD>(parsed);
+        }
+    }
+
+    InterlockedExchange(&g_snapshotCacheMs, static_cast<LONG>(cacheMs));
+    return cacheMs;
+}
+
+static bool IsRawInputLogEnabled()
+{
+    LONG cached = InterlockedCompareExchange(&g_rawInputLogEnabled, -1, -1);
+    if (cached != -1)
+    {
+        return cached != 0;
+    }
+
+    wchar_t value[8] = {0};
+    DWORD len = GetEnvironmentVariableW(kRawInputLogEnvName, value, ARRAYSIZE(value));
+    bool enabled = false;
+    if (len > 0)
+    {
+        wchar_t ch = value[0];
+        enabled = (ch == L'1' || ch == L'y' || ch == L'Y' || ch == L't' || ch == L'T');
+    }
+
+    InterlockedExchange(&g_rawInputLogEnabled, enabled ? 1 : 0);
+    return enabled;
+}
+
+static DWORD GetRawInputLogIntervalMs()
+{
+    LONG cached = InterlockedCompareExchange(&g_rawInputLogIntervalMs, -1, -1);
+    if (cached != -1)
+    {
+        return static_cast<DWORD>(cached);
+    }
+
+    DWORD interval = 200;
+    wchar_t value[16] = {0};
+    DWORD len = GetEnvironmentVariableW(kRawInputLogIntervalEnvName, value, ARRAYSIZE(value));
+    if (len > 0)
+    {
+        wchar_t* end = nullptr;
+        unsigned long parsed = wcstoul(value, &end, 10);
+        if (end != value)
+        {
+            if (parsed > 5000)
+            {
+                parsed = 5000;
+            }
+            interval = static_cast<DWORD>(parsed);
+        }
+    }
+
+    InterlockedExchange(&g_rawInputLogIntervalMs, static_cast<LONG>(interval));
+    return interval;
+}
+
+static bool ShouldLogRawInput()
+{
+    if (!IsRawInputLogEnabled())
+    {
+        return false;
+    }
+
+    DWORD interval = GetRawInputLogIntervalMs();
+    if (interval == 0)
+    {
+        return true;
+    }
+
+    ULONGLONG now = GetTickCount64();
+    LONGLONG last = InterlockedCompareExchange64(&g_rawInputLogLastTick, 0, 0);
+    if (now - static_cast<ULONGLONG>(last) >= interval)
+    {
+        InterlockedExchange64(&g_rawInputLogLastTick, static_cast<LONGLONG>(now));
+        return true;
+    }
+
+    return false;
+}
+
+static bool ReadSharedSnapshotCached(SharedSnapshot& snapshot)
+{
+    DWORD cacheMs = GetSnapshotCacheMs();
+    if (cacheMs == 0)
+    {
+        return ReadSharedSnapshot(snapshot);
+    }
+
+    thread_local SharedSnapshot cached = {};
+    thread_local ULONGLONG cachedTick = 0;
+    thread_local bool cachedValid = false;
+
+    ULONGLONG now = GetTickCount64();
+    if (cachedValid && now - cachedTick <= cacheMs)
+    {
+        snapshot = cached;
+        return true;
+    }
+
+    if (!ReadSharedSnapshot(cached))
+    {
+        cachedValid = false;
+        return false;
+    }
+
+    cachedTick = now;
+    cachedValid = true;
+    snapshot = cached;
+    return true;
 }
 
 /// <summary>
@@ -1167,7 +1358,7 @@ static bool ShouldSpoofFocus()
 
     // 仅在后台且共享内存存活/未暂停时伪造焦点，避免影响前台与暂停态。
     SharedSnapshot snapshot = {};
-    if (!ReadSharedSnapshot(snapshot))
+    if (!ReadSharedSnapshotCached(snapshot))
     {
         return false;
     }
@@ -1271,7 +1462,7 @@ static SHORT WINAPI Hook_GetAsyncKeyState(int vKey)
     }
 
     SharedSnapshot snapshot = {};
-    if (!ReadSharedSnapshot(snapshot))
+    if (!ReadSharedSnapshotCached(snapshot))
     {
         return original;
     }
@@ -1339,7 +1530,7 @@ static BOOL WINAPI Hook_GetKeyboardState(PBYTE lpKeyState)
     }
 
     SharedSnapshot snapshot = {};
-    if (!ReadSharedSnapshot(snapshot))
+    if (!ReadSharedSnapshotCached(snapshot))
     {
         return ok;
     }
@@ -1416,7 +1607,7 @@ static UINT WINAPI Hook_GetRawInputBuffer(PRAWINPUT data, PUINT size, UINT heade
     InterlockedExchange(&g_seenRawInputBuffer, 1);
 
     SharedSnapshot snapshot = {};
-    const bool hasSnapshot = ReadSharedSnapshot(snapshot);
+    const bool hasSnapshot = ReadSharedSnapshotCached(snapshot);
     if (hasSnapshot)
     {
         ApplyClearIfNeeded(snapshot);
@@ -1468,20 +1659,23 @@ static UINT WINAPI Hook_GetRawInputBuffer(PRAWINPUT data, PUINT size, UINT heade
                 }
             }
 
-            const RAWKEYBOARD& kb = raw->data.keyboard;
-            wchar_t buffer[256] = {0};
-            StringCchPrintfW(
-                buffer,
-                ARRAYSIZE(buffer),
-                L"[RAWB] %s RawInputBuffer 键盘: VKey=%u(0x%02X) MakeCode=%u(0x%02X) Flags=0x%X Spoof=%d",
-                GetTimestamp().c_str(),
-                kb.VKey,
-                kb.VKey,
-                kb.MakeCode,
-                kb.MakeCode,
-                kb.Flags,
-                spoofed ? 1 : 0);
-            WriteLogLine(buffer);
+            if (ShouldLogRawInput())
+            {
+                const RAWKEYBOARD& kb = raw->data.keyboard;
+                wchar_t buffer[256] = {0};
+                StringCchPrintfW(
+                    buffer,
+                    ARRAYSIZE(buffer),
+                    L"[RAWB] %s RawInputBuffer 键盘: VKey=%u(0x%02X) MakeCode=%u(0x%02X) Flags=0x%X Spoof=%d",
+                    GetTimestamp().c_str(),
+                    kb.VKey,
+                    kb.VKey,
+                    kb.MakeCode,
+                    kb.MakeCode,
+                    kb.Flags,
+                    spoofed ? 1 : 0);
+                WriteLogLine(buffer);
+            }
         }
 
         // 跳到下一个 RawInput 结构，防止异常尺寸导致死循环。
@@ -1523,7 +1717,7 @@ static UINT WINAPI Hook_GetRawInputData(HRAWINPUT hRawInput, UINT command, LPVOI
             SharedSnapshot snapshot = {};
             bool spoofed = false;
 
-            if (ReadSharedSnapshot(snapshot))
+            if (ReadSharedSnapshotCached(snapshot))
             {
                 ApplyClearIfNeeded(snapshot);
                 ApplyRawClearIfNeeded(snapshot);
@@ -1584,20 +1778,23 @@ static UINT WINAPI Hook_GetRawInputData(HRAWINPUT hRawInput, UINT command, LPVOI
             }
 
             // 仅记录键盘 RawInput，便于判定按键是否只通过 RawInput 进入 DNF。
-            const RAWKEYBOARD& kb = raw->data.keyboard;
-            wchar_t buffer[256] = {0};
-            StringCchPrintfW(
-                buffer,
-                ARRAYSIZE(buffer),
-                L"[RAW] %s RawInput 键盘: VKey=%u(0x%02X) MakeCode=%u(0x%02X) Flags=0x%X Spoof=%d",
-                GetTimestamp().c_str(),
-                kb.VKey,
-                kb.VKey,
-                kb.MakeCode,
-                kb.MakeCode,
-                kb.Flags,
-                spoofed ? 1 : 0);
-            WriteLogLine(buffer);
+            if (ShouldLogRawInput())
+            {
+                const RAWKEYBOARD& kb = raw->data.keyboard;
+                wchar_t buffer[256] = {0};
+                StringCchPrintfW(
+                    buffer,
+                    ARRAYSIZE(buffer),
+                    L"[RAW] %s RawInput 键盘: VKey=%u(0x%02X) MakeCode=%u(0x%02X) Flags=0x%X Spoof=%d",
+                    GetTimestamp().c_str(),
+                    kb.VKey,
+                    kb.VKey,
+                    kb.MakeCode,
+                    kb.MakeCode,
+                    kb.Flags,
+                    spoofed ? 1 : 0);
+                WriteLogLine(buffer);
+            }
         }
     }
 
@@ -1786,7 +1983,7 @@ static HRESULT STDMETHODCALLTYPE Hook_GetDeviceState(IDirectInputDevice8W* devic
     }
 
     SharedSnapshot snapshot = {};
-    if (!ReadSharedSnapshot(snapshot))
+    if (!ReadSharedSnapshotCached(snapshot))
     {
         return hr;
     }
