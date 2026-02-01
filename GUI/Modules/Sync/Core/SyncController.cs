@@ -11,8 +11,8 @@ public sealed class SyncController : IDisposable
 {
     private static readonly bool VerboseLogging = true;
     private static readonly object LogFileLock = new();
-    private static readonly string LogDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
-    private static readonly string LogFilePath = Path.Combine(LogDirectory, "latest.log");
+    private readonly string _logDirectory = Path.Combine(AppContext.BaseDirectory, "logs", "sync", "gui");
+    private string _logFilePath = string.Empty;
     private const int ForegroundProbeIntervalMs = 200;
     private const int ForegroundGraceMs = 800;
     private const int RepeatLogIntervalMs = 200;
@@ -85,6 +85,9 @@ public sealed class SyncController : IDisposable
     /// </summary>
     public void Start()
     {
+        var sessionId = ReadSessionId();
+        _logFilePath = Path.Combine(_logDirectory, $"sync_gui_{sessionId}_{Environment.ProcessId}.log");
+
         _hotkeyManager ??= new SyncHotkeyManager(AppContext.BaseDirectory, message => Log($"[热键] {message}"));
         Log($"热键配置：{_hotkeyManager.Current.Display}");
 
@@ -604,20 +607,43 @@ public sealed class SyncController : IDisposable
         AppendLogFile(line);
     }
 
-    private static void AppendLogFile(string line)
+    private void AppendLogFile(string line)
     {
         try
         {
             lock (LogFileLock)
             {
-                Directory.CreateDirectory(LogDirectory);
-                File.AppendAllText(LogFilePath, line + Environment.NewLine);
+                Directory.CreateDirectory(_logDirectory);
+                File.AppendAllText(_logFilePath, line + Environment.NewLine);
             }
         }
         catch
         {
             // 文件日志失败不影响主流程，避免影响同步稳定性。
         }
+    }
+
+    private static string ReadSessionId()
+    {
+        try
+        {
+            var baseDir = AppContext.BaseDirectory;
+            var sessionFile = Path.Combine(baseDir, "logs", "session.current");
+            if (File.Exists(sessionFile))
+            {
+                var content = File.ReadAllText(sessionFile).Trim();
+                if (!string.IsNullOrWhiteSpace(content))
+                {
+                    return content;
+                }
+            }
+        }
+        catch
+        {
+            // 读取失败则回退时间戳
+        }
+
+        return DateTime.Now.ToString("yyyyMMdd_HHmmss");
     }
 
     private void LogVerbose(string message)

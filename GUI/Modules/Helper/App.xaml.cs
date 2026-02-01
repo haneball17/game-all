@@ -22,6 +22,12 @@ public partial class App : Application
         });
     }
 
+    protected override void OnExit(ExitEventArgs e)
+    {
+        GuiLogger.ArchiveToSessionDir();
+        base.OnExit(e);
+    }
+
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
         GuiLogger.Error("exception", "dispatcher_unhandled", new Dictionary<string, object?>

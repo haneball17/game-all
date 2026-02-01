@@ -5,6 +5,7 @@
 
 #ifdef _DEBUG
 #include <vector>
+#include <cwctype>
 #endif
 
 // 声明外部模块的启动接口 (在 namespace 中)
@@ -154,20 +155,121 @@ static void WritePayloadSuccessFile()
 
 static void RemovePayloadSuccessFile()
 {
-    if (g_payloadSuccessFilePath.empty())
+    std::wstring path = g_payloadSuccessFilePath;
+    if (path.empty())
+    {
+        path = BuildPayloadSuccessFilePath();
+    }
+    if (path.empty())
     {
         return;
     }
-    DeleteFileW(g_payloadSuccessFilePath.c_str());
+    DeleteFileW(path.c_str());
 }
 
 #ifdef _DEBUG
+static std::wstring ReadPayloadSessionId(const std::wstring& baseDir)
+{
+    std::wstring sessionFile = baseDir + L"\\logs\\session.current";
+    HANDLE file = CreateFileW(
+        sessionFile.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+    {
+        return L"";
+    }
+    char buffer[64] = {0};
+    DWORD read = 0;
+    BOOL ok = ReadFile(file, buffer, static_cast<DWORD>(sizeof(buffer) - 1), &read, nullptr);
+    CloseHandle(file);
+    if (!ok || read == 0)
+    {
+        return L"";
+    }
+    buffer[read] = '\0';
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, buffer, -1, nullptr, 0);
+    if (wlen <= 1)
+    {
+        return L"";
+    }
+    std::wstring wide(static_cast<size_t>(wlen - 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, buffer, -1, &wide[0], wlen - 1);
+    // 简单去空白
+    while (!wide.empty() && iswspace(wide.front()))
+    {
+        wide.erase(wide.begin());
+    }
+    while (!wide.empty() && iswspace(wide.back()))
+    {
+        wide.pop_back();
+    }
+    return wide;
+}
+
+static std::wstring BuildPayloadSessionIdNow()
+{
+    SYSTEMTIME time;
+    GetLocalTime(&time);
+    wchar_t buffer[32] = {0};
+    swprintf_s(buffer, L"%04u%02u%02u_%02u%02u%02u",
+        time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute, time.wSecond);
+    return std::wstring(buffer);
+}
+
+static std::wstring g_payloadDebugLogPath;
+
+static void ArchivePayloadDebugLog()
+{
+    if (g_payloadDebugLogPath.empty())
+    {
+        return;
+    }
+    std::wstring baseDir = GetModuleDirectory(g_selfModule);
+    if (baseDir.empty())
+    {
+        return;
+    }
+    std::wstring sessionId = ReadPayloadSessionId(baseDir);
+    if (sessionId.empty())
+    {
+        return;
+    }
+    std::wstring logsDir = baseDir + L"\\logs";
+    std::wstring sessionDir = logsDir + L"\\session_" + sessionId;
+    CreateDirectoryW(logsDir.c_str(), nullptr);
+    CreateDirectoryW(sessionDir.c_str(), nullptr);
+
+    size_t pos = g_payloadDebugLogPath.find_last_of(L"\\/");
+    std::wstring fileName = (pos == std::wstring::npos) ? g_payloadDebugLogPath : g_payloadDebugLogPath.substr(pos + 1);
+    if (fileName.empty())
+    {
+        return;
+    }
+    std::wstring dest = sessionDir + L"\\" + fileName;
+    CopyFileW(g_payloadDebugLogPath.c_str(), dest.c_str(), FALSE);
+}
+
 static void AppendPayloadDebugLog(const std::wstring& message)
 {
     std::wstring baseDir = GetModuleDirectory(g_selfModule);
-    std::wstring logDir = baseDir + L"\\logs";
+    std::wstring logDir = baseDir + L"\\logs\\payload";
+    CreateDirectoryW((baseDir + L"\\logs").c_str(), nullptr);
     CreateDirectoryW(logDir.c_str(), nullptr);
-    std::wstring logPath = logDir + L"\\payload_debug.log";
+    std::wstring sessionId = ReadPayloadSessionId(baseDir);
+    if (sessionId.empty())
+    {
+        sessionId = BuildPayloadSessionIdNow();
+    }
+    std::wstring logPath = logDir + L"\\payload_" + sessionId + L"_" + std::to_wstring(GetCurrentProcessId()) + L".log";
+    if (g_payloadDebugLogPath.empty())
+    {
+        g_payloadDebugLogPath = logPath;
+    }
 
     HANDLE file = CreateFileW(
         logPath.c_str(),
@@ -274,23 +376,24 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         break;
     case DLL_PROCESS_DETACH:
         // 进程退出时清理 successfile 等轻量资源。
-        if (g_IsInitialized.load()) {
-            try {
-                if (g_enableSync)
-                {
-                    Sync::Stop();
-                }
-            } catch (...) {
+        try {
+            if (g_enableSync)
+            {
+                Sync::Stop();
             }
-            try {
-                if (g_enableHelper)
-                {
-                    Helper::Stop();
-                }
-            } catch (...) {
-            }
-            RemovePayloadSuccessFile();
+        } catch (...) {
         }
+        try {
+            if (g_enableHelper)
+            {
+                Helper::Stop();
+            }
+        } catch (...) {
+        }
+#ifdef _DEBUG
+        ArchivePayloadDebugLog();
+#endif
+        RemovePayloadSuccessFile();
         break;
     }
     return TRUE;

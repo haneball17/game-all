@@ -8,6 +8,7 @@ public partial class App : Application
 {
     protected override void OnStartup(StartupEventArgs e)
     {
+        SessionLogManager.EnsureSession();
         DebugFileLogger.Log("MasterGUI 启动");
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>
         {
@@ -20,5 +21,11 @@ public partial class App : Application
         };
 
         base.OnStartup(e);
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        SessionLogManager.ArchiveSessionLogs();
+        base.OnExit(e);
     }
 }

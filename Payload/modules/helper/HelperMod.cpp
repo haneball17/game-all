@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <intrin.h>
+#include <wctype.h>
 
 
 // LDR 断链与抹头（可选）支持，使用私有结构以规避 SDK 结构差异。
@@ -343,7 +344,7 @@ static wchar_t g_control_memory_name[64] = {0};
 static volatile LONG g_control_memory_ready_logged = 0;
 static volatile LONG g_control_memory_failed_logged = 0;
 static volatile LONG g_control_protocol_logged = 0;
-static const wchar_t kLogFileName[] = L"game_helper.jsonl";
+static const wchar_t kHelperLogPrefix[] = L"helper";
 static const wchar_t kConfigFileName[] = L"game_helper.ini";
 static HMODULE g_self_module = NULL;
 
@@ -424,24 +425,121 @@ static BOOL GetModuleBaseName(HMODULE module, wchar_t* output, size_t output_cap
 	return output[0] != L'\0';
 }
 
-static BOOL BuildLogPath(const wchar_t* directory_path, wchar_t* output, size_t output_capacity) {
-	if (directory_path == NULL || directory_path[0] == L'\0') {
+static void TrimWhitespace(wchar_t* text) {
+	if (!text) {
+		return;
+	}
+	size_t len = wcslen(text);
+	size_t start = 0;
+	while (start < len && iswspace(text[start])) {
+		start++;
+	}
+	size_t end = len;
+	while (end > start && iswspace(text[end - 1])) {
+		end--;
+	}
+	if (start > 0 && start < len) {
+		memmove(text, text + start, (end - start) * sizeof(wchar_t));
+	}
+	text[end - start] = L'\0';
+}
+
+// 前置声明：日志目录与创建工具函数
+static BOOL BuildLogsDirectoryPath(const wchar_t* base_dir, wchar_t* output, size_t output_capacity);
+static BOOL EnsureDirectoryExists(const wchar_t* path);
+
+static BOOL BuildSessionFilePath(const wchar_t* base_dir, wchar_t* output, size_t output_capacity) {
+	if (base_dir == NULL || base_dir[0] == L'\0') {
 		return FALSE;
 	}
-	if (wcscpy_s(output, output_capacity, directory_path) != 0) {
+	if (!BuildLogsDirectoryPath(base_dir, output, output_capacity)) {
 		return FALSE;
 	}
 	size_t length = wcslen(output);
 	if (length == 0 || length >= output_capacity - 1) {
 		return FALSE;
 	}
-	wchar_t last = output[length - 1];
-	if (last != L'\\' && last != L'/') {
+	if (output[length - 1] != L'\\' && output[length - 1] != L'/') {
 		if (wcscat_s(output, output_capacity, L"\\") != 0) {
 			return FALSE;
 		}
 	}
-	return wcscat_s(output, output_capacity, kLogFileName) == 0;
+	return wcscat_s(output, output_capacity, L"session.current") == 0;
+}
+
+static BOOL ReadSessionId(const wchar_t* base_dir, wchar_t* output, size_t output_capacity) {
+	if (output == NULL || output_capacity == 0) {
+		return FALSE;
+	}
+	output[0] = L'\0';
+	wchar_t session_path[MAX_PATH] = {0};
+	if (!BuildSessionFilePath(base_dir, session_path, MAX_PATH)) {
+		return FALSE;
+	}
+	HANDLE file = CreateFileW(session_path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (file == INVALID_HANDLE_VALUE) {
+		return FALSE;
+	}
+	char buffer[64] = {0};
+	DWORD read = 0;
+	BOOL ok = ReadFile(file, buffer, static_cast<DWORD>(sizeof(buffer) - 1), &read, NULL);
+	CloseHandle(file);
+	if (!ok || read == 0) {
+		return FALSE;
+	}
+	buffer[read] = '\0';
+	int wlen = MultiByteToWideChar(CP_UTF8, 0, buffer, -1, NULL, 0);
+	if (wlen <= 1) {
+		return FALSE;
+	}
+	wchar_t wide[64] = {0};
+	if (MultiByteToWideChar(CP_UTF8, 0, buffer, -1, wide, static_cast<int>(ARRAYSIZE(wide))) <= 0) {
+		return FALSE;
+	}
+	TrimWhitespace(wide);
+	if (wide[0] == L'\0') {
+		return FALSE;
+	}
+	return wcscpy_s(output, output_capacity, wide) == 0;
+}
+
+static void BuildSessionIdNow(wchar_t* output, size_t output_capacity) {
+	if (output == NULL || output_capacity == 0) {
+		return;
+	}
+	SYSTEMTIME time;
+	GetLocalTime(&time);
+	swprintf_s(output, output_capacity, L"%04u%02u%02u_%02u%02u%02u",
+		time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute, time.wSecond);
+}
+
+static BOOL BuildLogPath(const wchar_t* base_dir, wchar_t* output, size_t output_capacity) {
+	if (base_dir == NULL || base_dir[0] == L'\0') {
+		return FALSE;
+	}
+	wchar_t logs_dir[MAX_PATH] = {0};
+	if (!BuildLogsDirectoryPath(base_dir, logs_dir, MAX_PATH)) {
+		return FALSE;
+	}
+	EnsureDirectoryExists(logs_dir);
+	wchar_t helper_dir[MAX_PATH] = {0};
+	if (wcscpy_s(helper_dir, MAX_PATH, logs_dir) != 0) {
+		return FALSE;
+	}
+	if (wcscat_s(helper_dir, MAX_PATH, L"\\helper") != 0) {
+		return FALSE;
+	}
+	EnsureDirectoryExists(helper_dir);
+
+	wchar_t session_id[64] = {0};
+	if (!ReadSessionId(base_dir, session_id, ARRAYSIZE(session_id))) {
+		BuildSessionIdNow(session_id, ARRAYSIZE(session_id));
+	}
+	return swprintf_s(output, output_capacity, L"%s\\%s_%s_%lu.log.jsonl",
+		helper_dir,
+		kHelperLogPrefix,
+		session_id,
+		GetCurrentProcessId()) > 0;
 }
 
 static BOOL BuildConfigPath(const wchar_t* directory_path, wchar_t* output, size_t output_capacity) {
@@ -809,7 +907,7 @@ static BOOL WriteDefaultConfigFile(const wchar_t* config_path) {
 		"\r\n"
 		"[gui_log]\r\n"
 		"log_level=INFO\r\n"
-		"log_path=logs\\gui.log.jsonl\r\n"
+		"log_path=auto\r\n"
 		"console_output=false\r\n";
 
 	WriteFile(file, content, static_cast<DWORD>(strlen(content)), &written, NULL);
@@ -1121,14 +1219,14 @@ static BOOL OpenLogFileInDirectory(const wchar_t* directory_path) {
 	return TRUE;
 }
 
-static void InitializeLogger(const wchar_t* preferred_directory) {
+static void InitializeLogger(const wchar_t* base_directory) {
 	if (g_log_lock_ready) {
 		return;
 	}
 	InitializeCriticalSection(&g_log_lock);
 	g_log_lock_ready = TRUE;
-	if (preferred_directory != NULL && preferred_directory[0] != L'\0') {
-		if (OpenLogFileInDirectory(preferred_directory)) {
+	if (base_directory != NULL && base_directory[0] != L'\0') {
+		if (OpenLogFileInDirectory(base_directory)) {
 			LogEventWithPath("logger_init", g_log_path);
 			return;
 		}
@@ -1141,6 +1239,57 @@ static void InitializeLogger(const wchar_t* preferred_directory) {
 			return;
 		}
 	}
+}
+
+static void ArchiveHelperLogFile() {
+	if (!g_log_ready || g_log_path[0] == L'\0') {
+		return;
+	}
+
+	wchar_t base_dir[MAX_PATH] = {0};
+	if (!GetModuleDirectory(g_self_module, base_dir, MAX_PATH)) {
+		if (!GetExeDirectory(base_dir, MAX_PATH)) {
+			return;
+		}
+	}
+
+	wchar_t session_id[64] = {0};
+	if (!ReadSessionId(base_dir, session_id, ARRAYSIZE(session_id))) {
+		return;
+	}
+
+	wchar_t logs_dir[MAX_PATH] = {0};
+	if (!BuildLogsDirectoryPath(base_dir, logs_dir, MAX_PATH)) {
+		return;
+	}
+	EnsureDirectoryExists(logs_dir);
+
+	wchar_t session_dir[MAX_PATH] = {0};
+	if (wcscpy_s(session_dir, MAX_PATH, logs_dir) != 0) {
+		return;
+	}
+	if (wcscat_s(session_dir, MAX_PATH, L"\\session_") != 0) {
+		return;
+	}
+	if (wcscat_s(session_dir, MAX_PATH, session_id) != 0) {
+		return;
+	}
+	EnsureDirectoryExists(session_dir);
+
+	const wchar_t* file_name = wcsrchr(g_log_path, L'\\');
+	if (file_name == NULL) {
+		file_name = wcsrchr(g_log_path, L'/');
+	}
+	file_name = (file_name != NULL) ? (file_name + 1) : g_log_path;
+	if (file_name[0] == L'\0') {
+		return;
+	}
+
+	wchar_t dest_path[MAX_PATH] = {0};
+	if (swprintf_s(dest_path, MAX_PATH, L"%s\\%s", session_dir, file_name) <= 0) {
+		return;
+	}
+	CopyFileW(g_log_path, dest_path, FALSE);
 }
 
 // 安全读取 DWORD，避免地址无效时导致进程崩溃。
@@ -2805,7 +2954,8 @@ static DWORD WINAPI WorkerThread(LPVOID param) {
 		}
 	}
 
-	InitializeLogger(output_directory);
+	const wchar_t* log_base_directory = has_module_directory ? module_directory : (has_exe_directory ? exe_directory : output_directory);
+	InitializeLogger(log_base_directory);
 	LogEvent("INFO", "worker_thread", "start");
 	if (!has_exe_directory) {
 		LogEvent("WARN", "worker_thread", "exe_directory_not_found");
@@ -2932,6 +3082,7 @@ namespace Helper {
 	}
 
 	void Stop() {
+		ArchiveHelperLogFile();
 		// 进程退出时清理 successfile，避免残留误判。
 		RemoveSuccessFile();
 	}

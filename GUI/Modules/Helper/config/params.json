@@ -208,7 +208,7 @@
           "key": "log_path",
           "label": "日志文件",
           "type": "string",
-          "default": "gui.log.jsonl",
+          "default": "auto",
           "desc": "相对路径基于 GUI 目录"
         },
         {

@@ -26,6 +26,7 @@ static HANDLE g_logFile = INVALID_HANDLE_VALUE;
 static CRITICAL_SECTION g_logLock;
 static LONG g_logReady = 0;
 static LONG g_shouldStop = 0;
+static std::wstring g_logPath;
 static std::wstring g_successFilePath;
 static LONG g_successFileCreated = 0;
 
@@ -315,15 +316,125 @@ static std::wstring GetModuleDirectory()
     return baseDir.empty() ? L"." : baseDir;
 }
 
+static std::wstring TrimWide(const std::wstring& value)
+{
+    size_t start = 0;
+    while (start < value.size() && iswspace(value[start]))
+    {
+        start++;
+    }
+    size_t end = value.size();
+    while (end > start && iswspace(value[end - 1]))
+    {
+        end--;
+    }
+    return value.substr(start, end - start);
+}
+
+static std::wstring ReadSessionId()
+{
+    std::wstring baseDir = GetModuleDirectory();
+    std::wstring sessionPath = baseDir + L"\\logs\\session.current";
+    HANDLE file = CreateFileW(sessionPath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+    {
+        return L"";
+    }
+    char buffer[64] = {0};
+    DWORD read = 0;
+    BOOL ok = ReadFile(file, buffer, static_cast<DWORD>(sizeof(buffer) - 1), &read, nullptr);
+    CloseHandle(file);
+    if (!ok || read == 0)
+    {
+        return L"";
+    }
+    buffer[read] = '\0';
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, buffer, -1, nullptr, 0);
+    if (wlen <= 1)
+    {
+        return L"";
+    }
+    std::wstring wide(static_cast<size_t>(wlen - 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, buffer, -1, &wide[0], wlen - 1);
+    return TrimWide(wide);
+}
+
+static std::wstring BuildSessionIdNow()
+{
+    SYSTEMTIME time;
+    GetLocalTime(&time);
+    wchar_t buffer[32] = {0};
+    swprintf_s(buffer, L"%04u%02u%02u_%02u%02u%02u",
+        time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute, time.wSecond);
+    return std::wstring(buffer);
+}
+
 static std::wstring BuildLogPath()
 {
-    // 日志统一输出到 DLL 所在目录的 logs 子目录。
+    // 日志统一输出到 DLL 所在目录的 logs\\sync\\payload 子目录。
     std::wstring baseDir = GetModuleDirectory();
-    std::wstring logDir = baseDir + L"\\logs";
+    std::wstring logDir = baseDir + L"\\logs\\sync\\payload";
+    CreateDirectoryW((baseDir + L"\\logs").c_str(), nullptr);
+    CreateDirectoryW((baseDir + L"\\logs\\sync").c_str(), nullptr);
+    CreateDirectoryW(logDir.c_str(), nullptr);
+
+    std::wstring sessionId = ReadSessionId();
+    if (sessionId.empty())
+    {
+        sessionId = BuildSessionIdNow();
+    }
 
     wchar_t fileName[MAX_PATH] = {0};
-    StringCchPrintfW(fileName, ARRAYSIZE(fileName), L"%s\\dnfinput_%lu.log", logDir.c_str(), GetCurrentProcessId());
+    StringCchPrintfW(
+        fileName,
+        ARRAYSIZE(fileName),
+        L"%s\\sync_payload_%s_%lu.log",
+        logDir.c_str(),
+        sessionId.c_str(),
+        GetCurrentProcessId());
     return std::wstring(fileName);
+}
+
+static std::wstring GetFileNameFromPath(const std::wstring& path)
+{
+    if (path.empty())
+    {
+        return L"";
+    }
+    size_t pos = path.find_last_of(L"\\/");
+    if (pos == std::wstring::npos)
+    {
+        return path;
+    }
+    return path.substr(pos + 1);
+}
+
+static void ArchiveLogFile()
+{
+    if (g_logPath.empty())
+    {
+        return;
+    }
+
+    std::wstring sessionId = ReadSessionId();
+    if (sessionId.empty())
+    {
+        return;
+    }
+
+    std::wstring baseDir = GetModuleDirectory();
+    std::wstring sessionDir = baseDir + L"\\logs\\session_" + sessionId;
+    CreateDirectoryW(sessionDir.c_str(), nullptr);
+
+    std::wstring fileName = GetFileNameFromPath(g_logPath);
+    if (fileName.empty())
+    {
+        return;
+    }
+
+    std::wstring dest = sessionDir + L"\\" + fileName;
+    CopyFileW(g_logPath.c_str(), dest.c_str(), FALSE);
 }
 
 static std::wstring GetModuleBaseName()
@@ -723,6 +834,7 @@ static void InitializeLogging()
     InitializeCriticalSection(&g_logLock);
 
     std::wstring path = BuildLogPath();
+    g_logPath = path;
     size_t slash = path.rfind(L'\\');
     if (slash != std::wstring::npos)
     {
@@ -3158,6 +3270,16 @@ static DWORD WINAPI WorkerThread(LPVOID)
     }
 
     LogInfo(L"工作线程退出");
+    if (g_logFile != INVALID_HANDLE_VALUE)
+    {
+        FlushFileBuffers(g_logFile);
+    }
+    ArchiveLogFile();
+    if (g_logFile != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(g_logFile);
+        g_logFile = INVALID_HANDLE_VALUE;
+    }
     return 0;
 }
 
