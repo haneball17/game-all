@@ -202,11 +202,14 @@ Shared/Protocols/协议说明.md
 ## 日志与输出
 
 所有运行日志统一输出到 `./logs`：
-- `mastergui_debug.log`（Debug）
-- `injector_debug.log`（Debug）
-- `payload_debug.log`（Debug）
-- `game_helper.jsonl`
-- `dnfinput_<pid>.log`
+- `session.current`：本次会话标识（MasterGUI 启动生成）
+- `session_<sessionId>/`：会话归档（退出时复制）
+- `master/master_<sessionId>_<pid>.log`（Debug）
+- `injector/injector_<sessionId>_<pid>.log`（Debug）
+- `payload/payload_<sessionId>_<pid>.log`（Debug）
+- `helper/helper_<sessionId>_<pid>.log.jsonl`
+- `sync/gui/sync_gui_<sessionId>_<pid>.log`
+- `sync/payload/sync_payload_<sessionId>_<pid>.log`
 
 ---
 

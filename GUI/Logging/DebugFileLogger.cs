@@ -8,8 +8,10 @@ namespace GameAll.MasterGUI;
 internal static class DebugFileLogger
 {
     private static readonly object LogLock = new();
-    private static readonly string LogDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
-    private static readonly string LogPath = Path.Combine(LogDirectory, "mastergui_debug.log");
+    private static readonly string LogDirectory = Path.Combine(AppContext.BaseDirectory, "logs", "master");
+    private static readonly string LogPath = Path.Combine(
+        LogDirectory,
+        $"master_{SessionLogManager.SessionId}_{Environment.ProcessId}.log");
 
     // 仅在 Debug 构建输出日志，便于定位注入与心跳问题。
     [Conditional("DEBUG")]

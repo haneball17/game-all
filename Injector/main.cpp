@@ -346,16 +346,71 @@ static bool EqualsInsensitive(const std::wstring& left, const std::wstring& righ
 }
 
 #ifdef _DEBUG
+static std::wstring g_debug_log_path;
+static std::wstring TrimWide(const std::wstring& value) {
+    size_t start = 0;
+    while (start < value.size() && iswspace(value[start])) {
+        start++;
+    }
+    size_t end = value.size();
+    while (end > start && iswspace(value[end - 1])) {
+        end--;
+    }
+    return value.substr(start, end - start);
+}
+
+static std::wstring GetSessionIdFromLogs(const std::wstring& base_dir) {
+    std::wstring logs_dir = JoinPathSafe(base_dir, L"logs");
+    std::wstring session_path = JoinPathSafe(logs_dir, L"session.current");
+    HANDLE file = CreateFileW(session_path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return L"";
+    }
+    char buffer[64] = {0};
+    DWORD read = 0;
+    BOOL ok = ReadFile(file, buffer, static_cast<DWORD>(sizeof(buffer) - 1), &read, nullptr);
+    CloseHandle(file);
+    if (!ok || read == 0) {
+        return L"";
+    }
+    buffer[read] = '\0';
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, buffer, -1, nullptr, 0);
+    if (wlen <= 1) {
+        return L"";
+    }
+    std::wstring wide(static_cast<size_t>(wlen - 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, buffer, -1, &wide[0], wlen - 1);
+    return TrimWide(wide);
+}
+
+static std::wstring BuildSessionIdNow() {
+    SYSTEMTIME time;
+    GetLocalTime(&time);
+    wchar_t buffer[32] = {0};
+    swprintf_s(buffer, L"%04u%02u%02u_%02u%02u%02u",
+        time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute, time.wSecond);
+    return std::wstring(buffer);
+}
+
 static std::wstring GetDebugLogPath() {
     std::wstring base_dir = GetExeDirectory();
-    std::wstring log_dir = JoinPathSafe(base_dir, L"logs");
+    std::wstring log_dir = JoinPathSafe(JoinPathSafe(base_dir, L"logs"), L"injector");
     CreateDirectoryW(log_dir.c_str(), nullptr);
-    return JoinPathSafe(log_dir, L"injector_debug.log");
+    std::wstring session_id = GetSessionIdFromLogs(base_dir);
+    if (session_id.empty()) {
+        session_id = BuildSessionIdNow();
+    }
+    wchar_t file_name[128] = {0};
+    swprintf_s(file_name, L"injector_%s_%lu.log", session_id.c_str(), GetCurrentProcessId());
+    return JoinPathSafe(log_dir, file_name);
 }
 
 static void AppendDebugLog(const std::wstring& message) {
-    static std::wstring log_path = GetDebugLogPath();
-    HANDLE file = CreateFileW(log_path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS,
+    if (g_debug_log_path.empty()) {
+        g_debug_log_path = GetDebugLogPath();
+    }
+    HANDLE file = CreateFileW(g_debug_log_path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS,
         FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) {
         return;
@@ -374,6 +429,25 @@ static void AppendDebugLog(const std::wstring& message) {
         WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr);
     }
     CloseHandle(file);
+}
+
+static void ArchiveDebugLogIfNeeded() {
+    if (g_debug_log_path.empty()) {
+        return;
+    }
+    std::wstring base_dir = GetExeDirectory();
+    std::wstring session_id = GetSessionIdFromLogs(base_dir);
+    if (session_id.empty()) {
+        return;
+    }
+    std::wstring session_dir = JoinPathSafe(JoinPathSafe(base_dir, L"logs"), L"session_" + session_id);
+    CreateDirectoryW(session_dir.c_str(), nullptr);
+    std::wstring file_name = GetBaseName(g_debug_log_path);
+    if (file_name.empty()) {
+        return;
+    }
+    std::wstring dest = JoinPathSafe(session_dir, file_name);
+    CopyFileW(g_debug_log_path.c_str(), dest.c_str(), FALSE);
 }
 #endif
 
@@ -822,10 +896,12 @@ static void TryStartPendingTasks(std::unordered_map<DWORD, InjectTask>& states, 
 }
 
 int wmain() {
+    int exit_code = 0;
     std::wstring exe_dir = GetExeDirectory();
     std::wstring config_path = GetInjectorConfigPath(exe_dir);
     EnsureDefaultInjectorConfig(config_path);
     InjectorConfig config = LoadInjectorConfig(config_path, exe_dir);
+    std::unordered_map<DWORD, InjectTask> states;
 
     Log(L"Injector 启动");
     Log(L"配置文件: " + config_path);
@@ -838,7 +914,8 @@ int wmain() {
     DWORD attr = GetFileAttributesW(config.dll_path.c_str());
     if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY) != 0) {
         Log(L"DLL 路径无效，请检查 injector.ini");
-        return 1;
+        exit_code = 1;
+        goto Exit;
     }
 
     if (!EnableDebugPrivilege()) {
@@ -855,7 +932,8 @@ int wmain() {
         Log(L"等待目标进程窗口初始化...");
         if (!WaitForProcessWindow(pid, config.window_wait_timeout_ms, config.window_poll_interval_ms)) {
             Log(L"超时：目标进程未创建窗口，终止注入");
-            return 3;
+            exit_code = 3;
+            goto Exit;
         }
         if (config.post_window_delay_ms > 0) {
             Sleep(config.post_window_delay_ms);
@@ -866,14 +944,15 @@ int wmain() {
         bool injected = TryInjectProcess(pid, config);
         if (!injected) {
             Log(L"注入失败，请检查日志与配置");
-            return 2;
+            exit_code = 2;
+            goto Exit;
         }
         Log(L"注入完成");
-        return 0;
+        exit_code = 0;
+        goto Exit;
     }
 
     Log(L"进入常驻监听模式");
-    std::unordered_map<DWORD, InjectTask> states;
     ULONGLONG last_new_tick = GetTickCount64();
 
     for (;;) {
@@ -927,5 +1006,9 @@ int wmain() {
         Sleep(config.scan_interval_ms);
     }
 
-    return 0;
+Exit:
+#ifdef _DEBUG
+    ArchiveDebugLogIfNeeded();
+#endif
+    return exit_code;
 }
