@@ -195,7 +195,7 @@ Shared/Protocols/协议说明.md
 通道：
 - Helper Status：`Local\GameHelperStatus_{pid}` / `Global\GameHelperStatus_{pid}`（**Local 优先，Global 兜底**）
 - Helper Control：`Local\GameHelperControl_{pid}` / `Global\GameHelperControl_{pid}`（**Local 优先，Global 兜底**）
-- Sync State：`Local\DNFSyncBox.KeyboardState.V2`
+- Sync State：`Local\DNFSyncBox.KeyboardState.V3`
 
 ---
 
@@ -223,6 +223,14 @@ Payload 相关环境变量：
 - `DNFSYNC_RAWINPUT_LOG_INTERVAL_MS`：RawInput 日志采样间隔（毫秒）
 - `config/sync_debug.ini`：优先级高于环境变量的调试配置（若存在）
 - `DNFSYNC_FORCE_DI_OK`：DirectInput 返回 DIERR_NOTACQUIRED 时强制 DI_OK
+- `DNFSYNC_STATS`：Sync 统计日志开关（1/true/yes/on）
+- `DNFSYNC_STATS_INTERVAL_MS`：统计日志输出间隔（毫秒）
+- `DNFSYNC_DIAG`：Sync 诊断日志开关（1/true/yes/on）
+- `DNFSYNC_DIAG_INTERVAL_MS`：诊断日志输出间隔（毫秒）
+- `DNFSYNC_KEYLOG`：按键事件日志开关（1/true/yes/on）
+- `DNFSYNC_KEYLOG_INTERVAL_MS`：按键事件日志采样间隔（毫秒）
+- `DNFSYNC_KEYLOG_LEVEL`：按键日志级别（1=RawInput，2=含 Win32，3=含 DirectInput）
+- `DNFSYNC_KEYUP_TIMEOUT_MS`：KeyUp 缺失告警阈值（毫秒）
 
 ---
 

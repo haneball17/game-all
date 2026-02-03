@@ -3,8 +3,8 @@
   "HelperHeartbeatTimeoutMs": 2000,
   "SyncHeartbeatTimeoutMs": 2000,
   "StatusIntervalMs": 1000,
-  "SyncMappingName": "Local\\DNFSyncBox.KeyboardState.V2",
-  "SyncVersion": 2,
+  "SyncMappingName": "Local\\DNFSyncBox.KeyboardState.V3",
+  "SyncVersion": 3,
   "SyncMappingSize": 1824,
   "InjectorProcessNames": ["game-injector", "Injector"],
   "RequireBothModulesForInjected": false

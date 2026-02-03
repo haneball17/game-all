@@ -38,8 +38,12 @@ internal sealed unsafe class SharedMemoryWriter : IDisposable
         _initialized = true;
 
         new Span<byte>(_basePtr, SharedMemoryConstants.SharedMemorySize).Clear();
-        var shared = (SharedKeyboardStateV2*)_basePtr;
+        var shared = (SharedKeyboardStateV3*)_basePtr;
         shared->Version = SharedMemoryConstants.Version;
+        shared->Magic = SharedMemoryConstants.Magic;
+        shared->WriteHead = 0;
+        shared->Capacity = SharedMemoryConstants.EventCapacity;
+        shared->Snapshot.Version = SharedMemoryConstants.Version;
     }
 
     /// <summary>
@@ -61,25 +65,27 @@ internal sealed unsafe class SharedMemoryWriter : IDisposable
             return;
         }
 
-        var shared = (SharedKeyboardStateV2*)_basePtr;
-        var seq = shared->Seq + 1;
+        var shared = (SharedKeyboardStateV3*)_basePtr;
+        var snapshot = &shared->Snapshot;
+        snapshot->Version = SharedMemoryConstants.Version;
+        var seq = snapshot->Seq + 1;
         if ((seq & 1) == 0)
         {
             seq++;
         }
 
-        shared->Seq = seq;
-        shared->Flags = flags;
-        shared->ActivePid = activePid;
-        shared->ProfileId = profileId;
-        shared->ProfileMode = profileMode;
-        shared->LastTick = lastTick;
+        snapshot->Seq = seq;
+        snapshot->Flags = flags;
+        snapshot->ActivePid = activePid;
+        snapshot->ProfileId = profileId;
+        snapshot->ProfileMode = profileMode;
+        snapshot->LastTick = lastTick;
 
         fixed (byte* srcState = keyboardState)
         {
             Buffer.MemoryCopy(
                 srcState,
-                shared->KeyboardState,
+                snapshot->KeyboardState,
                 SharedMemoryConstants.KeyCount,
                 SharedMemoryConstants.KeyCount);
         }
@@ -88,7 +94,7 @@ internal sealed unsafe class SharedMemoryWriter : IDisposable
         {
             Buffer.MemoryCopy(
                 srcEdge,
-                shared->EdgeCounter,
+                snapshot->EdgeCounter,
                 SharedMemoryConstants.KeyCount * sizeof(uint),
                 SharedMemoryConstants.KeyCount * sizeof(uint));
         }
@@ -97,7 +103,7 @@ internal sealed unsafe class SharedMemoryWriter : IDisposable
         {
             Buffer.MemoryCopy(
                 srcMask,
-                shared->TargetMask,
+                snapshot->TargetMask,
                 SharedMemoryConstants.KeyCount,
                 SharedMemoryConstants.KeyCount);
         }
@@ -106,13 +112,52 @@ internal sealed unsafe class SharedMemoryWriter : IDisposable
         {
             Buffer.MemoryCopy(
                 srcBlock,
-                shared->BlockMask,
+                snapshot->BlockMask,
                 SharedMemoryConstants.KeyCount,
                 SharedMemoryConstants.KeyCount);
         }
 
         Thread.MemoryBarrier();
-        shared->Seq = seq + 1;
+        snapshot->Seq = seq + 1;
+    }
+
+    /// <summary>
+    /// 推送输入事件到事件流（V3）。
+    /// </summary>
+    public void PushEvent(int vKey, bool isDown, long timestamp)
+    {
+        if (!_initialized)
+        {
+            return;
+        }
+
+        if (vKey < 0 || vKey >= SharedMemoryConstants.KeyCount)
+        {
+            return;
+        }
+
+        var shared = (SharedKeyboardStateV3*)_basePtr;
+        var capacity = shared->Capacity;
+        if (capacity == 0)
+        {
+            return;
+        }
+
+        var currentHead = shared->WriteHead;
+        var offset = (int)((uint)currentHead % capacity);
+        var bufferOffset = offset * SharedMemoryConstants.InputEventSize;
+
+        byte* bufferPtr = shared->EventBuffer;
+        var eventPtr = (InputEventV3*)(bufferPtr + bufferOffset);
+        eventPtr->SequenceId = unchecked((uint)currentHead);
+        eventPtr->VirtualKey = (byte)vKey;
+        eventPtr->IsDown = (byte)(isDown ? 1 : 0);
+        eventPtr->Flags = 0;
+        eventPtr->Reserved = 0;
+        eventPtr->Timestamp = timestamp;
+
+        Thread.MemoryBarrier();
+        Interlocked.Increment(ref shared->WriteHead);
     }
 
     /// <summary>
