@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -13,12 +14,15 @@ public sealed class SyncController : IDisposable
     private static readonly object LogFileLock = new();
     private readonly string _logDirectory = Path.Combine(AppContext.BaseDirectory, "logs", "sync", "gui");
     private string _logFilePath = string.Empty;
+    private const string DisableAutoPauseEnvName = "DNFSYNC_DISABLE_AUTOPAUSE";
     private const int ForegroundProbeIntervalMs = 200;
     private const int ForegroundGraceMs = 800;
     private const int RepeatLogIntervalMs = 200;
 
     // 统一保护核心状态（窗口快照、暂停状态、按键状态）。
     private readonly object _stateLock = new();
+    // 事件流状态单独加锁，避免心跳与按键事件交叉写入。
+    private readonly object _eventLock = new();
     private readonly WindowManager _windowManager = new("DNF Taiwan", "dnf.exe");
     private readonly KeyboardHook _keyboardHook = new();
     private readonly KeyStateTracker _keyState = new();
@@ -38,11 +42,13 @@ public sealed class SyncController : IDisposable
     private readonly byte[] _inputMask = new byte[SharedMemoryConstants.KeyCount];
     private readonly byte[] _inputMappingSourceMask = new byte[SharedMemoryConstants.KeyCount];
     private readonly byte[] _physicalDown = new byte[SharedMemoryConstants.KeyCount];
+    private readonly byte[] _lastEventState = new byte[SharedMemoryConstants.KeyCount];
 
     private WindowSnapshot _snapshot = WindowSnapshot.Empty;
     private KeyboardProfile _activeProfile;
     private bool _userPaused;
     private bool _autoPaused = true;
+    private bool _disableAutoPause;
     private uint _effectiveForegroundPid;
     private bool _effectiveForegroundIsDnf;
     private int _lastForegroundPid;
@@ -87,6 +93,11 @@ public sealed class SyncController : IDisposable
     {
         var sessionId = ReadSessionId();
         _logFilePath = Path.Combine(_logDirectory, $"sync_gui_{sessionId}_{Environment.ProcessId}.log");
+        _disableAutoPause = IsAutoPauseDisabled();
+        if (_disableAutoPause)
+        {
+            Log("已禁用自动暂停（DNFSYNC_DISABLE_AUTOPAUSE=1 或 Debug 默认关闭）");
+        }
 
         _hotkeyManager ??= new SyncHotkeyManager(AppContext.BaseDirectory, message => Log($"[热键] {message}"));
         Log($"热键配置：{_hotkeyManager.Current.Display}");
@@ -113,6 +124,27 @@ public sealed class SyncController : IDisposable
 
         var snapshot = _windowManager.Refresh();
         var now = Environment.TickCount64;
+        if (_disableAutoPause)
+        {
+            var hasDnf = snapshot.TotalCount > 0;
+            var effectivePidLocal = snapshot.ForegroundProcessId;
+            if (effectivePidLocal == 0 && snapshot.MasterHandle != IntPtr.Zero)
+            {
+                effectivePidLocal = GetProcessId(snapshot.MasterHandle);
+            }
+
+            lock (_stateLock)
+            {
+                _snapshot = snapshot;
+                _effectiveForegroundPid = effectivePidLocal;
+                _effectiveForegroundIsDnf = hasDnf;
+                _autoPaused = false;
+            }
+
+            RaiseStatusChanged();
+            LogSnapshotIfNeeded(snapshot);
+            return;
+        }
         if (snapshot.ForegroundIsDnf && snapshot.ForegroundProcessId != 0)
         {
             Interlocked.Exchange(ref _lastForegroundPid, unchecked((int)snapshot.ForegroundProcessId));
@@ -400,6 +432,7 @@ public sealed class SyncController : IDisposable
         }
 
         var tick = (ulong)Environment.TickCount64;
+        var eventTimestamp = Stopwatch.GetTimestamp();
 
         // Replace 映射依赖 RawInput 事件路径；上报 Mapping 模式可触发注入端生成映射事件。
         var reportedMode = profile.Mode;
@@ -428,6 +461,8 @@ public sealed class SyncController : IDisposable
             }
         }
 
+        EmitEventsForStateChange(_keyboardState, eventTimestamp);
+
         _sharedMemory.PublishSnapshot(
             flags,
             activePid,
@@ -438,6 +473,25 @@ public sealed class SyncController : IDisposable
             _edgeCounter,
             _targetMask,
             _blockMask);
+    }
+
+    private void EmitEventsForStateChange(byte[] keyboardState, long timestamp)
+    {
+        lock (_eventLock)
+        {
+            for (var i = 0; i < SharedMemoryConstants.KeyCount; i++)
+            {
+                var isDown = (keyboardState[i] & 0x80) != 0;
+                var wasDown = (_lastEventState[i] & 0x80) != 0;
+                if (isDown == wasDown)
+                {
+                    continue;
+                }
+
+                _sharedMemory.PushEvent(i, isDown, timestamp);
+                _lastEventState[i] = (byte)(isDown ? 0x80 : 0x00);
+            }
+        }
     }
 
     /// <summary>
@@ -551,6 +605,11 @@ public sealed class SyncController : IDisposable
     {
         try
         {
+            if (_disableAutoPause)
+            {
+                return;
+            }
+
             if (_windowManager.TryGetForegroundInfo(out var pid, out var isDnf) && isDnf)
             {
                 Interlocked.Exchange(ref _lastForegroundPid, unchecked((int)pid));
@@ -677,6 +736,33 @@ public sealed class SyncController : IDisposable
     private static bool IsShiftKey(Keys key)
     {
         return key is Keys.ShiftKey or Keys.LShiftKey or Keys.RShiftKey;
+    }
+
+    private static bool IsAutoPauseDisabled()
+    {
+#if DEBUG
+        const bool defaultValue = true;
+#else
+        const bool defaultValue = false;
+#endif
+        var value = Environment.GetEnvironmentVariable(DisableAutoPauseEnvName);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return defaultValue;
+        }
+
+        return value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static uint GetProcessId(IntPtr handle)
+    {
+        if (handle == IntPtr.Zero)
+        {
+            return 0;
+        }
+
+        NativeMethods.GetWindowThreadProcessId(handle, out var pid);
+        return pid;
     }
 
     private void LogSnapshotIfNeeded(WindowSnapshot snapshot)

@@ -10,8 +10,8 @@ public sealed class MasterGuiSettings
     public int HelperHeartbeatTimeoutMs { get; set; } = 2000;
     public int SyncHeartbeatTimeoutMs { get; set; } = 2000;
     public int StatusIntervalMs { get; set; } = 1000;
-    public string SyncMappingName { get; set; } = "Local\\DNFSyncBox.KeyboardState.V2";
-    public uint SyncVersion { get; set; } = 2;
+    public string SyncMappingName { get; set; } = "Local\\DNFSyncBox.KeyboardState.V3";
+    public uint SyncVersion { get; set; } = 3;
     public int SyncMappingSize { get; set; } = 1824;
     public string[] InjectorProcessNames { get; set; } = { "game-injector", "Injector" };
     public bool RequireBothModulesForInjected { get; set; } = false;

@@ -11,6 +11,7 @@
 #include <intrin.h>
 #include <string>
 #include <cstdint>
+#include <cstddef>
 #include <cstring>
 #include <cwchar>
 #include <cwctype>
@@ -44,6 +45,8 @@ static volatile LONG g_countUnacquire = 0;
 static volatile LONG g_countRegisterRawInput = 0;
 static volatile LONG g_countGetRawInputData = 0;
 static volatile LONG g_countGetRawInputBuffer = 0;
+static volatile LONG g_countSpoofRawInputData = 0;
+static volatile LONG g_countSpoofRawInputBuffer = 0;
 static volatile LONG g_countGetMessage = 0;
 static volatile LONG g_countPeekMessage = 0;
 static volatile LONG g_countSpoofWmInput = 0;
@@ -52,6 +55,17 @@ static volatile LONG g_countGetActiveWindow = 0;
 static volatile LONG g_countGetFocus = 0;
 static volatile LONG g_countSpoofFocus = 0;
 
+// 按键事件状态（诊断用，默认关闭）
+static CRITICAL_SECTION g_keyStateLock;
+static LONG g_keyStateLockReady = 0;
+static BYTE g_keyDownState[256] = {};
+static DWORD g_keyDownTick[256] = {};
+static DWORD g_keyUpTick[256] = {};
+static DWORD g_keyWarnTick[256] = {};
+static BYTE g_keyLastChannel[256] = {};
+static BYTE g_lastWin32State[256] = {};
+static BYTE g_lastDIState[256] = {};
+
 static LONG g_createDeviceHooked = 0;
 static LONG g_deviceHooksHooked = 0;
 
@@ -59,8 +73,11 @@ static LONG g_deviceHooksHooked = 0;
 // 共享内存与伪造配置
 // ------------------------------
 
-static const wchar_t* kSharedMemoryName = L"Local\\DNFSyncBox.KeyboardState.V2";
-static const uint32_t kSharedVersion = 2;
+static const wchar_t* kSharedMemoryName = L"Local\\DNFSyncBox.KeyboardState.V3";
+static const uint32_t kSharedVersion = 3;
+static const uint32_t kSharedMagic = 0x33564E44; // "DNV3"
+static const uint32_t kEventCapacity = 4096;
+static const uint32_t kEventSize = 16;
 static const uint32_t kFlagPaused = 0x1;
 static const uint32_t kFlagClear = 0x2;
 // 共享内存心跳超时（毫秒），可通过环境变量覆盖。
@@ -75,6 +92,14 @@ static const wchar_t* kRawInputLogIntervalEnvName = L"DNFSYNC_RAWINPUT_LOG_INTER
 // 统计日志开关与输出间隔。
 static const wchar_t* kStatsEnvName = L"DNFSYNC_STATS";
 static const wchar_t* kStatsIntervalEnvName = L"DNFSYNC_STATS_INTERVAL_MS";
+// 诊断日志开关与输出间隔。
+static const wchar_t* kDiagEnvName = L"DNFSYNC_DIAG";
+static const wchar_t* kDiagIntervalEnvName = L"DNFSYNC_DIAG_INTERVAL_MS";
+// 按键事件日志开关与输出间隔。
+static const wchar_t* kKeyLogEnvName = L"DNFSYNC_KEYLOG";
+static const wchar_t* kKeyLogIntervalEnvName = L"DNFSYNC_KEYLOG_INTERVAL_MS";
+static const wchar_t* kKeyLogLevelEnvName = L"DNFSYNC_KEYLOG_LEVEL";
+static const wchar_t* kKeyUpTimeoutEnvName = L"DNFSYNC_KEYUP_TIMEOUT_MS";
 // 与控制端 KeyboardProfileMode 枚举保持一致（Blacklist=2，Mapping=3）。
 static const uint32_t kProfileModeMapping = 3;
 // 伪造延迟（毫秒），用于在注入后短暂关闭输入伪造以降低崩溃风险。
@@ -96,7 +121,29 @@ struct SharedKeyboardStateV2
     uint8_t targetMask[256];
     uint8_t blockMask[256];
 };
+
+struct InputEventV3
+{
+    uint32_t sequenceId;
+    uint8_t vKey;
+    uint8_t isDown;
+    uint8_t flags;
+    uint8_t reserved;
+    int64_t timestamp;
+};
+
+struct SharedKeyboardStateV3
+{
+    uint32_t version;
+    uint32_t magic;
+    volatile LONG writeHead;
+    uint32_t capacity;
+    SharedKeyboardStateV2 snapshot;
+    uint8_t eventBuffer[1];
+};
 #pragma pack(pop)
+
+static_assert(sizeof(InputEventV3) == kEventSize, "InputEventV3 size mismatch");
 
 struct SharedSnapshot
 {
@@ -123,7 +170,7 @@ struct SharedSnapshotLite
 };
 
 static HANDLE g_sharedMapping = nullptr;
-static SharedKeyboardStateV2* g_sharedState = nullptr;
+static SharedKeyboardStateV3* g_sharedState = nullptr;
 static DWORD g_lastSharedAttemptTick = 0;
 static LONG g_sharedReadyLogged = 0;
 static LONG g_sharedErrorLogged = 0;
@@ -135,6 +182,22 @@ static uint8_t g_mappingSentState[256] = {};
 static int8_t g_mappingPendingState[256] = {};
 static uint32_t g_mappingLastEdgeCounter[256] = {};
 static ULONGLONG g_mappingLastSentTick[256] = {};
+// V3 事件流状态
+static SRWLOCK g_eventLock = SRWLOCK_INIT;
+static LONG g_eventReadIndex = -1;
+static uint8_t g_internalKeyState[256] = {};
+static uint32_t g_internalEdgeCounter[256] = {};
+static const int kRawEventQueueSize = 512;
+struct RawEventV3
+{
+    uint8_t vKey;
+    uint8_t isDown;
+};
+static RawEventV3 g_rawEvents[kRawEventQueueSize] = {};
+static int g_rawEventHead = 0;
+static int g_rawEventTail = 0;
+static int g_rawEventCount = 0;
+static LONG g_rawEventQueueLogged = 0;
 static uint32_t g_lastProfileId = 0;
 static uint32_t g_lastProfileMode = 0;
 static uint32_t g_mappingProfileId = 0;
@@ -158,7 +221,14 @@ static int g_mappingEventHead = 0;
 static int g_mappingEventTail = 0;
 static int g_mappingEventCount = 0;
 static LONG g_mappingQueueLogged = 0;
+static LONG g_mappingOverflowed = 0;
 static const DWORD kMappingReleaseTimeoutMs = 200;
+
+// 事件队列滞后/溢出统计（诊断用）
+static LONG g_eventOverflowCount = 0;
+static LONG g_eventLagCount = 0;
+static LONG g_eventLagLogged = 0;
+static const int kEventProcessBatch = 1024;
 
 static int g_vkeyToDik[256] = {};
 static LONG g_vkeyMapReady = 0;
@@ -171,11 +241,24 @@ static LONG g_rawInputLogIntervalMs = -1;
 static LONGLONG g_rawInputLogLastTick = 0;
 static LONG g_statsEnabled = -1;
 static LONG g_statsIntervalMs = -1;
+static LONG g_diagEnabled = -1;
+static LONG g_diagIntervalMs = -1;
+static LONGLONG g_keyLogLastTick = 0;
+static LONG g_keyLogEnabled = -1;
+static LONG g_keyLogIntervalMs = -1;
+static LONG g_keyLogLevel = -1;
+static LONG g_keyUpTimeoutMs = -1;
 static LONG g_debugConfigLoaded = 0;
 static LONG g_cfgRawInputLog = -1;
 static LONG g_cfgRawInputLogIntervalMs = -1;
 static LONG g_cfgStatsEnabled = -1;
 static LONG g_cfgStatsIntervalMs = -1;
+static LONG g_cfgDiagEnabled = -1;
+static LONG g_cfgDiagIntervalMs = -1;
+static LONG g_cfgKeyLogEnabled = -1;
+static LONG g_cfgKeyLogIntervalMs = -1;
+static LONG g_cfgKeyLogLevel = -1;
+static LONG g_cfgKeyUpTimeoutMs = -1;
 static LONG g_cfgSpoofDelayMs = -1;
 
 // 窗口缓存只由后台线程更新，Hook 回调仅做只读访问
@@ -200,6 +283,17 @@ static DWORD GetSharedTimeoutMs();
 static DWORD GetSnapshotCacheMs();
 static bool IsRawInputLogEnabled();
 static bool ShouldLogRawInput();
+static bool IsDiagEnabled();
+static DWORD GetDiagIntervalMs();
+static bool IsKeyLogEnabled();
+static DWORD GetKeyLogIntervalMs();
+static LONG GetKeyLogLevel();
+static DWORD GetKeyUpTimeoutMs();
+static bool IsSnapshotAlive(const SharedSnapshot& snapshot);
+static bool IsBypassProcess(const SharedSnapshot& snapshot);
+static bool ShouldBlockKey(const SharedSnapshot& snapshot, int vKey, bool alive, bool paused);
+static void LogKeyFix(const wchar_t* reason, int vKey, bool isDown);
+static bool ShouldLogKeyEvent();
 static std::wstring BuildDebugConfigPath();
 static void LoadDebugConfig();
 
@@ -519,6 +613,39 @@ static void TrimWhitespace(wchar_t* text)
     text[end - start] = L'\0';
 }
 
+enum class KeyChannel : uint8_t
+{
+    RawInputData = 1,
+    RawInputBuffer = 2,
+    Win32 = 3,
+    DirectInput = 4
+};
+
+static const wchar_t* KeyChannelToText(KeyChannel channel)
+{
+    switch (channel)
+    {
+    case KeyChannel::RawInputData:
+        return L"RawInputData";
+    case KeyChannel::RawInputBuffer:
+        return L"RawInputBuffer";
+    case KeyChannel::Win32:
+        return L"Win32";
+    case KeyChannel::DirectInput:
+        return L"DirectInput";
+    default:
+        return L"Unknown";
+    }
+}
+
+static void EnsureKeyStateLock()
+{
+    if (InterlockedCompareExchange(&g_keyStateLockReady, 1, 0) == 0)
+    {
+        InitializeCriticalSection(&g_keyStateLock);
+    }
+}
+
 static bool TryParseBool(const wchar_t* text, bool* valueOut)
 {
     if (!text || !valueOut)
@@ -652,6 +779,24 @@ static void LoadDebugConfig()
         }
         g_cfgStatsIntervalMs = static_cast<LONG>(intValue);
     }
+    if (ReadConfigValue(path, L"Debug", L"Diag", value, ARRAYSIZE(value)) &&
+        TryParseBool(value, &boolValue))
+    {
+        g_cfgDiagEnabled = boolValue ? 1 : 0;
+    }
+    if (ReadConfigValue(path, L"Debug", L"DiagIntervalMs", value, ARRAYSIZE(value)) &&
+        TryParseInt(value, &intValue))
+    {
+        if (intValue < 0)
+        {
+            intValue = 0;
+        }
+        if (intValue > 60000)
+        {
+            intValue = 60000;
+        }
+        g_cfgDiagIntervalMs = static_cast<LONG>(intValue);
+    }
     if (ReadConfigValue(path, L"Debug", L"SpoofDelayMs", value, ARRAYSIZE(value)) &&
         TryParseInt(value, &intValue))
     {
@@ -664,6 +809,50 @@ static void LoadDebugConfig()
             intValue = 600000;
         }
         g_cfgSpoofDelayMs = static_cast<LONG>(intValue);
+    }
+    if (ReadConfigValue(path, L"Debug", L"KeyLog", value, ARRAYSIZE(value)) &&
+        TryParseBool(value, &boolValue))
+    {
+        g_cfgKeyLogEnabled = boolValue ? 1 : 0;
+    }
+    if (ReadConfigValue(path, L"Debug", L"KeyLogIntervalMs", value, ARRAYSIZE(value)) &&
+        TryParseInt(value, &intValue))
+    {
+        if (intValue < 0)
+        {
+            intValue = 0;
+        }
+        if (intValue > 5000)
+        {
+            intValue = 5000;
+        }
+        g_cfgKeyLogIntervalMs = static_cast<LONG>(intValue);
+    }
+    if (ReadConfigValue(path, L"Debug", L"KeyLogLevel", value, ARRAYSIZE(value)) &&
+        TryParseInt(value, &intValue))
+    {
+        if (intValue < 1)
+        {
+            intValue = 1;
+        }
+        if (intValue > 3)
+        {
+            intValue = 3;
+        }
+        g_cfgKeyLogLevel = static_cast<LONG>(intValue);
+    }
+    if (ReadConfigValue(path, L"Debug", L"KeyUpTimeoutMs", value, ARRAYSIZE(value)) &&
+        TryParseInt(value, &intValue))
+    {
+        if (intValue < 0)
+        {
+            intValue = 0;
+        }
+        if (intValue > 5000)
+        {
+            intValue = 5000;
+        }
+        g_cfgKeyUpTimeoutMs = static_cast<LONG>(intValue);
     }
 }
 
@@ -994,6 +1183,19 @@ static bool ErasePeHeader(HMODULE module)
 // 共享内存读取与快照
 // ------------------------------
 
+static SIZE_T GetSharedMemorySize()
+{
+    return offsetof(SharedKeyboardStateV3, eventBuffer) + static_cast<SIZE_T>(kEventCapacity) * kEventSize;
+}
+
+static bool IsSharedV3Ready()
+{
+    return g_sharedState &&
+        g_sharedState->version == kSharedVersion &&
+        g_sharedState->magic == kSharedMagic &&
+        g_sharedState->capacity > 0;
+}
+
 static bool EnsureSharedMemory()
 {
     if (g_sharedState)
@@ -1018,7 +1220,7 @@ static bool EnsureSharedMemory()
         return false;
     }
 
-    void* view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(SharedKeyboardStateV2));
+    void* view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, GetSharedMemorySize());
     if (!view)
     {
         CloseHandle(mapping);
@@ -1026,11 +1228,12 @@ static bool EnsureSharedMemory()
     }
 
     SIZE_T regionSize = GetViewRegionSize(view);
-    if (regionSize < sizeof(SharedKeyboardStateV2))
+    SIZE_T expectSize = GetSharedMemorySize();
+    if (regionSize < expectSize)
     {
         if (InterlockedCompareExchange(&g_sharedSizeLogged, 1, 0) == 0)
         {
-            LogProtocolMismatch(L"size_mismatch", static_cast<uint32_t>(sizeof(SharedKeyboardStateV2)), regionSize);
+            LogProtocolMismatch(L"size_mismatch", static_cast<uint32_t>(expectSize), regionSize);
         }
         UnmapViewOfFile(view);
         CloseHandle(mapping);
@@ -1038,7 +1241,7 @@ static bool EnsureSharedMemory()
     }
 
     g_sharedMapping = mapping;
-    g_sharedState = static_cast<SharedKeyboardStateV2*>(view);
+    g_sharedState = static_cast<SharedKeyboardStateV3*>(view);
 
     if (InterlockedCompareExchange(&g_sharedReadyLogged, 1, 0) == 0)
     {
@@ -1055,35 +1258,36 @@ static bool ReadSharedSnapshot(SharedSnapshot& snapshot)
         return false;
     }
 
-    if (g_sharedState->version != kSharedVersion)
+    if (!IsSharedV3Ready())
     {
         if (InterlockedCompareExchange(&g_sharedVersionLogged, 1, 0) == 0)
         {
-            LogProtocolMismatch(L"version_mismatch", kSharedVersion, g_sharedState->version);
+            LogProtocolMismatch(L"version_mismatch", kSharedVersion, g_sharedState ? g_sharedState->version : 0);
         }
         return false;
     }
 
+    const SharedKeyboardStateV2* snapshotState = &g_sharedState->snapshot;
     for (int i = 0; i < 3; i++)
     {
-        uint32_t seq1 = g_sharedState->seq;
+        uint32_t seq1 = snapshotState->seq;
         if ((seq1 & 1) != 0)
         {
             continue;
         }
 
         snapshot.seq = seq1;
-        snapshot.flags = g_sharedState->flags;
-        snapshot.activePid = g_sharedState->activePid;
-        snapshot.profileId = g_sharedState->profileId;
-        snapshot.profileMode = g_sharedState->profileMode;
-        snapshot.lastTick = g_sharedState->lastTick;
-        memcpy(snapshot.keyboardState, g_sharedState->keyboardState, sizeof(snapshot.keyboardState));
-        memcpy(snapshot.edgeCounter, g_sharedState->edgeCounter, sizeof(snapshot.edgeCounter));
-        memcpy(snapshot.targetMask, g_sharedState->targetMask, sizeof(snapshot.targetMask));
-        memcpy(snapshot.blockMask, g_sharedState->blockMask, sizeof(snapshot.blockMask));
+        snapshot.flags = snapshotState->flags;
+        snapshot.activePid = snapshotState->activePid;
+        snapshot.profileId = snapshotState->profileId;
+        snapshot.profileMode = snapshotState->profileMode;
+        snapshot.lastTick = snapshotState->lastTick;
+        memcpy(snapshot.keyboardState, snapshotState->keyboardState, sizeof(snapshot.keyboardState));
+        memcpy(snapshot.edgeCounter, snapshotState->edgeCounter, sizeof(snapshot.edgeCounter));
+        memcpy(snapshot.targetMask, snapshotState->targetMask, sizeof(snapshot.targetMask));
+        memcpy(snapshot.blockMask, snapshotState->blockMask, sizeof(snapshot.blockMask));
 
-        uint32_t seq2 = g_sharedState->seq;
+        uint32_t seq2 = snapshotState->seq;
         if (seq1 == seq2 && (seq2 & 1) == 0)
         {
             g_lastProfileId = snapshot.profileId;
@@ -1108,6 +1312,18 @@ static void ApplyClearIfNeeded(const SharedSnapshot& snapshot)
     }
 
     g_lastClearSeq = snapshot.seq;
+    if (IsSharedV3Ready())
+    {
+        memset(g_internalKeyState, 0, sizeof(g_internalKeyState));
+        memset(g_internalEdgeCounter, 0, sizeof(g_internalEdgeCounter));
+        g_eventReadIndex = -1;
+        g_rawEventHead = 0;
+        g_rawEventTail = 0;
+        g_rawEventCount = 0;
+        memset(g_lastRawKeyboardState, 0, sizeof(g_lastRawKeyboardState));
+        return;
+    }
+
     for (int i = 0; i < 256; i++)
     {
         g_lastEdgeCounter[i] = snapshot.edgeCounter[i];
@@ -1121,6 +1337,10 @@ static bool IsMappingTarget(const SharedSnapshot& snapshot, bool hasMappingMask,
 
 static void ApplyRawClearIfNeeded(const SharedSnapshot& snapshot)
 {
+    if (IsSharedV3Ready())
+    {
+        return;
+    }
     if ((snapshot.flags & kFlagClear) == 0)
     {
         return;
@@ -1144,6 +1364,238 @@ static void ApplyRawClearIfNeeded(const SharedSnapshot& snapshot)
     }
 }
 
+static void ResetRawEventQueue()
+{
+    g_rawEventHead = 0;
+    g_rawEventTail = 0;
+    g_rawEventCount = 0;
+}
+
+static bool EnqueueRawEventV3(int vKey, bool isDown)
+{
+    if (vKey < 0 || vKey >= 256)
+    {
+        return false;
+    }
+    if (g_rawEventCount >= kRawEventQueueSize)
+    {
+        if (InterlockedCompareExchange(&g_rawEventQueueLogged, 1, 0) == 0)
+        {
+            LogInfo(L"[SYNC] RawInput 事件队列溢出，已丢弃事件");
+        }
+        return false;
+    }
+
+    g_rawEvents[g_rawEventTail].vKey = static_cast<uint8_t>(vKey);
+    g_rawEvents[g_rawEventTail].isDown = isDown ? 1 : 0;
+    g_rawEventTail = (g_rawEventTail + 1) % kRawEventQueueSize;
+    g_rawEventCount++;
+    return true;
+}
+
+static bool DequeueRawEventV3(int* vKeyOut, bool* isDownOut)
+{
+    if (!vKeyOut || !isDownOut)
+    {
+        return false;
+    }
+    if (g_rawEventCount <= 0)
+    {
+        return false;
+    }
+
+    RawEventV3 ev = g_rawEvents[g_rawEventHead];
+    g_rawEventHead = (g_rawEventHead + 1) % kRawEventQueueSize;
+    g_rawEventCount--;
+
+    *vKeyOut = static_cast<int>(ev.vKey);
+    *isDownOut = ev.isDown != 0;
+    return true;
+}
+
+static void SyncInternalStateFromSnapshot(const SharedSnapshot& snapshot)
+{
+    for (int i = 0; i < 256; i++)
+    {
+        g_internalKeyState[i] = snapshot.keyboardState[i];
+        g_internalEdgeCounter[i] = snapshot.edgeCounter[i];
+        g_lastEdgeCounter[i] = snapshot.edgeCounter[i];
+    }
+    ResetRawEventQueue();
+}
+
+static void ApplyEventV3(const InputEventV3& ev)
+{
+    int vKey = static_cast<int>(ev.vKey);
+    if (vKey < 0 || vKey >= 256)
+    {
+        return;
+    }
+    bool isDown = ev.isDown != 0;
+    BYTE toggle = g_internalKeyState[vKey] & 0x01;
+    g_internalKeyState[vKey] = static_cast<uint8_t>((isDown ? 0x80 : 0x00) | toggle);
+    if (isDown)
+    {
+        g_internalEdgeCounter[vKey] = g_internalEdgeCounter[vKey] + 1;
+    }
+    EnqueueRawEventV3(vKey, isDown);
+}
+
+static void ApplyCompensationEventV3(int vKey, bool isDown, const wchar_t* reason)
+{
+    if (vKey < 0 || vKey >= 256)
+    {
+        return;
+    }
+
+    bool currentDown = (g_internalKeyState[vKey] & 0x80) != 0;
+    if (currentDown == isDown)
+    {
+        return;
+    }
+
+    BYTE toggle = g_internalKeyState[vKey] & 0x01;
+    g_internalKeyState[vKey] = static_cast<uint8_t>((isDown ? 0x80 : 0x00) | toggle);
+    if (isDown)
+    {
+        g_internalEdgeCounter[vKey] = g_internalEdgeCounter[vKey] + 1;
+    }
+    g_lastRawKeyboardState[vKey] = isDown ? 0x80 : 0x00;
+
+    if (!EnqueueRawEventV3(vKey, isDown))
+    {
+        if (InterlockedCompareExchange(&g_rawEventQueueLogged, 1, 0) == 0)
+        {
+            LogInfo(L"[SYNC] RawInput 事件队列溢出，补偿事件已丢弃");
+        }
+    }
+
+    LogKeyFix(reason, vKey, isDown);
+}
+
+static void AlignInternalStateWithSnapshot(const SharedSnapshot& snapshot)
+{
+    if (!IsSharedV3Ready())
+    {
+        return;
+    }
+
+    if (IsBypassProcess(snapshot))
+    {
+        return;
+    }
+
+    const bool alive = IsSnapshotAlive(snapshot);
+    const bool paused = (snapshot.flags & kFlagPaused) != 0;
+
+    for (int vKey = 0; vKey < 256; vKey++)
+    {
+        bool isTarget = snapshot.targetMask[vKey] != 0;
+        bool shouldBlock = ShouldBlockKey(snapshot, vKey, alive, paused);
+        if (!isTarget && !shouldBlock)
+        {
+            continue;
+        }
+
+        bool desiredDown = false;
+        if (isTarget && alive && !paused)
+        {
+            desiredDown = (snapshot.keyboardState[vKey] & 0x80) != 0;
+        }
+
+        if (shouldBlock)
+        {
+            desiredDown = false;
+        }
+
+        bool currentDown = (g_internalKeyState[vKey] & 0x80) != 0;
+        if (currentDown == desiredDown)
+        {
+            continue;
+        }
+
+        ApplyCompensationEventV3(vKey, desiredDown, L"snapshot_align");
+    }
+}
+
+static void ProcessEventQueueV3(const SharedSnapshot& snapshot)
+{
+    if (!IsSharedV3Ready())
+    {
+        return;
+    }
+
+    if (!TryAcquireSRWLockExclusive(&g_eventLock))
+    {
+        return;
+    }
+
+    const int head = static_cast<int>(g_sharedState->writeHead);
+    const int capacity = static_cast<int>(g_sharedState->capacity);
+    if (capacity <= 0)
+    {
+        ReleaseSRWLockExclusive(&g_eventLock);
+        return;
+    }
+
+    if (g_eventReadIndex < 0)
+    {
+        g_eventReadIndex = head;
+        SyncInternalStateFromSnapshot(snapshot);
+        ReleaseSRWLockExclusive(&g_eventLock);
+        return;
+    }
+
+    int backlog = head - g_eventReadIndex;
+    if (backlog > capacity)
+    {
+        InterlockedIncrement(&g_eventOverflowCount);
+        if (InterlockedCompareExchange(&g_eventLagLogged, 1, 0) == 0)
+        {
+            LogInfo(L"[SYNC] 事件队列溢出，已重置读取指针并同步快照");
+        }
+        g_eventReadIndex = head;
+        SyncInternalStateFromSnapshot(snapshot);
+        ReleaseSRWLockExclusive(&g_eventLock);
+        return;
+    }
+
+    if (backlog <= 0)
+    {
+        AlignInternalStateWithSnapshot(snapshot);
+        ReleaseSRWLockExclusive(&g_eventLock);
+        return;
+    }
+
+    int processCount = backlog;
+    if (processCount > kEventProcessBatch)
+    {
+        processCount = kEventProcessBatch;
+        InterlockedIncrement(&g_eventLagCount);
+    }
+
+    uint8_t* buffer = g_sharedState->eventBuffer;
+    for (int i = 0; i < processCount; i++)
+    {
+        int offset = g_eventReadIndex % capacity;
+        int byteOffset = offset * static_cast<int>(kEventSize);
+        InputEventV3* ev = reinterpret_cast<InputEventV3*>(buffer + byteOffset);
+        ApplyEventV3(*ev);
+        g_eventReadIndex++;
+    }
+
+    if (g_eventReadIndex >= head)
+    {
+        AlignInternalStateWithSnapshot(snapshot);
+    }
+    ReleaseSRWLockExclusive(&g_eventLock);
+
+    if (backlog > capacity / 2 && InterlockedCompareExchange(&g_eventLagLogged, 1, 0) == 0)
+    {
+        LogInfo(L"[SYNC] 事件队列滞后，进入分批消费模式");
+    }
+}
+
 static void ResetMappingQueue()
 {
     g_mappingEventHead = 0;
@@ -1164,6 +1616,7 @@ static bool EnqueueMappingEvent(int vKey, bool isDown)
         {
             LogInfo(L"[SYNC] Mapping 事件队列溢出，已丢弃事件");
         }
+        InterlockedExchange(&g_mappingOverflowed, 1);
         return false;
     }
 
@@ -1245,6 +1698,13 @@ static void ScheduleMappingEvents(const SharedSnapshot& snapshot, bool alive, bo
         return;
     }
 
+    if (InterlockedCompareExchange(&g_mappingOverflowed, 0, 1) == 1)
+    {
+        LogInfo(L"[SYNC] Mapping 事件队列溢出后重置状态");
+        ResetMappingQueue();
+        EnqueueMappingReleaseAll();
+    }
+
     ULONGLONG now = GetTickCount64();
 
     // 先补抬起，避免粘键。
@@ -1274,16 +1734,8 @@ static void ScheduleMappingEvents(const SharedSnapshot& snapshot, bool alive, bo
             continue;
         }
 
-        // 超时兜底：若长时间未收到抬起，强制补一次释放。
-        if (g_mappingLastSentTick[i] != 0 &&
-            now - g_mappingLastSentTick[i] > kMappingReleaseTimeoutMs &&
-            g_mappingPendingState[i] != 2)
-        {
-            if (EnqueueMappingEvent(i, false))
-            {
-                g_mappingPendingState[i] = 2;
-            }
-        }
+        // 长按期间刷新时间戳，避免误触发超时释放。
+        g_mappingLastSentTick[i] = now;
     }
 
     // 短按补偿：边沿变化但当前已抬起。
@@ -1820,9 +2272,403 @@ static DWORD GetStatsIntervalMs()
     return interval;
 }
 
+static bool IsDiagEnabled()
+{
+    LoadDebugConfig();
+    LONG cfg = InterlockedCompareExchange(&g_cfgDiagEnabled, -1, -1);
+    if (cfg >= 0)
+    {
+        return cfg != 0;
+    }
+
+    LONG cached = InterlockedCompareExchange(&g_diagEnabled, -1, -1);
+    if (cached >= 0)
+    {
+        return cached != 0;
+    }
+
+    wchar_t value[16] = {0};
+    DWORD len = GetEnvironmentVariableW(kDiagEnvName, value, ARRAYSIZE(value));
+    bool enabled = false;
+    if (len > 0 && len < ARRAYSIZE(value))
+    {
+        if (_wcsicmp(value, L"1") == 0 ||
+            _wcsicmp(value, L"true") == 0 ||
+            _wcsicmp(value, L"yes") == 0 ||
+            _wcsicmp(value, L"on") == 0)
+        {
+            enabled = true;
+        }
+    }
+    InterlockedExchange(&g_diagEnabled, enabled ? 1 : 0);
+    return enabled;
+}
+
+static DWORD GetDiagIntervalMs()
+{
+    LoadDebugConfig();
+    LONG cfg = InterlockedCompareExchange(&g_cfgDiagIntervalMs, -1, -1);
+    if (cfg >= 0)
+    {
+        return static_cast<DWORD>(cfg);
+    }
+
+    LONG cached = InterlockedCompareExchange(&g_diagIntervalMs, -1, -1);
+    if (cached >= 0)
+    {
+        return static_cast<DWORD>(cached);
+    }
+
+    DWORD interval = 1000;
+    wchar_t value[16] = {0};
+    DWORD len = GetEnvironmentVariableW(kDiagIntervalEnvName, value, ARRAYSIZE(value));
+    if (len > 0 && len < ARRAYSIZE(value))
+    {
+        DWORD parsed = _wtoi(value);
+        if (parsed > 0 && parsed <= 60000)
+        {
+            interval = parsed;
+        }
+    }
+    InterlockedExchange(&g_diagIntervalMs, static_cast<LONG>(interval));
+    return interval;
+}
+
+static bool IsKeyLogEnabled()
+{
+    LoadDebugConfig();
+    LONG cfg = InterlockedCompareExchange(&g_cfgKeyLogEnabled, -1, -1);
+    if (cfg >= 0)
+    {
+        return cfg != 0;
+    }
+
+    LONG cached = InterlockedCompareExchange(&g_keyLogEnabled, -1, -1);
+    if (cached >= 0)
+    {
+        return cached != 0;
+    }
+
+    wchar_t value[16] = {0};
+    DWORD len = GetEnvironmentVariableW(kKeyLogEnvName, value, ARRAYSIZE(value));
+    bool enabled = false;
+    if (len > 0 && len < ARRAYSIZE(value))
+    {
+        if (_wcsicmp(value, L"1") == 0 ||
+            _wcsicmp(value, L"true") == 0 ||
+            _wcsicmp(value, L"yes") == 0 ||
+            _wcsicmp(value, L"on") == 0)
+        {
+            enabled = true;
+        }
+    }
+    InterlockedExchange(&g_keyLogEnabled, enabled ? 1 : 0);
+    return enabled;
+}
+
+static DWORD GetKeyLogIntervalMs()
+{
+    LoadDebugConfig();
+    LONG cfg = InterlockedCompareExchange(&g_cfgKeyLogIntervalMs, -1, -1);
+    if (cfg >= 0)
+    {
+        return static_cast<DWORD>(cfg);
+    }
+
+    LONG cached = InterlockedCompareExchange(&g_keyLogIntervalMs, -1, -1);
+    if (cached >= 0)
+    {
+        return static_cast<DWORD>(cached);
+    }
+
+    DWORD interval = 0;
+    wchar_t value[16] = {0};
+    DWORD len = GetEnvironmentVariableW(kKeyLogIntervalEnvName, value, ARRAYSIZE(value));
+    if (len > 0 && len < ARRAYSIZE(value))
+    {
+        DWORD parsed = _wtoi(value);
+        if (parsed <= 5000)
+        {
+            interval = parsed;
+        }
+    }
+    InterlockedExchange(&g_keyLogIntervalMs, static_cast<LONG>(interval));
+    return interval;
+}
+
+static LONG GetKeyLogLevel()
+{
+    LoadDebugConfig();
+    LONG cfg = InterlockedCompareExchange(&g_cfgKeyLogLevel, -1, -1);
+    if (cfg >= 0)
+    {
+        return cfg;
+    }
+
+    LONG cached = InterlockedCompareExchange(&g_keyLogLevel, -1, -1);
+    if (cached >= 0)
+    {
+        return cached;
+    }
+
+    LONG level = 1;
+    wchar_t value[16] = {0};
+    DWORD len = GetEnvironmentVariableW(kKeyLogLevelEnvName, value, ARRAYSIZE(value));
+    if (len > 0 && len < ARRAYSIZE(value))
+    {
+        LONG parsed = _wtoi(value);
+        if (parsed >= 1 && parsed <= 3)
+        {
+            level = parsed;
+        }
+    }
+    InterlockedExchange(&g_keyLogLevel, level);
+    return level;
+}
+
+static DWORD GetKeyUpTimeoutMs()
+{
+    LoadDebugConfig();
+    LONG cfg = InterlockedCompareExchange(&g_cfgKeyUpTimeoutMs, -1, -1);
+    if (cfg >= 0)
+    {
+        return static_cast<DWORD>(cfg);
+    }
+
+    LONG cached = InterlockedCompareExchange(&g_keyUpTimeoutMs, -1, -1);
+    if (cached >= 0)
+    {
+        return static_cast<DWORD>(cached);
+    }
+
+    DWORD timeout = 300;
+    wchar_t value[16] = {0};
+    DWORD len = GetEnvironmentVariableW(kKeyUpTimeoutEnvName, value, ARRAYSIZE(value));
+    if (len > 0 && len < ARRAYSIZE(value))
+    {
+        DWORD parsed = _wtoi(value);
+        if (parsed > 0 && parsed <= 5000)
+        {
+            timeout = parsed;
+        }
+    }
+    InterlockedExchange(&g_keyUpTimeoutMs, static_cast<LONG>(timeout));
+    return timeout;
+}
+
+static bool ShouldLogKeyEvent()
+{
+    if (!IsKeyLogEnabled())
+    {
+        return false;
+    }
+
+    DWORD interval = GetKeyLogIntervalMs();
+    if (interval == 0)
+    {
+        return true;
+    }
+
+    ULONGLONG now = GetTickCount64();
+    LONGLONG last = InterlockedCompareExchange64(&g_keyLogLastTick, 0, 0);
+    if (now - static_cast<ULONGLONG>(last) >= interval)
+    {
+        InterlockedExchange64(&g_keyLogLastTick, static_cast<LONGLONG>(now));
+        return true;
+    }
+
+    return false;
+}
+
+static void LogKeyWarn(const wchar_t* reason, int vKey, DWORD elapsedMs, KeyChannel channel)
+{
+    wchar_t buffer[256] = {0};
+    StringCchPrintfW(
+        buffer,
+        ARRAYSIZE(buffer),
+        L"[KEYWARN] %s reason=%s vkey=0x%02X elapsed=%lu channel=%s",
+        GetTimestamp().c_str(),
+        reason ? reason : L"unknown",
+        vKey,
+        elapsedMs,
+        KeyChannelToText(channel));
+    WriteLogLine(buffer);
+}
+
+static void RecordKeyEvent(KeyChannel channel, int vKey, bool isDown, bool spoofed, UINT makeCode, UINT flags, uint32_t profileMode)
+{
+    if (vKey < 0 || vKey >= 256)
+    {
+        return;
+    }
+    if (!IsKeyLogEnabled())
+    {
+        return;
+    }
+
+    LONG level = GetKeyLogLevel();
+    DWORD now = GetTickCount();
+
+    if (level >= 2)
+    {
+        EnsureKeyStateLock();
+        EnterCriticalSection(&g_keyStateLock);
+        bool prevDown = g_keyDownState[vKey] != 0;
+        g_keyLastChannel[vKey] = static_cast<BYTE>(channel);
+        if (isDown)
+        {
+            g_keyDownState[vKey] = 1;
+            g_keyDownTick[vKey] = now;
+        }
+        else
+        {
+            if (prevDown)
+            {
+                g_keyDownState[vKey] = 0;
+                g_keyUpTick[vKey] = now;
+            }
+            else
+            {
+                DWORD elapsed = (now >= g_keyUpTick[vKey]) ? (now - g_keyUpTick[vKey]) : 0;
+                LogKeyWarn(L"orphan_up", vKey, elapsed, channel);
+            }
+        }
+        LeaveCriticalSection(&g_keyStateLock);
+    }
+
+    if (!ShouldLogKeyEvent())
+    {
+        return;
+    }
+
+    wchar_t buffer[320] = {0};
+    StringCchPrintfW(
+        buffer,
+        ARRAYSIZE(buffer),
+        L"[KEY] %s ch=%s vkey=0x%02X down=%d mk=0x%02X fl=0x%X spoof=%d mode=%lu",
+        GetTimestamp().c_str(),
+        KeyChannelToText(channel),
+        vKey,
+        isDown ? 1 : 0,
+        makeCode,
+        flags,
+        spoofed ? 1 : 0,
+        profileMode);
+    WriteLogLine(buffer);
+}
+
+static void LogKeyFix(const wchar_t* reason, int vKey, bool isDown)
+{
+    if (!IsKeyLogEnabled() || GetKeyLogLevel() < 2)
+    {
+        return;
+    }
+
+    wchar_t buffer[256] = {0};
+    StringCchPrintfW(
+        buffer,
+        ARRAYSIZE(buffer),
+        L"[KEYFIX] %s reason=%s vkey=0x%02X down=%d",
+        GetTimestamp().c_str(),
+        reason ? reason : L"align",
+        vKey,
+        isDown ? 1 : 0);
+    WriteLogLine(buffer);
+}
+
+static void RecordWin32KeyEventIfNeeded(int vKey, SHORT result, bool spoofed, uint32_t profileMode)
+{
+    if (!IsKeyLogEnabled())
+    {
+        return;
+    }
+    if (GetKeyLogLevel() < 2)
+    {
+        return;
+    }
+
+    bool isDown = (result & 0x8000) != 0;
+    BYTE downValue = isDown ? 1 : 0;
+    BYTE prev = g_lastWin32State[vKey];
+    if (prev == downValue)
+    {
+        return;
+    }
+    g_lastWin32State[vKey] = downValue;
+    RecordKeyEvent(KeyChannel::Win32, vKey, isDown, spoofed, 0, 0, profileMode);
+}
+
+static void RecordDirectInputKeyEventIfNeeded(int vKey, bool isDown, bool spoofed, uint32_t profileMode)
+{
+    if (!IsKeyLogEnabled())
+    {
+        return;
+    }
+    if (GetKeyLogLevel() < 3)
+    {
+        return;
+    }
+
+    BYTE downValue = isDown ? 1 : 0;
+    BYTE prev = g_lastDIState[vKey];
+    if (prev == downValue)
+    {
+        return;
+    }
+    g_lastDIState[vKey] = downValue;
+    RecordKeyEvent(KeyChannel::DirectInput, vKey, isDown, spoofed, 0, 0, profileMode);
+}
+
+static void CheckKeyUpTimeouts()
+{
+    if (!IsKeyLogEnabled())
+    {
+        return;
+    }
+    LONG level = GetKeyLogLevel();
+    if (level < 2)
+    {
+        return;
+    }
+
+    DWORD timeout = GetKeyUpTimeoutMs();
+    if (timeout == 0)
+    {
+        return;
+    }
+
+    DWORD now = GetTickCount();
+    EnsureKeyStateLock();
+    EnterCriticalSection(&g_keyStateLock);
+    for (int vKey = 0; vKey < 256; vKey++)
+    {
+        if (g_keyDownState[vKey] == 0)
+        {
+            continue;
+        }
+
+        DWORD downTick = g_keyDownTick[vKey];
+        if (now - downTick < timeout)
+        {
+            continue;
+        }
+
+        DWORD lastWarn = g_keyWarnTick[vKey];
+        if (now - lastWarn < timeout)
+        {
+            continue;
+        }
+
+        g_keyWarnTick[vKey] = now;
+        KeyChannel channel = static_cast<KeyChannel>(g_keyLastChannel[vKey]);
+        LogKeyWarn(L"missing_keyup", vKey, now - downTick, channel);
+    }
+    LeaveCriticalSection(&g_keyStateLock);
+}
+
 static void CountStat(volatile LONG* counter)
 {
-    if (!IsStatsEnabled())
+    if (!IsStatsEnabled() && !IsDiagEnabled())
     {
         return;
     }
@@ -1836,31 +2682,32 @@ static bool ReadSharedSnapshotLite(SharedSnapshotLite& snapshot)
         return false;
     }
 
-    if (g_sharedState->version != kSharedVersion)
+    if (!IsSharedV3Ready())
     {
         if (InterlockedCompareExchange(&g_sharedVersionLogged, 1, 0) == 0)
         {
-            LogProtocolMismatch(L"version_mismatch", kSharedVersion, g_sharedState->version);
+            LogProtocolMismatch(L"version_mismatch", kSharedVersion, g_sharedState ? g_sharedState->version : 0);
         }
         return false;
     }
 
+    const SharedKeyboardStateV2* snapshotState = &g_sharedState->snapshot;
     for (int i = 0; i < 3; i++)
     {
-        uint32_t seq1 = g_sharedState->seq;
+        uint32_t seq1 = snapshotState->seq;
         if ((seq1 & 1) != 0)
         {
             continue;
         }
 
         snapshot.seq = seq1;
-        snapshot.flags = g_sharedState->flags;
-        snapshot.activePid = g_sharedState->activePid;
-        snapshot.profileId = g_sharedState->profileId;
-        snapshot.profileMode = g_sharedState->profileMode;
-        snapshot.lastTick = g_sharedState->lastTick;
+        snapshot.flags = snapshotState->flags;
+        snapshot.activePid = snapshotState->activePid;
+        snapshot.profileId = snapshotState->profileId;
+        snapshot.profileMode = snapshotState->profileMode;
+        snapshot.lastTick = snapshotState->lastTick;
 
-        uint32_t seq2 = g_sharedState->seq;
+        uint32_t seq2 = snapshotState->seq;
         if (seq1 == seq2 && (seq2 & 1) == 0)
         {
             g_lastProfileId = snapshot.profileId;
@@ -2248,6 +3095,53 @@ static SHORT WINAPI Hook_GetAsyncKeyState(int vKey)
 
     ApplyClearIfNeeded(snapshot);
 
+    if (IsSharedV3Ready())
+    {
+        ProcessEventQueueV3(snapshot);
+
+        if (IsBypassProcess(snapshot))
+        {
+            return original;
+        }
+
+        const bool alive = IsSnapshotAlive(snapshot);
+        const bool paused_full = (snapshot.flags & kFlagPaused) != 0;
+
+        if (snapshot.targetMask[vKey] == 0)
+        {
+            if (ShouldBlockKey(snapshot, vKey, alive, paused_full))
+            {
+                RecordWin32KeyEventIfNeeded(vKey, 0, true, snapshot.profileMode);
+                return 0;
+            }
+
+            return original;
+        }
+
+        if (!alive || paused_full)
+        {
+            RecordWin32KeyEventIfNeeded(vKey, 0, true, snapshot.profileMode);
+            return 0;
+        }
+
+        SHORT result = 0;
+        if (g_internalKeyState[vKey] & 0x80)
+        {
+            result |= static_cast<SHORT>(0x8000);
+        }
+
+        uint32_t currentEdge = g_internalEdgeCounter[vKey];
+        if (currentEdge != g_lastEdgeCounter[vKey])
+        {
+            g_lastEdgeCounter[vKey] = currentEdge;
+            result |= 0x0001;
+        }
+
+        CountStat(&g_countSpoofAsync);
+        RecordWin32KeyEventIfNeeded(vKey, result, true, snapshot.profileMode);
+        return result;
+    }
+
     if (IsBypassProcess(snapshot))
     {
         return original;
@@ -2260,6 +3154,7 @@ static SHORT WINAPI Hook_GetAsyncKeyState(int vKey)
     {
         if (ShouldBlockKey(snapshot, vKey, alive, paused_full))
         {
+            RecordWin32KeyEventIfNeeded(vKey, 0, true, snapshot.profileMode);
             return 0;
         }
 
@@ -2268,6 +3163,7 @@ static SHORT WINAPI Hook_GetAsyncKeyState(int vKey)
 
     if (!alive || paused_full)
     {
+        RecordWin32KeyEventIfNeeded(vKey, 0, true, snapshot.profileMode);
         return 0;
     }
 
@@ -2285,6 +3181,7 @@ static SHORT WINAPI Hook_GetAsyncKeyState(int vKey)
     }
 
     CountStat(&g_countSpoofAsync);
+    RecordWin32KeyEventIfNeeded(vKey, result, true, snapshot.profileMode);
     return result;
 }
 
@@ -2315,6 +3212,51 @@ static BOOL WINAPI Hook_GetKeyboardState(PBYTE lpKeyState)
     }
 
     ApplyClearIfNeeded(snapshot);
+
+    if (IsSharedV3Ready())
+    {
+        ProcessEventQueueV3(snapshot);
+
+        if (IsBypassProcess(snapshot))
+        {
+            return ok;
+        }
+
+        const bool alive = IsSnapshotAlive(snapshot);
+        const bool paused_full = (snapshot.flags & kFlagPaused) != 0;
+        bool spoofed = false;
+
+        for (int i = 0; i < 256; i++)
+        {
+            if (snapshot.targetMask[i] != 0)
+            {
+                if (!alive || paused_full)
+                {
+                    lpKeyState[i] &= static_cast<BYTE>(~0x81);
+                    spoofed = true;
+                    continue;
+                }
+
+                BYTE desired = g_internalKeyState[i];
+                lpKeyState[i] = (lpKeyState[i] & static_cast<BYTE>(~0x81)) | (desired & 0x81);
+                spoofed = true;
+                continue;
+            }
+
+            if (ShouldBlockKey(snapshot, i, alive, paused_full))
+            {
+                lpKeyState[i] &= static_cast<BYTE>(~0x81);
+                spoofed = true;
+            }
+        }
+
+        if (spoofed)
+        {
+            CountStat(&g_countSpoofKeyboard);
+        }
+
+        return ok;
+    }
 
     if (IsBypassProcess(snapshot))
     {
@@ -2390,7 +3332,14 @@ static UINT WINAPI Hook_GetRawInputBuffer(PRAWINPUT data, PUINT size, UINT heade
     if (hasSnapshot)
     {
         ApplyClearIfNeeded(snapshot);
-        ApplyRawClearIfNeeded(snapshot);
+        if (IsSharedV3Ready())
+        {
+            ProcessEventQueueV3(snapshot);
+        }
+        else
+        {
+            ApplyRawClearIfNeeded(snapshot);
+        }
     }
 
     RAWINPUT* raw = data;
@@ -2405,7 +3354,45 @@ static UINT WINAPI Hook_GetRawInputBuffer(PRAWINPUT data, PUINT size, UINT heade
                 const bool alive = IsSnapshotAlive(snapshot);
                 const bool paused = (snapshot.flags & kFlagPaused) != 0;
 
-                if (snapshot.profileMode == kProfileModeMapping)
+                if (IsSharedV3Ready())
+                {
+                    int vKey = 0;
+                    bool isDown = false;
+                    bool hasEvent = false;
+                    while (DequeueRawEventV3(&vKey, &isDown))
+                    {
+                        if (isDown && (!alive || paused))
+                        {
+                            continue;
+                        }
+                        hasEvent = true;
+                        break;
+                    }
+
+                    if (hasEvent)
+                    {
+                        BuildRawKeyboardEvent(vKey, isDown, raw->data.keyboard);
+                        spoofed = true;
+                        g_lastRawKeyboardState[vKey] = isDown ? 0x80 : 0x00;
+                    }
+                    else
+                    {
+                        int rawKey = static_cast<int>(raw->data.keyboard.VKey);
+                        if (rawKey >= 0 && rawKey < 256 && ShouldBlockKey(snapshot, rawKey, alive, paused))
+                        {
+                            g_lastRawKeyboardState[rawKey] = 0;
+                            BuildRawKeyboardEvent(rawKey, false, raw->data.keyboard);
+                            spoofed = true;
+                        }
+                        else if (rawKey >= 0 && rawKey < 256 && snapshot.targetMask[rawKey] != 0 && (!alive || paused))
+                        {
+                            g_lastRawKeyboardState[rawKey] = 0;
+                            BuildRawKeyboardEvent(rawKey, false, raw->data.keyboard);
+                            spoofed = true;
+                        }
+                    }
+                }
+                else if (snapshot.profileMode == kProfileModeMapping)
                 {
                     // 映射模式下用目标键序列重写 RawInput，确保后台能收到映射后的按键事件。
                     int vKey = 0;
@@ -2420,22 +3407,35 @@ static UINT WINAPI Hook_GetRawInputBuffer(PRAWINPUT data, PUINT size, UINT heade
                 {
                     int vKey = static_cast<int>(raw->data.keyboard.VKey);
                     if (vKey >= 0 && vKey < 256)
+                    {
+                        if (ShouldBlockKey(snapshot, vKey, alive, paused))
                         {
-                            if (ShouldBlockKey(snapshot, vKey, alive, paused))
-                            {
-                                g_lastRawKeyboardState[vKey] = 0;
-                                BuildRawKeyboardEvent(vKey, false, raw->data.keyboard);
-                                spoofed = true;
-                            }
-                            else if (snapshot.targetMask[vKey] != 0 && (!alive || paused))
-                            {
-                                // 暂停或失联时强制抬起，避免后台继续响应真实输入。
-                                g_lastRawKeyboardState[vKey] = 0;
-                                BuildRawKeyboardEvent(vKey, false, raw->data.keyboard);
-                                spoofed = true;
+                            g_lastRawKeyboardState[vKey] = 0;
+                            BuildRawKeyboardEvent(vKey, false, raw->data.keyboard);
+                            spoofed = true;
+                        }
+                        else if (snapshot.targetMask[vKey] != 0 && (!alive || paused))
+                        {
+                            // 暂停或失联时强制抬起，避免后台继续响应真实输入。
+                            g_lastRawKeyboardState[vKey] = 0;
+                            BuildRawKeyboardEvent(vKey, false, raw->data.keyboard);
+                            spoofed = true;
                         }
                     }
                 }
+            }
+
+            if (spoofed)
+            {
+                CountStat(&g_countSpoofRawInputBuffer);
+            }
+
+            if (IsKeyLogEnabled() && GetKeyLogLevel() >= 1)
+            {
+                const RAWKEYBOARD& kb = raw->data.keyboard;
+                const bool isDown = (kb.Flags & RI_KEY_BREAK) == 0;
+                const uint32_t mode = hasSnapshot ? snapshot.profileMode : 0;
+                RecordKeyEvent(KeyChannel::RawInputBuffer, static_cast<int>(kb.VKey), isDown, spoofed, kb.MakeCode, kb.Flags, mode);
             }
 
             if (ShouldLogRawInput())
@@ -2499,14 +3499,57 @@ static UINT WINAPI Hook_GetRawInputData(HRAWINPUT hRawInput, UINT command, LPVOI
             if (ReadSharedSnapshotCached(snapshot))
             {
                 ApplyClearIfNeeded(snapshot);
-                ApplyRawClearIfNeeded(snapshot);
+                if (IsSharedV3Ready())
+                {
+                    ProcessEventQueueV3(snapshot);
+                }
+                else
+                {
+                    ApplyRawClearIfNeeded(snapshot);
+                }
 
                 if (!IsBypassProcess(snapshot))
                 {
                     const bool alive = IsSnapshotAlive(snapshot);
                     const bool paused = (snapshot.flags & kFlagPaused) != 0;
 
-                    if (allowDataSpoof && snapshot.profileMode == kProfileModeMapping)
+                    if (IsSharedV3Ready())
+                    {
+                        int vKey = 0;
+                        bool isDown = false;
+                        bool hasEvent = false;
+                        while (DequeueRawEventV3(&vKey, &isDown))
+                        {
+                            if (!allowDataSpoof && isDown)
+                            {
+                                continue;
+                            }
+                            if (isDown && (!alive || paused))
+                            {
+                                continue;
+                            }
+                            hasEvent = true;
+                            break;
+                        }
+
+                        if (hasEvent)
+                        {
+                            BuildRawKeyboardEvent(vKey, isDown, raw->data.keyboard);
+                            spoofed = true;
+                            g_lastRawKeyboardState[vKey] = isDown ? 0x80 : 0x00;
+                        }
+                        else
+                        {
+                            int rawKey = static_cast<int>(raw->data.keyboard.VKey);
+                            if (rawKey >= 0 && rawKey < 256 && ShouldBlockKey(snapshot, rawKey, alive, paused))
+                            {
+                                BuildRawKeyboardEvent(rawKey, false, raw->data.keyboard);
+                                spoofed = true;
+                                g_lastRawKeyboardState[rawKey] = 0;
+                            }
+                        }
+                    }
+                    else if (allowDataSpoof && snapshot.profileMode == kProfileModeMapping)
                     {
                         // 映射模式下用目标键序列重写 RawInput，确保后台能收到映射后的按键事件。
                         int vKey = 0;
@@ -2554,6 +3597,19 @@ static UINT WINAPI Hook_GetRawInputData(HRAWINPUT hRawInput, UINT command, LPVOI
                         }
                     }
                 }
+            }
+
+            if (spoofed)
+            {
+                CountStat(&g_countSpoofRawInputData);
+            }
+
+            if (IsKeyLogEnabled() && GetKeyLogLevel() >= 1)
+            {
+                const RAWKEYBOARD& kb = raw->data.keyboard;
+                const bool isDown = (kb.Flags & RI_KEY_BREAK) == 0;
+                const uint32_t mode = snapshot.profileMode;
+                RecordKeyEvent(KeyChannel::RawInputData, static_cast<int>(kb.VKey), isDown, spoofed, kb.MakeCode, kb.Flags, mode);
             }
 
             // 仅记录键盘 RawInput，便于判定按键是否只通过 RawInput 进入 DNF。
@@ -2773,6 +3829,64 @@ static HRESULT STDMETHODCALLTYPE Hook_GetDeviceState(IDirectInputDevice8W* devic
         return hr;
     }
 
+    if (IsSharedV3Ready())
+    {
+        ProcessEventQueueV3(snapshot);
+
+        const bool alive = IsSnapshotAlive(snapshot);
+        const bool paused_full = (snapshot.flags & kFlagPaused) != 0;
+
+        EnsureVkeyToDikMap();
+        auto* state = static_cast<BYTE*>(data);
+        bool spoofed = false;
+
+        for (int vKey = 0; vKey < 256; vKey++)
+        {
+            int dik = g_vkeyToDik[vKey];
+            if (dik < 0 || dik >= 256)
+            {
+                continue;
+            }
+
+            if (snapshot.targetMask[vKey] != 0)
+            {
+                if (!alive || paused_full)
+                {
+                    state[dik] = 0;
+                    spoofed = true;
+                    RecordDirectInputKeyEventIfNeeded(vKey, false, true, snapshot.profileMode);
+                    continue;
+                }
+
+                state[dik] = (g_internalKeyState[vKey] & 0x80) ? 0x80 : 0x00;
+                spoofed = true;
+                RecordDirectInputKeyEventIfNeeded(vKey, (state[dik] & 0x80) != 0, true, snapshot.profileMode);
+            }
+            else if (ShouldBlockKey(snapshot, vKey, alive, paused_full))
+            {
+                state[dik] = 0;
+                spoofed = true;
+                RecordDirectInputKeyEventIfNeeded(vKey, false, true, snapshot.profileMode);
+            }
+        }
+
+        if (spoofed)
+        {
+            CountStat(&g_countSpoofDeviceState);
+        }
+
+        if (forceOk && spoofed)
+        {
+            if (InterlockedCompareExchange(&g_forceDeviceStateLogged, 1, 0) == 0)
+            {
+                LogInfo(L"GetDeviceState 返回 DIERR_NOTACQUIRED，已按配置强制返回 DI_OK");
+            }
+            return DI_OK;
+        }
+
+        return hr;
+    }
+
     const bool alive = IsSnapshotAlive(snapshot);
     const bool paused_full = (snapshot.flags & kFlagPaused) != 0;
 
@@ -2795,16 +3909,19 @@ static HRESULT STDMETHODCALLTYPE Hook_GetDeviceState(IDirectInputDevice8W* devic
             {
                 state[dik] = 0;
                 spoofed = true;
+                RecordDirectInputKeyEventIfNeeded(vKey, false, true, snapshot.profileMode);
                 continue;
             }
 
             state[dik] = (snapshot.keyboardState[vKey] & 0x80) ? 0x80 : 0x00;
             spoofed = true;
+            RecordDirectInputKeyEventIfNeeded(vKey, (state[dik] & 0x80) != 0, true, snapshot.profileMode);
         }
         else if (ShouldBlockKey(snapshot, vKey, alive, paused_full))
         {
             state[dik] = 0;
             spoofed = true;
+            RecordDirectInputKeyEventIfNeeded(vKey, false, true, snapshot.profileMode);
         }
     }
 
@@ -3145,23 +4262,67 @@ static void InstallDirectInputHook()
     }
 }
 
+static const wchar_t* ResolveInputChannel(LONG rawData, LONG rawBuffer, LONG getState, LONG getData, LONG getAsync, LONG getKeyboard)
+{
+    LONG rawTotal = rawData + rawBuffer;
+    LONG diTotal = getState + getData;
+    LONG winTotal = getAsync + getKeyboard;
+    if (rawTotal > 0)
+    {
+        return L"RawInput";
+    }
+    if (diTotal > 0)
+    {
+        return L"DirectInput";
+    }
+    if (winTotal > 0)
+    {
+        return L"Win32";
+    }
+    return L"Unknown";
+}
+
 static void LogCountersOnce()
 {
-    if (!IsStatsEnabled())
+    const bool statsEnabled = IsStatsEnabled();
+    const bool diagEnabled = IsDiagEnabled();
+    if (!statsEnabled && !diagEnabled)
     {
         return;
     }
 
-    static ULONGLONG lastTick = 0;
+    static ULONGLONG lastStatsTick = 0;
+    static ULONGLONG lastDiagTick = 0;
     ULONGLONG now = GetTickCount64();
-    DWORD interval = GetStatsIntervalMs();
-    if (interval > 0 && now - lastTick < interval)
+
+    bool doStats = false;
+    if (statsEnabled)
+    {
+        DWORD interval = GetStatsIntervalMs();
+        if (interval == 0 || now - lastStatsTick >= interval)
+        {
+            doStats = true;
+            lastStatsTick = now;
+        }
+    }
+
+    bool doDiag = false;
+    if (diagEnabled)
+    {
+        DWORD interval = GetDiagIntervalMs();
+        if (interval == 0 || now - lastDiagTick >= interval)
+        {
+            doDiag = true;
+            lastDiagTick = now;
+        }
+    }
+
+    if (!doStats && !doDiag)
     {
         return;
     }
-    lastTick = now;
 
-    // 输出统计，避免在高频回调里写日志造成干扰
+    // 输出统计/诊断，避免在高频回调里写日志造成干扰
     LONG getAsync = InterlockedExchange(&g_countGetAsyncKeyState, 0);
     LONG getKeyboard = InterlockedExchange(&g_countGetKeyboardState, 0);
     LONG diCreate = InterlockedExchange(&g_countDirectInput8Create, 0);
@@ -3176,6 +4337,8 @@ static void LogCountersOnce()
     LONG rawRegister = InterlockedExchange(&g_countRegisterRawInput, 0);
     LONG rawData = InterlockedExchange(&g_countGetRawInputData, 0);
     LONG rawBuffer = InterlockedExchange(&g_countGetRawInputBuffer, 0);
+    LONG spoofRawData = InterlockedExchange(&g_countSpoofRawInputData, 0);
+    LONG spoofRawBuffer = InterlockedExchange(&g_countSpoofRawInputBuffer, 0);
     LONG getMessage = InterlockedExchange(&g_countGetMessage, 0);
     LONG peekMessage = InterlockedExchange(&g_countPeekMessage, 0);
     LONG spoofWmInput = InterlockedExchange(&g_countSpoofWmInput, 0);
@@ -3187,40 +4350,86 @@ static void LogCountersOnce()
     LONG spoofKeyboard = InterlockedExchange(&g_countSpoofKeyboard, 0);
     LONG spoofDeviceState = InterlockedExchange(&g_countSpoofDeviceState, 0);
 
-    wchar_t buffer[720] = {0};
-    StringCchPrintfW(
-        buffer,
-        ARRAYSIZE(buffer),
-        L"[STAT] %s Win32: GetAsyncKeyState=%ld GetKeyboardState=%ld SpoofAsync=%ld SpoofKeyboard=%ld | Focus: Foreground=%ld Active=%ld Focus=%ld Spoof=%ld | DirectInput: DirectInput8Create=%ld CreateDevice=%ld GetDeviceState=%ld Fail=%ld NotAcquired=%ld GetDeviceData=%ld Acquire=%ld Poll=%ld Unacquire=%ld SpoofDI=%ld | RawInput: Register=%ld GetRawInputData=%ld GetRawInputBuffer=%ld | Msg: GetMessage=%ld PeekMessage=%ld SpoofWmInput=%ld | Profile=%lu Mode=%lu",
-        GetTimestamp().c_str(),
-        getAsync,
-        getKeyboard,
-        spoofAsync,
-        spoofKeyboard,
-        getForeground,
-        getActive,
-        getFocus,
-        spoofFocus,
-        diCreate,
-        createDevice,
-        getState,
-        getStateFailed,
-        getStateNotAcquired,
-        getData,
-        acquire,
-        poll,
-        unacquire,
-        spoofDeviceState,
-        rawRegister,
-        rawData,
-        rawBuffer,
-        getMessage,
-        peekMessage,
-        spoofWmInput,
-        g_lastProfileId,
-        g_lastProfileMode);
+    if (doStats)
+    {
+        wchar_t buffer[720] = {0};
+        StringCchPrintfW(
+            buffer,
+            ARRAYSIZE(buffer),
+            L"[STAT] %s Win32: GetAsyncKeyState=%ld GetKeyboardState=%ld SpoofAsync=%ld SpoofKeyboard=%ld | Focus: Foreground=%ld Active=%ld Focus=%ld Spoof=%ld | DirectInput: DirectInput8Create=%ld CreateDevice=%ld GetDeviceState=%ld Fail=%ld NotAcquired=%ld GetDeviceData=%ld Acquire=%ld Poll=%ld Unacquire=%ld SpoofDI=%ld | RawInput: Register=%ld GetRawInputData=%ld GetRawInputBuffer=%ld | Msg: GetMessage=%ld PeekMessage=%ld SpoofWmInput=%ld | Profile=%lu Mode=%lu",
+            GetTimestamp().c_str(),
+            getAsync,
+            getKeyboard,
+            spoofAsync,
+            spoofKeyboard,
+            getForeground,
+            getActive,
+            getFocus,
+            spoofFocus,
+            diCreate,
+            createDevice,
+            getState,
+            getStateFailed,
+            getStateNotAcquired,
+            getData,
+            acquire,
+            poll,
+            unacquire,
+            spoofDeviceState,
+            rawRegister,
+            rawData,
+            rawBuffer,
+            getMessage,
+            peekMessage,
+            spoofWmInput,
+            g_lastProfileId,
+            g_lastProfileMode);
 
-    WriteLogLine(buffer);
+        WriteLogLine(buffer);
+    }
+
+    if (doDiag)
+    {
+        SharedSnapshotLite lite = {};
+        const bool hasSnapshot = ReadSharedSnapshotLiteCached(lite);
+        const bool alive = hasSnapshot && IsSnapshotAliveLite(lite);
+        const bool paused = hasSnapshot && ((lite.flags & kFlagPaused) != 0);
+        const uint32_t activePid = hasSnapshot ? lite.activePid : 0;
+        const DWORD selfPid = GetCurrentProcessId();
+        const wchar_t* role = L"Unknown";
+        if (activePid != 0)
+        {
+            role = (activePid == selfPid) ? L"Master" : L"Slave";
+        }
+        const wchar_t* channel = ResolveInputChannel(rawData, rawBuffer, getState, getData, getAsync, getKeyboard);
+
+        wchar_t buffer[640] = {0};
+        StringCchPrintfW(
+            buffer,
+            ARRAYSIZE(buffer),
+            L"[DIAG] %s Role=%s ActivePid=%lu Alive=%d Paused=%d Channel=%s | Win32: Async=%ld Keyboard=%ld SpoofAsync=%ld SpoofKeyboard=%ld | RawInput: Data=%ld Buffer=%ld SpoofData=%ld SpoofBuffer=%ld | DirectInput: GetState=%ld GetData=%ld SpoofDI=%ld | Profile=%lu Mode=%lu",
+            GetTimestamp().c_str(),
+            role,
+            activePid,
+            alive ? 1 : 0,
+            paused ? 1 : 0,
+            channel,
+            getAsync,
+            getKeyboard,
+            spoofAsync,
+            spoofKeyboard,
+            rawData,
+            rawBuffer,
+            spoofRawData,
+            spoofRawBuffer,
+            getState,
+            getData,
+            spoofDeviceState,
+            g_lastProfileId,
+            g_lastProfileMode);
+
+        WriteLogLine(buffer);
+    }
 }
 
 static DWORD WINAPI WorkerThread(LPVOID)
@@ -3266,6 +4475,7 @@ static DWORD WINAPI WorkerThread(LPVOID)
     {
         Sleep(1000);
         UpdateSelfWindowCache();
+        CheckKeyUpTimeouts();
         LogCountersOnce();
     }
 

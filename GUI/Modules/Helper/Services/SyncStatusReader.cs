@@ -34,9 +34,11 @@ public readonly struct SyncStatusSnapshot
 /// </summary>
 public sealed class SyncStatusReader
 {
-    private const string MappingName = "Local\\DNFSyncBox.KeyboardState.V2";
-    private const uint ExpectedVersion = 2;
-    private const int MappingSize = 1824;
+    private const string MappingName = "Local\\DNFSyncBox.KeyboardState.V3";
+    private const uint ExpectedVersion = 3;
+    private const uint ExpectedMagic = 0x33564E44; // "DNV3"
+    // 只读取 V3 头部 + Snapshot 头部（不需要映射完整事件缓冲区）
+    private const int MappingSize = 48;
 
     public SyncReadStatus TryRead(out SyncStatusSnapshot snapshot)
     {
@@ -56,9 +58,15 @@ public sealed class SyncStatusReader
                 return SyncReadStatus.VersionMismatch;
             }
 
-            accessor.Read(8, out uint flags);
-            accessor.Read(12, out uint activePid);
-            accessor.Read(24, out ulong lastTick);
+            accessor.Read(4, out uint magic);
+            if (magic != ExpectedMagic)
+            {
+                return SyncReadStatus.VersionMismatch;
+            }
+
+            accessor.Read(24, out uint flags);
+            accessor.Read(28, out uint activePid);
+            accessor.Read(40, out ulong lastTick);
             snapshot = new SyncStatusSnapshot(version, flags, activePid, lastTick);
             return SyncReadStatus.Ok;
         }
