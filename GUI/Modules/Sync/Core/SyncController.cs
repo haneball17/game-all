@@ -1,5 +1,4 @@
 using System;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -21,8 +20,6 @@ public sealed class SyncController : IDisposable
 
     // 统一保护核心状态（窗口快照、暂停状态、按键状态）。
     private readonly object _stateLock = new();
-    // 事件流状态单独加锁，避免心跳与按键事件交叉写入。
-    private readonly object _eventLock = new();
     private readonly WindowManager _windowManager = new("DNF Taiwan", "dnf.exe");
     private readonly KeyboardHook _keyboardHook = new();
     private readonly KeyStateTracker _keyState = new();
@@ -36,13 +33,11 @@ public sealed class SyncController : IDisposable
     private readonly uint[] _edgeCounter = new uint[SharedMemoryConstants.KeyCount];
     private readonly byte[] _targetMask = new byte[SharedMemoryConstants.KeyCount];
     private readonly byte[] _blockMask = new byte[SharedMemoryConstants.KeyCount];
-    private readonly byte[] _mappingMask = new byte[SharedMemoryConstants.KeyCount];
     private readonly byte[] _mappingSourceMask = new byte[SharedMemoryConstants.KeyCount];
     private readonly byte[] _toggleState = new byte[SharedMemoryConstants.KeyCount];
     private readonly byte[] _inputMask = new byte[SharedMemoryConstants.KeyCount];
     private readonly byte[] _inputMappingSourceMask = new byte[SharedMemoryConstants.KeyCount];
     private readonly byte[] _physicalDown = new byte[SharedMemoryConstants.KeyCount];
-    private readonly byte[] _lastEventState = new byte[SharedMemoryConstants.KeyCount];
 
     private WindowSnapshot _snapshot = WindowSnapshot.Empty;
     private KeyboardProfile _activeProfile;
@@ -432,9 +427,8 @@ public sealed class SyncController : IDisposable
         }
 
         var tick = (ulong)Environment.TickCount64;
-        var eventTimestamp = Stopwatch.GetTimestamp();
 
-        // Replace 映射依赖 RawInput 事件路径；上报 Mapping 模式可触发注入端生成映射事件。
+        // Replace 映射依赖 RawInput 重写路径；上报 Mapping 模式供注入端识别。
         var reportedMode = profile.Mode;
         if (reportedMode != KeyboardProfileMode.Mapping &&
             profile.MappingBehavior == KeyboardMappingBehavior.Replace)
@@ -444,24 +438,16 @@ public sealed class SyncController : IDisposable
 
         if (reportedMode == KeyboardProfileMode.Mapping)
         {
-            Array.Clear(_mappingMask, 0, _mappingMask.Length);
-            profile.BuildMappingMask(_mappingMask);
             Array.Clear(_mappingSourceMask, 0, _mappingSourceMask.Length);
             profile.BuildMappingSourceMask(_mappingSourceMask);
             for (var i = 0; i < _blockMask.Length; i++)
             {
-                if (_mappingMask[i] != 0)
-                {
-                    _blockMask[i] |= 0x02;
-                }
                 if (_mappingSourceMask[i] != 0)
                 {
                     _blockMask[i] |= 0x01;
                 }
             }
         }
-
-        EmitEventsForStateChange(_keyboardState, eventTimestamp);
 
         _sharedMemory.PublishSnapshot(
             flags,
@@ -473,25 +459,6 @@ public sealed class SyncController : IDisposable
             _edgeCounter,
             _targetMask,
             _blockMask);
-    }
-
-    private void EmitEventsForStateChange(byte[] keyboardState, long timestamp)
-    {
-        lock (_eventLock)
-        {
-            for (var i = 0; i < SharedMemoryConstants.KeyCount; i++)
-            {
-                var isDown = (keyboardState[i] & 0x80) != 0;
-                var wasDown = (_lastEventState[i] & 0x80) != 0;
-                if (isDown == wasDown)
-                {
-                    continue;
-                }
-
-                _sharedMemory.PushEvent(i, isDown, timestamp);
-                _lastEventState[i] = (byte)(isDown ? 0x80 : 0x00);
-            }
-        }
     }
 
     /// <summary>

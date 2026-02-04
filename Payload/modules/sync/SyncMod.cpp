@@ -73,11 +73,8 @@ static LONG g_deviceHooksHooked = 0;
 // 共享内存与伪造配置
 // ------------------------------
 
-static const wchar_t* kSharedMemoryName = L"Local\\DNFSyncBox.KeyboardState.V3";
-static const uint32_t kSharedVersion = 3;
-static const uint32_t kSharedMagic = 0x33564E44; // "DNV3"
-static const uint32_t kEventCapacity = 4096;
-static const uint32_t kEventSize = 16;
+static const wchar_t* kSharedMemoryName = L"Local\\DNFSyncBox.KeyboardState.V2";
+static const uint32_t kSharedVersion = 2;
 static const uint32_t kFlagPaused = 0x1;
 static const uint32_t kFlagClear = 0x2;
 // 共享内存心跳超时（毫秒），可通过环境变量覆盖。
@@ -122,28 +119,7 @@ struct SharedKeyboardStateV2
     uint8_t blockMask[256];
 };
 
-struct InputEventV3
-{
-    uint32_t sequenceId;
-    uint8_t vKey;
-    uint8_t isDown;
-    uint8_t flags;
-    uint8_t reserved;
-    int64_t timestamp;
-};
-
-struct SharedKeyboardStateV3
-{
-    uint32_t version;
-    uint32_t magic;
-    volatile LONG writeHead;
-    uint32_t capacity;
-    SharedKeyboardStateV2 snapshot;
-    uint8_t eventBuffer[1];
-};
 #pragma pack(pop)
-
-static_assert(sizeof(InputEventV3) == kEventSize, "InputEventV3 size mismatch");
 
 struct SharedSnapshot
 {
@@ -170,7 +146,7 @@ struct SharedSnapshotLite
 };
 
 static HANDLE g_sharedMapping = nullptr;
-static SharedKeyboardStateV3* g_sharedState = nullptr;
+static SharedKeyboardStateV2* g_sharedState = nullptr;
 static DWORD g_lastSharedAttemptTick = 0;
 static LONG g_sharedReadyLogged = 0;
 static LONG g_sharedErrorLogged = 0;
@@ -178,30 +154,8 @@ static LONG g_sharedVersionLogged = 0;
 static LONG g_sharedSizeLogged = 0;
 static uint32_t g_lastEdgeCounter[256] = {};
 static uint8_t g_lastRawKeyboardState[256] = {};
-static uint8_t g_mappingSentState[256] = {};
-static int8_t g_mappingPendingState[256] = {};
-static uint32_t g_mappingLastEdgeCounter[256] = {};
-static ULONGLONG g_mappingLastSentTick[256] = {};
-// V3 事件流状态
-static SRWLOCK g_eventLock = SRWLOCK_INIT;
-static LONG g_eventReadIndex = -1;
-static uint8_t g_internalKeyState[256] = {};
-static uint32_t g_internalEdgeCounter[256] = {};
-static const int kRawEventQueueSize = 512;
-struct RawEventV3
-{
-    uint8_t vKey;
-    uint8_t isDown;
-};
-static RawEventV3 g_rawEvents[kRawEventQueueSize] = {};
-static int g_rawEventHead = 0;
-static int g_rawEventTail = 0;
-static int g_rawEventCount = 0;
-static LONG g_rawEventQueueLogged = 0;
 static uint32_t g_lastProfileId = 0;
 static uint32_t g_lastProfileMode = 0;
-static uint32_t g_mappingProfileId = 0;
-static uint32_t g_mappingProfileMode = 0;
 static uint32_t g_lastClearSeq = 0;
 static uint32_t g_lastRawClearSeq = 0;
 static volatile LONG g_countSpoofAsync = 0;
@@ -209,26 +163,6 @@ static volatile LONG g_countSpoofKeyboard = 0;
 static volatile LONG g_countSpoofDeviceState = 0;
 static int g_rawScanCursor = 0;
 static LONG g_seenRawInputBuffer = 0;
-
-static const int kMappingEventQueueSize = 512;
-struct MappingEvent
-{
-    uint8_t vKey;
-    uint8_t isDown;
-};
-static MappingEvent g_mappingEvents[kMappingEventQueueSize] = {};
-static int g_mappingEventHead = 0;
-static int g_mappingEventTail = 0;
-static int g_mappingEventCount = 0;
-static LONG g_mappingQueueLogged = 0;
-static LONG g_mappingOverflowed = 0;
-static const DWORD kMappingReleaseTimeoutMs = 200;
-
-// 事件队列滞后/溢出统计（诊断用）
-static LONG g_eventOverflowCount = 0;
-static LONG g_eventLagCount = 0;
-static LONG g_eventLagLogged = 0;
-static const int kEventProcessBatch = 1024;
 
 static int g_vkeyToDik[256] = {};
 static LONG g_vkeyMapReady = 0;
@@ -1183,19 +1117,6 @@ static bool ErasePeHeader(HMODULE module)
 // 共享内存读取与快照
 // ------------------------------
 
-static SIZE_T GetSharedMemorySize()
-{
-    return offsetof(SharedKeyboardStateV3, eventBuffer) + static_cast<SIZE_T>(kEventCapacity) * kEventSize;
-}
-
-static bool IsSharedV3Ready()
-{
-    return g_sharedState &&
-        g_sharedState->version == kSharedVersion &&
-        g_sharedState->magic == kSharedMagic &&
-        g_sharedState->capacity > 0;
-}
-
 static bool EnsureSharedMemory()
 {
     if (g_sharedState)
@@ -1220,7 +1141,7 @@ static bool EnsureSharedMemory()
         return false;
     }
 
-    void* view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, GetSharedMemorySize());
+    void* view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(SharedKeyboardStateV2));
     if (!view)
     {
         CloseHandle(mapping);
@@ -1228,7 +1149,7 @@ static bool EnsureSharedMemory()
     }
 
     SIZE_T regionSize = GetViewRegionSize(view);
-    SIZE_T expectSize = GetSharedMemorySize();
+    SIZE_T expectSize = sizeof(SharedKeyboardStateV2);
     if (regionSize < expectSize)
     {
         if (InterlockedCompareExchange(&g_sharedSizeLogged, 1, 0) == 0)
@@ -1241,7 +1162,7 @@ static bool EnsureSharedMemory()
     }
 
     g_sharedMapping = mapping;
-    g_sharedState = static_cast<SharedKeyboardStateV3*>(view);
+    g_sharedState = static_cast<SharedKeyboardStateV2*>(view);
 
     if (InterlockedCompareExchange(&g_sharedReadyLogged, 1, 0) == 0)
     {
@@ -1258,7 +1179,7 @@ static bool ReadSharedSnapshot(SharedSnapshot& snapshot)
         return false;
     }
 
-    if (!IsSharedV3Ready())
+    if (g_sharedState->version != kSharedVersion)
     {
         if (InterlockedCompareExchange(&g_sharedVersionLogged, 1, 0) == 0)
         {
@@ -1267,7 +1188,7 @@ static bool ReadSharedSnapshot(SharedSnapshot& snapshot)
         return false;
     }
 
-    const SharedKeyboardStateV2* snapshotState = &g_sharedState->snapshot;
+    const SharedKeyboardStateV2* snapshotState = g_sharedState;
     for (int i = 0; i < 3; i++)
     {
         uint32_t seq1 = snapshotState->seq;
@@ -1312,35 +1233,14 @@ static void ApplyClearIfNeeded(const SharedSnapshot& snapshot)
     }
 
     g_lastClearSeq = snapshot.seq;
-    if (IsSharedV3Ready())
-    {
-        memset(g_internalKeyState, 0, sizeof(g_internalKeyState));
-        memset(g_internalEdgeCounter, 0, sizeof(g_internalEdgeCounter));
-        g_eventReadIndex = -1;
-        g_rawEventHead = 0;
-        g_rawEventTail = 0;
-        g_rawEventCount = 0;
-        memset(g_lastRawKeyboardState, 0, sizeof(g_lastRawKeyboardState));
-        return;
-    }
-
     for (int i = 0; i < 256; i++)
     {
         g_lastEdgeCounter[i] = snapshot.edgeCounter[i];
     }
 }
 
-static void ResetMappingQueue();
-static void EnqueueMappingReleaseAll();
-static bool HasMappingMask(const SharedSnapshot& snapshot);
-static bool IsMappingTarget(const SharedSnapshot& snapshot, bool hasMappingMask, int vKey);
-
 static void ApplyRawClearIfNeeded(const SharedSnapshot& snapshot)
 {
-    if (IsSharedV3Ready())
-    {
-        return;
-    }
     if ((snapshot.flags & kFlagClear) == 0)
     {
         return;
@@ -1354,441 +1254,6 @@ static void ApplyRawClearIfNeeded(const SharedSnapshot& snapshot)
     g_lastRawClearSeq = snapshot.seq;
     // 清键时重置 RawInput 伪造态，避免后台出现卡键或残留按下。
     memset(g_lastRawKeyboardState, 0, sizeof(g_lastRawKeyboardState));
-    // 同步清理 Mapping 事件队列，并补发抬起，避免映射模式粘键。
-    ResetMappingQueue();
-    EnqueueMappingReleaseAll();
-    for (int i = 0; i < 256; i++)
-    {
-        g_mappingLastEdgeCounter[i] = snapshot.edgeCounter[i];
-        g_mappingLastSentTick[i] = 0;
-    }
-}
-
-static void ResetRawEventQueue()
-{
-    g_rawEventHead = 0;
-    g_rawEventTail = 0;
-    g_rawEventCount = 0;
-}
-
-static bool EnqueueRawEventV3(int vKey, bool isDown)
-{
-    if (vKey < 0 || vKey >= 256)
-    {
-        return false;
-    }
-    if (g_rawEventCount >= kRawEventQueueSize)
-    {
-        if (InterlockedCompareExchange(&g_rawEventQueueLogged, 1, 0) == 0)
-        {
-            LogInfo(L"[SYNC] RawInput 事件队列溢出，已丢弃事件");
-        }
-        return false;
-    }
-
-    g_rawEvents[g_rawEventTail].vKey = static_cast<uint8_t>(vKey);
-    g_rawEvents[g_rawEventTail].isDown = isDown ? 1 : 0;
-    g_rawEventTail = (g_rawEventTail + 1) % kRawEventQueueSize;
-    g_rawEventCount++;
-    return true;
-}
-
-static bool DequeueRawEventV3(int* vKeyOut, bool* isDownOut)
-{
-    if (!vKeyOut || !isDownOut)
-    {
-        return false;
-    }
-    if (g_rawEventCount <= 0)
-    {
-        return false;
-    }
-
-    RawEventV3 ev = g_rawEvents[g_rawEventHead];
-    g_rawEventHead = (g_rawEventHead + 1) % kRawEventQueueSize;
-    g_rawEventCount--;
-
-    *vKeyOut = static_cast<int>(ev.vKey);
-    *isDownOut = ev.isDown != 0;
-    return true;
-}
-
-static void SyncInternalStateFromSnapshot(const SharedSnapshot& snapshot)
-{
-    for (int i = 0; i < 256; i++)
-    {
-        g_internalKeyState[i] = snapshot.keyboardState[i];
-        g_internalEdgeCounter[i] = snapshot.edgeCounter[i];
-        g_lastEdgeCounter[i] = snapshot.edgeCounter[i];
-    }
-    ResetRawEventQueue();
-}
-
-static void ApplyEventV3(const InputEventV3& ev)
-{
-    int vKey = static_cast<int>(ev.vKey);
-    if (vKey < 0 || vKey >= 256)
-    {
-        return;
-    }
-    bool isDown = ev.isDown != 0;
-    BYTE toggle = g_internalKeyState[vKey] & 0x01;
-    g_internalKeyState[vKey] = static_cast<uint8_t>((isDown ? 0x80 : 0x00) | toggle);
-    if (isDown)
-    {
-        g_internalEdgeCounter[vKey] = g_internalEdgeCounter[vKey] + 1;
-    }
-    EnqueueRawEventV3(vKey, isDown);
-}
-
-static void ApplyCompensationEventV3(int vKey, bool isDown, const wchar_t* reason)
-{
-    if (vKey < 0 || vKey >= 256)
-    {
-        return;
-    }
-
-    bool currentDown = (g_internalKeyState[vKey] & 0x80) != 0;
-    if (currentDown == isDown)
-    {
-        return;
-    }
-
-    BYTE toggle = g_internalKeyState[vKey] & 0x01;
-    g_internalKeyState[vKey] = static_cast<uint8_t>((isDown ? 0x80 : 0x00) | toggle);
-    if (isDown)
-    {
-        g_internalEdgeCounter[vKey] = g_internalEdgeCounter[vKey] + 1;
-    }
-    g_lastRawKeyboardState[vKey] = isDown ? 0x80 : 0x00;
-
-    if (!EnqueueRawEventV3(vKey, isDown))
-    {
-        if (InterlockedCompareExchange(&g_rawEventQueueLogged, 1, 0) == 0)
-        {
-            LogInfo(L"[SYNC] RawInput 事件队列溢出，补偿事件已丢弃");
-        }
-    }
-
-    LogKeyFix(reason, vKey, isDown);
-}
-
-static void AlignInternalStateWithSnapshot(const SharedSnapshot& snapshot)
-{
-    if (!IsSharedV3Ready())
-    {
-        return;
-    }
-
-    if (IsBypassProcess(snapshot))
-    {
-        return;
-    }
-
-    const bool alive = IsSnapshotAlive(snapshot);
-    const bool paused = (snapshot.flags & kFlagPaused) != 0;
-
-    for (int vKey = 0; vKey < 256; vKey++)
-    {
-        bool isTarget = snapshot.targetMask[vKey] != 0;
-        bool shouldBlock = ShouldBlockKey(snapshot, vKey, alive, paused);
-        if (!isTarget && !shouldBlock)
-        {
-            continue;
-        }
-
-        bool desiredDown = false;
-        if (isTarget && alive && !paused)
-        {
-            desiredDown = (snapshot.keyboardState[vKey] & 0x80) != 0;
-        }
-
-        if (shouldBlock)
-        {
-            desiredDown = false;
-        }
-
-        bool currentDown = (g_internalKeyState[vKey] & 0x80) != 0;
-        if (currentDown == desiredDown)
-        {
-            continue;
-        }
-
-        ApplyCompensationEventV3(vKey, desiredDown, L"snapshot_align");
-    }
-}
-
-static void ProcessEventQueueV3(const SharedSnapshot& snapshot)
-{
-    if (!IsSharedV3Ready())
-    {
-        return;
-    }
-
-    if (!TryAcquireSRWLockExclusive(&g_eventLock))
-    {
-        return;
-    }
-
-    const int head = static_cast<int>(g_sharedState->writeHead);
-    const int capacity = static_cast<int>(g_sharedState->capacity);
-    if (capacity <= 0)
-    {
-        ReleaseSRWLockExclusive(&g_eventLock);
-        return;
-    }
-
-    if (g_eventReadIndex < 0)
-    {
-        g_eventReadIndex = head;
-        SyncInternalStateFromSnapshot(snapshot);
-        ReleaseSRWLockExclusive(&g_eventLock);
-        return;
-    }
-
-    int backlog = head - g_eventReadIndex;
-    if (backlog > capacity)
-    {
-        InterlockedIncrement(&g_eventOverflowCount);
-        if (InterlockedCompareExchange(&g_eventLagLogged, 1, 0) == 0)
-        {
-            LogInfo(L"[SYNC] 事件队列溢出，已重置读取指针并同步快照");
-        }
-        g_eventReadIndex = head;
-        SyncInternalStateFromSnapshot(snapshot);
-        ReleaseSRWLockExclusive(&g_eventLock);
-        return;
-    }
-
-    if (backlog <= 0)
-    {
-        AlignInternalStateWithSnapshot(snapshot);
-        ReleaseSRWLockExclusive(&g_eventLock);
-        return;
-    }
-
-    int processCount = backlog;
-    if (processCount > kEventProcessBatch)
-    {
-        processCount = kEventProcessBatch;
-        InterlockedIncrement(&g_eventLagCount);
-    }
-
-    uint8_t* buffer = g_sharedState->eventBuffer;
-    for (int i = 0; i < processCount; i++)
-    {
-        int offset = g_eventReadIndex % capacity;
-        int byteOffset = offset * static_cast<int>(kEventSize);
-        InputEventV3* ev = reinterpret_cast<InputEventV3*>(buffer + byteOffset);
-        ApplyEventV3(*ev);
-        g_eventReadIndex++;
-    }
-
-    if (g_eventReadIndex >= head)
-    {
-        AlignInternalStateWithSnapshot(snapshot);
-    }
-    ReleaseSRWLockExclusive(&g_eventLock);
-
-    if (backlog > capacity / 2 && InterlockedCompareExchange(&g_eventLagLogged, 1, 0) == 0)
-    {
-        LogInfo(L"[SYNC] 事件队列滞后，进入分批消费模式");
-    }
-}
-
-static void ResetMappingQueue()
-{
-    g_mappingEventHead = 0;
-    g_mappingEventTail = 0;
-    g_mappingEventCount = 0;
-    memset(g_mappingPendingState, 0, sizeof(g_mappingPendingState));
-}
-
-static bool EnqueueMappingEvent(int vKey, bool isDown)
-{
-    if (vKey < 0 || vKey >= 256)
-    {
-        return false;
-    }
-    if (g_mappingEventCount >= kMappingEventQueueSize)
-    {
-        if (InterlockedCompareExchange(&g_mappingQueueLogged, 1, 0) == 0)
-        {
-            LogInfo(L"[SYNC] Mapping 事件队列溢出，已丢弃事件");
-        }
-        InterlockedExchange(&g_mappingOverflowed, 1);
-        return false;
-    }
-
-    g_mappingEvents[g_mappingEventTail].vKey = static_cast<uint8_t>(vKey);
-    g_mappingEvents[g_mappingEventTail].isDown = isDown ? 1 : 0;
-    g_mappingEventTail = (g_mappingEventTail + 1) % kMappingEventQueueSize;
-    g_mappingEventCount++;
-    return true;
-}
-
-static bool DequeueMappingEvent(int* vKeyOut, bool* isDownOut)
-{
-    if (!vKeyOut || !isDownOut)
-    {
-        return false;
-    }
-    if (g_mappingEventCount <= 0)
-    {
-        return false;
-    }
-
-    MappingEvent ev = g_mappingEvents[g_mappingEventHead];
-    g_mappingEventHead = (g_mappingEventHead + 1) % kMappingEventQueueSize;
-    g_mappingEventCount--;
-
-    int vKey = static_cast<int>(ev.vKey);
-    bool isDown = ev.isDown != 0;
-    g_mappingSentState[vKey] = isDown ? 0x80 : 0x00;
-    g_mappingPendingState[vKey] = 0;
-    g_mappingLastSentTick[vKey] = GetTickCount64();
-
-    *vKeyOut = vKey;
-    *isDownOut = isDown;
-    return true;
-}
-
-static void EnqueueMappingReleaseAll()
-{
-    for (int i = 0; i < 256; i++)
-    {
-        if ((g_mappingSentState[i] & 0x80) == 0)
-        {
-            continue;
-        }
-        if (g_mappingPendingState[i] == 2)
-        {
-            continue;
-        }
-        if (EnqueueMappingEvent(i, false))
-        {
-            g_mappingPendingState[i] = 2;
-        }
-    }
-}
-
-static void RefreshMappingProfileState(const SharedSnapshot& snapshot)
-{
-    if (snapshot.profileId == g_mappingProfileId &&
-        snapshot.profileMode == g_mappingProfileMode)
-    {
-        return;
-    }
-
-    ResetMappingQueue();
-    EnqueueMappingReleaseAll();
-    g_mappingProfileId = snapshot.profileId;
-    g_mappingProfileMode = snapshot.profileMode;
-}
-
-static void ScheduleMappingEvents(const SharedSnapshot& snapshot, bool alive, bool paused)
-{
-    RefreshMappingProfileState(snapshot);
-
-    const bool hasMappingMask = HasMappingMask(snapshot);
-    const bool allowDown = alive && !paused;
-    if (!allowDown)
-    {
-        EnqueueMappingReleaseAll();
-        return;
-    }
-
-    if (InterlockedCompareExchange(&g_mappingOverflowed, 0, 1) == 1)
-    {
-        LogInfo(L"[SYNC] Mapping 事件队列溢出后重置状态");
-        ResetMappingQueue();
-        EnqueueMappingReleaseAll();
-    }
-
-    ULONGLONG now = GetTickCount64();
-
-    // 先补抬起，避免粘键。
-    for (int i = 0; i < 256; i++)
-    {
-        bool lastDown = (g_mappingSentState[i] & 0x80) != 0;
-        if (!lastDown)
-        {
-            continue;
-        }
-
-        bool desiredDown = false;
-        if (IsMappingTarget(snapshot, hasMappingMask, i))
-        {
-            desiredDown = (snapshot.keyboardState[i] & 0x80) != 0;
-        }
-
-        if (!desiredDown)
-        {
-            if (g_mappingPendingState[i] != 2)
-            {
-                if (EnqueueMappingEvent(i, false))
-                {
-                    g_mappingPendingState[i] = 2;
-                }
-            }
-            continue;
-        }
-
-        // 长按期间刷新时间戳，避免误触发超时释放。
-        g_mappingLastSentTick[i] = now;
-    }
-
-    // 短按补偿：边沿变化但当前已抬起。
-    for (int i = 0; i < 256; i++)
-    {
-        if (!IsMappingTarget(snapshot, hasMappingMask, i))
-        {
-            continue;
-        }
-        uint32_t edge = snapshot.edgeCounter[i];
-        if (edge == g_mappingLastEdgeCounter[i])
-        {
-            continue;
-        }
-        g_mappingLastEdgeCounter[i] = edge;
-        bool desiredDown = (snapshot.keyboardState[i] & 0x80) != 0;
-        bool lastDown = (g_mappingSentState[i] & 0x80) != 0;
-        if (!desiredDown && !lastDown)
-        {
-            if (g_mappingPendingState[i] == 0)
-            {
-                if (EnqueueMappingEvent(i, true))
-                {
-                    g_mappingPendingState[i] = 1;
-                }
-                if (EnqueueMappingEvent(i, false))
-                {
-                    g_mappingPendingState[i] = 2;
-                }
-            }
-        }
-    }
-
-    // 再补按下。
-    for (int i = 0; i < 256; i++)
-    {
-        if (!IsMappingTarget(snapshot, hasMappingMask, i))
-        {
-            continue;
-        }
-        bool desiredDown = (snapshot.keyboardState[i] & 0x80) != 0;
-        bool lastDown = (g_mappingSentState[i] & 0x80) != 0;
-        if (desiredDown && !lastDown)
-        {
-            if (g_mappingPendingState[i] != 1)
-            {
-                if (EnqueueMappingEvent(i, true))
-                {
-                    g_mappingPendingState[i] = 1;
-                }
-            }
-        }
-    }
 }
 
 static void BuildRawKeyboardEvent(int vKey, bool isDown, RAWKEYBOARD& keyboard)
@@ -1949,39 +1414,6 @@ static bool IsBypassProcessLite(const SharedSnapshotLite& snapshot)
     return snapshot.activePid == GetCurrentProcessId();
 }
 
-static bool HasMappingMask(const SharedSnapshot& snapshot)
-{
-    if (snapshot.profileMode != kProfileModeMapping)
-    {
-        return false;
-    }
-
-    for (int i = 0; i < 256; i++)
-    {
-        if ((snapshot.blockMask[i] & 0x02) != 0)
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-static bool IsMappingTarget(const SharedSnapshot& snapshot, bool hasMappingMask, int vKey)
-{
-    if (vKey < 0 || vKey >= 256)
-    {
-        return false;
-    }
-
-    if (snapshot.profileMode == kProfileModeMapping && hasMappingMask)
-    {
-        return (snapshot.blockMask[vKey] & 0x02) != 0;
-    }
-
-    return snapshot.targetMask[vKey] != 0;
-}
-
 static bool ShouldBlockKey(const SharedSnapshot& snapshot, int vKey, bool alive, bool paused)
 {
     // 仅对控制端显式标记的拦截键生效，避免误伤非黑名单键。
@@ -1995,7 +1427,7 @@ static bool ShouldBlockKey(const SharedSnapshot& snapshot, int vKey, bool alive,
         return false;
     }
 
-    return (snapshot.blockMask[vKey] & 0x01) != 0;
+    return snapshot.blockMask[vKey] != 0;
 }
 
 static void EnsureVkeyToDikMap()
@@ -2682,7 +2114,7 @@ static bool ReadSharedSnapshotLite(SharedSnapshotLite& snapshot)
         return false;
     }
 
-    if (!IsSharedV3Ready())
+    if (g_sharedState->version != kSharedVersion)
     {
         if (InterlockedCompareExchange(&g_sharedVersionLogged, 1, 0) == 0)
         {
@@ -2691,7 +2123,7 @@ static bool ReadSharedSnapshotLite(SharedSnapshotLite& snapshot)
         return false;
     }
 
-    const SharedKeyboardStateV2* snapshotState = &g_sharedState->snapshot;
+    const SharedKeyboardStateV2* snapshotState = g_sharedState;
     for (int i = 0; i < 3; i++)
     {
         uint32_t seq1 = snapshotState->seq;
@@ -3095,53 +2527,6 @@ static SHORT WINAPI Hook_GetAsyncKeyState(int vKey)
 
     ApplyClearIfNeeded(snapshot);
 
-    if (IsSharedV3Ready())
-    {
-        ProcessEventQueueV3(snapshot);
-
-        if (IsBypassProcess(snapshot))
-        {
-            return original;
-        }
-
-        const bool alive = IsSnapshotAlive(snapshot);
-        const bool paused_full = (snapshot.flags & kFlagPaused) != 0;
-
-        if (snapshot.targetMask[vKey] == 0)
-        {
-            if (ShouldBlockKey(snapshot, vKey, alive, paused_full))
-            {
-                RecordWin32KeyEventIfNeeded(vKey, 0, true, snapshot.profileMode);
-                return 0;
-            }
-
-            return original;
-        }
-
-        if (!alive || paused_full)
-        {
-            RecordWin32KeyEventIfNeeded(vKey, 0, true, snapshot.profileMode);
-            return 0;
-        }
-
-        SHORT result = 0;
-        if (g_internalKeyState[vKey] & 0x80)
-        {
-            result |= static_cast<SHORT>(0x8000);
-        }
-
-        uint32_t currentEdge = g_internalEdgeCounter[vKey];
-        if (currentEdge != g_lastEdgeCounter[vKey])
-        {
-            g_lastEdgeCounter[vKey] = currentEdge;
-            result |= 0x0001;
-        }
-
-        CountStat(&g_countSpoofAsync);
-        RecordWin32KeyEventIfNeeded(vKey, result, true, snapshot.profileMode);
-        return result;
-    }
-
     if (IsBypassProcess(snapshot))
     {
         return original;
@@ -3212,51 +2597,6 @@ static BOOL WINAPI Hook_GetKeyboardState(PBYTE lpKeyState)
     }
 
     ApplyClearIfNeeded(snapshot);
-
-    if (IsSharedV3Ready())
-    {
-        ProcessEventQueueV3(snapshot);
-
-        if (IsBypassProcess(snapshot))
-        {
-            return ok;
-        }
-
-        const bool alive = IsSnapshotAlive(snapshot);
-        const bool paused_full = (snapshot.flags & kFlagPaused) != 0;
-        bool spoofed = false;
-
-        for (int i = 0; i < 256; i++)
-        {
-            if (snapshot.targetMask[i] != 0)
-            {
-                if (!alive || paused_full)
-                {
-                    lpKeyState[i] &= static_cast<BYTE>(~0x81);
-                    spoofed = true;
-                    continue;
-                }
-
-                BYTE desired = g_internalKeyState[i];
-                lpKeyState[i] = (lpKeyState[i] & static_cast<BYTE>(~0x81)) | (desired & 0x81);
-                spoofed = true;
-                continue;
-            }
-
-            if (ShouldBlockKey(snapshot, i, alive, paused_full))
-            {
-                lpKeyState[i] &= static_cast<BYTE>(~0x81);
-                spoofed = true;
-            }
-        }
-
-        if (spoofed)
-        {
-            CountStat(&g_countSpoofKeyboard);
-        }
-
-        return ok;
-    }
 
     if (IsBypassProcess(snapshot))
     {
@@ -3332,14 +2672,7 @@ static UINT WINAPI Hook_GetRawInputBuffer(PRAWINPUT data, PUINT size, UINT heade
     if (hasSnapshot)
     {
         ApplyClearIfNeeded(snapshot);
-        if (IsSharedV3Ready())
-        {
-            ProcessEventQueueV3(snapshot);
-        }
-        else
-        {
-            ApplyRawClearIfNeeded(snapshot);
-        }
+        ApplyRawClearIfNeeded(snapshot);
     }
 
     RAWINPUT* raw = data;
@@ -3354,45 +2687,7 @@ static UINT WINAPI Hook_GetRawInputBuffer(PRAWINPUT data, PUINT size, UINT heade
                 const bool alive = IsSnapshotAlive(snapshot);
                 const bool paused = (snapshot.flags & kFlagPaused) != 0;
 
-                if (IsSharedV3Ready())
-                {
-                    int vKey = 0;
-                    bool isDown = false;
-                    bool hasEvent = false;
-                    while (DequeueRawEventV3(&vKey, &isDown))
-                    {
-                        if (isDown && (!alive || paused))
-                        {
-                            continue;
-                        }
-                        hasEvent = true;
-                        break;
-                    }
-
-                    if (hasEvent)
-                    {
-                        BuildRawKeyboardEvent(vKey, isDown, raw->data.keyboard);
-                        spoofed = true;
-                        g_lastRawKeyboardState[vKey] = isDown ? 0x80 : 0x00;
-                    }
-                    else
-                    {
-                        int rawKey = static_cast<int>(raw->data.keyboard.VKey);
-                        if (rawKey >= 0 && rawKey < 256 && ShouldBlockKey(snapshot, rawKey, alive, paused))
-                        {
-                            g_lastRawKeyboardState[rawKey] = 0;
-                            BuildRawKeyboardEvent(rawKey, false, raw->data.keyboard);
-                            spoofed = true;
-                        }
-                        else if (rawKey >= 0 && rawKey < 256 && snapshot.targetMask[rawKey] != 0 && (!alive || paused))
-                        {
-                            g_lastRawKeyboardState[rawKey] = 0;
-                            BuildRawKeyboardEvent(rawKey, false, raw->data.keyboard);
-                            spoofed = true;
-                        }
-                    }
-                }
-                else if (snapshot.profileMode == kProfileModeMapping)
+                if (snapshot.profileMode == kProfileModeMapping)
                 {
                     // 映射模式下用目标键序列重写 RawInput，确保后台能收到映射后的按键事件。
                     int vKey = 0;
@@ -3499,57 +2794,14 @@ static UINT WINAPI Hook_GetRawInputData(HRAWINPUT hRawInput, UINT command, LPVOI
             if (ReadSharedSnapshotCached(snapshot))
             {
                 ApplyClearIfNeeded(snapshot);
-                if (IsSharedV3Ready())
-                {
-                    ProcessEventQueueV3(snapshot);
-                }
-                else
-                {
-                    ApplyRawClearIfNeeded(snapshot);
-                }
+                ApplyRawClearIfNeeded(snapshot);
 
                 if (!IsBypassProcess(snapshot))
                 {
                     const bool alive = IsSnapshotAlive(snapshot);
                     const bool paused = (snapshot.flags & kFlagPaused) != 0;
 
-                    if (IsSharedV3Ready())
-                    {
-                        int vKey = 0;
-                        bool isDown = false;
-                        bool hasEvent = false;
-                        while (DequeueRawEventV3(&vKey, &isDown))
-                        {
-                            if (!allowDataSpoof && isDown)
-                            {
-                                continue;
-                            }
-                            if (isDown && (!alive || paused))
-                            {
-                                continue;
-                            }
-                            hasEvent = true;
-                            break;
-                        }
-
-                        if (hasEvent)
-                        {
-                            BuildRawKeyboardEvent(vKey, isDown, raw->data.keyboard);
-                            spoofed = true;
-                            g_lastRawKeyboardState[vKey] = isDown ? 0x80 : 0x00;
-                        }
-                        else
-                        {
-                            int rawKey = static_cast<int>(raw->data.keyboard.VKey);
-                            if (rawKey >= 0 && rawKey < 256 && ShouldBlockKey(snapshot, rawKey, alive, paused))
-                            {
-                                BuildRawKeyboardEvent(rawKey, false, raw->data.keyboard);
-                                spoofed = true;
-                                g_lastRawKeyboardState[rawKey] = 0;
-                            }
-                        }
-                    }
-                    else if (allowDataSpoof && snapshot.profileMode == kProfileModeMapping)
+                    if (allowDataSpoof && snapshot.profileMode == kProfileModeMapping)
                     {
                         // 映射模式下用目标键序列重写 RawInput，确保后台能收到映射后的按键事件。
                         int vKey = 0;
@@ -3826,64 +3078,6 @@ static HRESULT STDMETHODCALLTYPE Hook_GetDeviceState(IDirectInputDevice8W* devic
     ApplyClearIfNeeded(snapshot);
     if (IsBypassProcess(snapshot))
     {
-        return hr;
-    }
-
-    if (IsSharedV3Ready())
-    {
-        ProcessEventQueueV3(snapshot);
-
-        const bool alive = IsSnapshotAlive(snapshot);
-        const bool paused_full = (snapshot.flags & kFlagPaused) != 0;
-
-        EnsureVkeyToDikMap();
-        auto* state = static_cast<BYTE*>(data);
-        bool spoofed = false;
-
-        for (int vKey = 0; vKey < 256; vKey++)
-        {
-            int dik = g_vkeyToDik[vKey];
-            if (dik < 0 || dik >= 256)
-            {
-                continue;
-            }
-
-            if (snapshot.targetMask[vKey] != 0)
-            {
-                if (!alive || paused_full)
-                {
-                    state[dik] = 0;
-                    spoofed = true;
-                    RecordDirectInputKeyEventIfNeeded(vKey, false, true, snapshot.profileMode);
-                    continue;
-                }
-
-                state[dik] = (g_internalKeyState[vKey] & 0x80) ? 0x80 : 0x00;
-                spoofed = true;
-                RecordDirectInputKeyEventIfNeeded(vKey, (state[dik] & 0x80) != 0, true, snapshot.profileMode);
-            }
-            else if (ShouldBlockKey(snapshot, vKey, alive, paused_full))
-            {
-                state[dik] = 0;
-                spoofed = true;
-                RecordDirectInputKeyEventIfNeeded(vKey, false, true, snapshot.profileMode);
-            }
-        }
-
-        if (spoofed)
-        {
-            CountStat(&g_countSpoofDeviceState);
-        }
-
-        if (forceOk && spoofed)
-        {
-            if (InterlockedCompareExchange(&g_forceDeviceStateLogged, 1, 0) == 0)
-            {
-                LogInfo(L"GetDeviceState 返回 DIERR_NOTACQUIRED，已按配置强制返回 DI_OK");
-            }
-            return DI_OK;
-        }
-
         return hr;
     }
 
