@@ -165,6 +165,14 @@
                     </StackPanel>
 
                     <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                      <TextBlock Text="聚物" Width="60" VerticalAlignment="Center" />
+                      <ToggleButton Style="{StaticResource ToggleSwitchStyle}"
+                                    IsChecked="{Binding GatherItemsEnabled}"
+                                    IsEnabled="{Binding CanControlGatherItems}" />
+                      <TextBlock Text="{Binding GatherItemsStateText}" Foreground="Gray" Margin="8,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                       <TextBlock Text="档位" Width="60" VerticalAlignment="Center" />
                       <ListBox ItemsSource="{Binding AttractModeOptions}"
                                SelectedIndex="{Binding AttractModeIndex}"
@@ -178,6 +186,35 @@
                           </ItemsPanelTemplate>
                         </ListBox.ItemsPanel>
                       </ListBox>
+                    </StackPanel>
+
+                    <Separator Margin="0,10,0,8" />
+
+                    <TextBlock Text="动态倍攻" FontWeight="Bold" Margin="0,0,0,4" />
+                    <StackPanel Orientation="Horizontal">
+                      <TextBlock Text="开关" Width="60" VerticalAlignment="Center" />
+                      <ToggleButton Style="{StaticResource ToggleSwitchStyle}"
+                                    IsChecked="{Binding DamageEnabled}"
+                                    IsEnabled="{Binding CanControlDamage}" />
+                      <TextBlock Text="{Binding DamageEnabledStateText}" Foreground="Gray" Margin="8,0,0,0" VerticalAlignment="Center" />
+
+                      <TextBlock Text="无敌" Width="60" Margin="16,0,0,0" VerticalAlignment="Center" />
+                      <ToggleButton Style="{StaticResource ToggleSwitchStyle}"
+                                    IsChecked="{Binding InvincibleEnabled}"
+                                    IsEnabled="{Binding CanControlDamage}" />
+                      <TextBlock Text="{Binding InvincibleEnabledStateText}" Foreground="Gray" Margin="8,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                      <TextBlock Text="倍率" Width="60" VerticalAlignment="Center" />
+                      <Slider Minimum="1"
+                              Maximum="1000"
+                              Value="{Binding DamageMultiplier, Mode=TwoWay}"
+                              Width="180" />
+                      <TextBox Text="{Binding DamageMultiplierText, UpdateSourceTrigger=PropertyChanged}"
+                               Width="60"
+                               Margin="8,0,0,0"
+                               VerticalContentAlignment="Center" />
                     </StackPanel>
 
                     <Expander Header="高级控制（覆盖模式）" IsExpanded="False" Margin="0,10,0,0">

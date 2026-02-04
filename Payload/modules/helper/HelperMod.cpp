@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <intrin.h>
 #include <wctype.h>
+#include "MinHook.h"
 
 
 // LDR 断链与抹头（可选）支持，使用私有结构以规避 SDK 结构差异。
@@ -27,8 +28,8 @@ typedef struct _LDR_DATA_TABLE_ENTRY_PRIVATE {
 } LDR_DATA_TABLE_ENTRY_PRIVATE, *PLDR_DATA_TABLE_ENTRY_PRIVATE;
 
 #pragma pack(push, 1)
-// GUI 共享内存状态结构体（V3）
-typedef struct _HelperStatusV2 {
+// GUI 共享内存状态结构体（V5）
+typedef struct _HelperStatusV5 {
 	DWORD version;
 	DWORD size;
 	ULONGLONG last_tick_ms;
@@ -39,6 +40,10 @@ typedef struct _HelperStatusV2 {
 	BOOL fullscreen_attack_patch_on;
 	int attract_mode;
 	BOOL attract_positive;
+	BOOL gather_items_enabled;
+	BOOL damage_enabled;
+	int damage_multiplier;
+	BOOL invincible_enabled;
 	BOOL summon_enabled;
 	ULONGLONG summon_last_tick;
 	BOOL fullscreen_skill_enabled;
@@ -46,24 +51,10 @@ typedef struct _HelperStatusV2 {
 	DWORD fullscreen_skill_hotkey;
 	BOOL hotkey_enabled;
 	wchar_t player_name[32];
-} HelperStatusV2;
+} HelperStatusV5;
 
-// GUI 共享内存控制结构体（V1）
-typedef struct _HelperControlV1 {
-	DWORD version;
-	DWORD size;
-	DWORD pid;
-	DWORD last_update_tick;
-	BYTE fullscreen_attack;
-	BYTE fullscreen_skill;
-	BYTE auto_transparent;
-	BYTE attract;
-	BYTE hotkey_enabled;
-	BYTE reserved[3];
-	DWORD summon_sequence;
-} HelperControlV1;
-
-typedef struct _HelperControlV2 {
+// GUI 共享内存控制结构体（V4）
+typedef struct _HelperControlV4 {
 	DWORD version;
 	DWORD size;
 	DWORD pid;
@@ -84,8 +75,17 @@ typedef struct _HelperControlV2 {
 	BYTE desired_attract_mode;
 	BYTE desired_attract_positive;
 	BYTE desired_hotkey_enabled;
+	BYTE desired_gather_items_enabled;
+	DWORD desired_damage_multiplier;
+	BYTE desired_damage_enabled;
+	BYTE desired_invincible_enabled;
 	BYTE reserved2;
-} HelperControlV2;
+	BYTE reserved3;
+	BYTE reserved4;
+	BYTE reserved5;
+	BYTE reserved6;
+	BYTE reserved7;
+} HelperControlV4;
 #pragma pack(pop)
 
 static const LONG kHideModuleResultNotAttempted = -1;
@@ -182,6 +182,8 @@ static const DWORD kFullscreenSkillDefaultCode = 20022;
 static const DWORD kFullscreenSkillDefaultDamage = 13333;
 static const DWORD kFullscreenSkillDefaultIntervalMs = 1000;
 static const DWORD kFullscreenSkillDefaultHotkey = VK_HOME;
+// 动态倍攻 Hook 地址与参数偏移
+static const DWORD kDamageHookAddress = 0x0087B8E3;
 // 默认热键配置
 static const DWORD kHotkeyToggleTransparent = VK_F2;
 static const DWORD kHotkeyToggleFullscreenAttack = VK_F3;
@@ -191,6 +193,7 @@ static const DWORD kHotkeyAttractMode2 = '8';
 static const DWORD kHotkeyAttractMode3 = '9';
 static const DWORD kHotkeyAttractMode4 = '0';
 static const DWORD kHotkeyToggleAttractDirection = VK_OEM_MINUS;
+static const DWORD kHotkeyToggleGatherItems = VK_OEM_5;
 
 // // 0625人物基址
 // static const DWORD kPlayerBaseAddress = 0x01AB7CDC;
@@ -220,12 +223,11 @@ static const DWORD kFullscreenAttackPollIntervalMs = 1000;
 // 共享内存状态通道（按 PID 区分）
 static const wchar_t kSharedMemoryNamePrefixGlobal[] = L"Global\\GameHelperStatus_";
 static const wchar_t kSharedMemoryNamePrefixLocal[] = L"Local\\GameHelperStatus_";
-static const DWORD kSharedMemoryVersion = 3;
+static const DWORD kSharedMemoryVersion = 5;
 static const DWORD kSharedMemoryWriteIntervalMs = 500;
 static const wchar_t kControlMemoryNamePrefixGlobal[] = L"Global\\GameHelperControl_";
 static const wchar_t kControlMemoryNamePrefixLocal[] = L"Local\\GameHelperControl_";
-static const DWORD kControlMemoryVersionV1 = 1;
-static const DWORD kControlMemoryVersionV2 = 2;
+static const DWORD kControlMemoryVersionV4 = 4;
 static const DWORD kControlMemoryReadIntervalMs = 200;
 
 // 输入轮询间隔
@@ -288,6 +290,12 @@ static int g_attract_mode = kAttractModeOff;
 static int g_attract_last_mode = kAttractModeAllToPlayer;
 // 吸怪方向开关（TRUE=正向，FALSE=负向）
 static BOOL g_attract_positive_enabled = FALSE;
+// 聚物开关（仅物品）
+static BOOL g_gather_items_enabled = FALSE;
+// 动态倍攻与怪物零伤
+static BOOL g_damage_enabled = FALSE;
+static BOOL g_invincible_enabled = FALSE;
+static int g_damage_multiplier = 1;
 // 召唤人偶配置（由配置文件覆盖）
 static BOOL g_summon_enabled = TRUE;
 static DWORD g_summon_monster_id = kSummonDefaultMonsterId;
@@ -309,6 +317,7 @@ static DWORD g_hotkey_attract_mode2 = kHotkeyAttractMode2;
 static DWORD g_hotkey_attract_mode3 = kHotkeyAttractMode3;
 static DWORD g_hotkey_attract_mode4 = kHotkeyAttractMode4;
 static DWORD g_hotkey_toggle_attract_direction = kHotkeyToggleAttractDirection;
+static DWORD g_hotkey_toggle_gather_items = kHotkeyToggleGatherItems;
 static int g_player_name_encoding = kPlayerNameEncodingAuto;
 // 透明线程
 static HANDLE g_transparent_thread = NULL;
@@ -332,6 +341,13 @@ static const DWORD kActionMaskAttractEnabled = 1 << 3;
 static const DWORD kActionMaskAttractMode = 1 << 4;
 static const DWORD kActionMaskAttractPositive = 1 << 5;
 static const DWORD kActionMaskHotkeyEnabled = 1 << 6;
+static const DWORD kActionMaskGatherItems = 1 << 7;
+static const DWORD kActionMaskDamageEnabled = 1 << 8;
+static const DWORD kActionMaskDamageMultiplier = 1 << 9;
+static const DWORD kActionMaskInvincibleEnabled = 1 << 10;
+static void* g_damage_hook_trampoline = NULL;
+static volatile LONG g_damage_hook_installed = 0;
+static volatile LONG g_damage_hook_failed_logged = 0;
 // 共享内存写入句柄
 static HANDLE g_shared_memory_handle = NULL;
 static void* g_shared_memory_view = NULL;
@@ -687,6 +703,9 @@ struct HelperConfig {
 	DWORD fullscreen_skill_damage;
 	DWORD fullscreen_skill_interval_ms;
 	DWORD fullscreen_skill_hotkey;
+	BOOL enable_damage_hook;
+	int damage_multiplier;
+	BOOL invincible_enabled;
 	DWORD hotkey_toggle_transparent;
 	DWORD hotkey_toggle_fullscreen_attack;
 	DWORD hotkey_summon_doll;
@@ -695,6 +714,7 @@ struct HelperConfig {
 	DWORD hotkey_attract_mode3;
 	DWORD hotkey_attract_mode4;
 	DWORD hotkey_toggle_attract_direction;
+	DWORD hotkey_toggle_gather_items;
 	int player_name_encoding;
 	float monster_x_offset_by_mode[kAttractModeMax + 1];
 	wchar_t output_directory[MAX_PATH];
@@ -725,6 +745,9 @@ static HelperConfig GetDefaultHelperConfig() {
 	config.fullscreen_skill_damage = kFullscreenSkillDefaultDamage;
 	config.fullscreen_skill_interval_ms = kFullscreenSkillDefaultIntervalMs;
 	config.fullscreen_skill_hotkey = kFullscreenSkillDefaultHotkey;
+	config.enable_damage_hook = FALSE;
+	config.damage_multiplier = 10;
+	config.invincible_enabled = FALSE;
 	config.hotkey_toggle_transparent = kHotkeyToggleTransparent;
 	config.hotkey_toggle_fullscreen_attack = kHotkeyToggleFullscreenAttack;
 	config.hotkey_summon_doll = kHotkeySummonDoll;
@@ -733,6 +756,7 @@ static HelperConfig GetDefaultHelperConfig() {
 	config.hotkey_attract_mode3 = kHotkeyAttractMode3;
 	config.hotkey_attract_mode4 = kHotkeyAttractMode4;
 	config.hotkey_toggle_attract_direction = kHotkeyToggleAttractDirection;
+	config.hotkey_toggle_gather_items = kHotkeyToggleGatherItems;
 	config.player_name_encoding = kPlayerNameEncodingAuto;
 	for (int i = 0; i <= kAttractModeMax; ++i) {
 		config.monster_x_offset_by_mode[i] = kDefaultMonsterXOffsetByMode[i];
@@ -885,6 +909,11 @@ static BOOL WriteDefaultConfigFile(const wchar_t* config_path) {
 		"; skill_interval=1000\r\n"
 		"; hotkey_vk=36\r\n"
 		"\r\n"
+		"[damage]\r\n"
+		"enable_damage_hook=false\r\n"
+		"damage_multiplier=10\r\n"
+		"invincible_enabled=false\r\n"
+		"\r\n"
 		"[hotkey]\r\n"
 		"toggle_transparent=113\r\n"
 		"toggle_fullscreen_attack=114\r\n"
@@ -894,6 +923,7 @@ static BOOL WriteDefaultConfigFile(const wchar_t* config_path) {
 		"attract_mode3=57\r\n"
 		"attract_mode4=48\r\n"
 		"toggle_attract_direction=189\r\n"
+		"toggle_gather_items=220\r\n"
 		"; toggle_fullscreen_skill=36\r\n"
 		"\r\n"
 		"[attract]\r\n"
@@ -995,6 +1025,9 @@ static BOOL LoadHelperConfig(const wchar_t* config_path, HelperConfig* config) {
 	config->fullscreen_skill_damage = ReadIniUInt32(config_path, L"fullscreen", L"skill_damage", config->fullscreen_skill_damage);
 	config->fullscreen_skill_interval_ms = ReadIniUInt32(config_path, L"fullscreen", L"skill_interval", config->fullscreen_skill_interval_ms);
 	config->fullscreen_skill_hotkey = ReadIniUInt32(config_path, L"fullscreen", L"hotkey_vk", config->fullscreen_skill_hotkey);
+	config->enable_damage_hook = ReadIniBool(config_path, L"damage", L"enable_damage_hook", config->enable_damage_hook);
+	config->damage_multiplier = static_cast<int>(ReadIniUInt32(config_path, L"damage", L"damage_multiplier", static_cast<DWORD>(config->damage_multiplier)));
+	config->invincible_enabled = ReadIniBool(config_path, L"damage", L"invincible_enabled", config->invincible_enabled);
 	config->hotkey_toggle_transparent = ReadIniUInt32(config_path, L"hotkey", L"toggle_transparent", config->hotkey_toggle_transparent);
 	config->hotkey_toggle_fullscreen_attack = ReadIniUInt32(config_path, L"hotkey", L"toggle_fullscreen_attack", config->hotkey_toggle_fullscreen_attack);
 	config->hotkey_summon_doll = ReadIniUInt32(config_path, L"hotkey", L"summon_doll", config->hotkey_summon_doll);
@@ -1003,6 +1036,7 @@ static BOOL LoadHelperConfig(const wchar_t* config_path, HelperConfig* config) {
 	config->hotkey_attract_mode3 = ReadIniUInt32(config_path, L"hotkey", L"attract_mode3", config->hotkey_attract_mode3);
 	config->hotkey_attract_mode4 = ReadIniUInt32(config_path, L"hotkey", L"attract_mode4", config->hotkey_attract_mode4);
 	config->hotkey_toggle_attract_direction = ReadIniUInt32(config_path, L"hotkey", L"toggle_attract_direction", config->hotkey_toggle_attract_direction);
+	config->hotkey_toggle_gather_items = ReadIniUInt32(config_path, L"hotkey", L"toggle_gather_items", config->hotkey_toggle_gather_items);
 	config->fullscreen_skill_hotkey = ReadIniUInt32(config_path, L"hotkey", L"toggle_fullscreen_skill", config->fullscreen_skill_hotkey);
 	wchar_t player_name_encoding[32] = {0};
 	if (ReadIniStringValue(config_path, L"feature", L"player_name_encoding", player_name_encoding, sizeof(player_name_encoding) / sizeof(player_name_encoding[0]))) {
@@ -1473,7 +1507,7 @@ static BOOL InitializeSharedMemory() {
 			NULL,
 			PAGE_READWRITE,
 			0,
-			static_cast<DWORD>(sizeof(HelperStatusV2)),
+			static_cast<DWORD>(sizeof(HelperStatusV5)),
 			name_buffer);
 		if (mapping == NULL) {
 			DWORD error = GetLastError();
@@ -1485,7 +1519,7 @@ static BOOL InitializeSharedMemory() {
 			}
 			return FALSE;
 		}
-		void* view = MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, sizeof(HelperStatusV2));
+		void* view = MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, sizeof(HelperStatusV5));
 		if (view == NULL) {
 			DWORD error = GetLastError();
 			CloseHandle(mapping);
@@ -1496,7 +1530,7 @@ static BOOL InitializeSharedMemory() {
 		}
 		g_shared_memory_handle = mapping;
 		g_shared_memory_view = view;
-		ZeroMemory(view, sizeof(HelperStatusV2));
+		ZeroMemory(view, sizeof(HelperStatusV5));
 		InterlockedExchange(&g_shared_memory_failed_logged, 0);
 		wcscpy_s(g_shared_memory_name, name_buffer);
 		if (InterlockedExchange(&g_shared_memory_ready_logged, 1) == 0) {
@@ -1525,7 +1559,7 @@ static BOOL InitializeControlMemory() {
 			NULL,
 			PAGE_READWRITE,
 			0,
-			static_cast<DWORD>(sizeof(HelperControlV2)),
+			static_cast<DWORD>(sizeof(HelperControlV4)),
 			name_buffer);
 		if (mapping == NULL) {
 			DWORD error = GetLastError();
@@ -1537,7 +1571,7 @@ static BOOL InitializeControlMemory() {
 			}
 			return FALSE;
 		}
-		void* view = MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, sizeof(HelperControlV2));
+		void* view = MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, sizeof(HelperControlV4));
 		if (view == NULL) {
 			DWORD error = GetLastError();
 			CloseHandle(mapping);
@@ -1548,10 +1582,10 @@ static BOOL InitializeControlMemory() {
 		}
 		g_control_memory_handle = mapping;
 		g_control_memory_view = view;
-		ZeroMemory(view, sizeof(HelperControlV2));
-		HelperControlV2 init = {0};
-		init.version = kControlMemoryVersionV2;
-		init.size = static_cast<DWORD>(sizeof(HelperControlV2));
+		ZeroMemory(view, sizeof(HelperControlV4));
+		HelperControlV4 init = {0};
+		init.version = kControlMemoryVersionV4;
+		init.size = static_cast<DWORD>(sizeof(HelperControlV4));
 		init.pid = pid;
 		memcpy(view, &init, sizeof(init));
 		InterlockedExchange(&g_control_memory_failed_logged, 0);
@@ -1788,9 +1822,9 @@ static void WriteSharedMemorySnapshot() {
 	if (!InitializeSharedMemory()) {
 		return;
 	}
-	HelperStatusV2 snapshot = {0};
+	HelperStatusV5 snapshot = {0};
 	snapshot.version = kSharedMemoryVersion;
-	snapshot.size = static_cast<DWORD>(sizeof(HelperStatusV2));
+	snapshot.size = static_cast<DWORD>(sizeof(HelperStatusV5));
 	snapshot.last_tick_ms = GetTickCount64();
 	snapshot.pid = GetCurrentProcessId();
 	snapshot.process_alive = TRUE;
@@ -1808,6 +1842,10 @@ static void WriteSharedMemorySnapshot() {
 	}
 	snapshot.attract_mode = g_attract_mode;
 	snapshot.attract_positive = g_attract_positive_enabled;
+	snapshot.gather_items_enabled = g_gather_items_enabled;
+	snapshot.damage_enabled = g_damage_enabled;
+	snapshot.damage_multiplier = g_damage_multiplier;
+	snapshot.invincible_enabled = g_invincible_enabled;
 	snapshot.summon_enabled = g_summon_enabled;
 	snapshot.summon_last_tick = g_summon_last_tick;
 	snapshot.fullscreen_skill_enabled = g_fullscreen_skill_enabled;
@@ -1827,8 +1865,12 @@ static void SharedMemoryWriterTick() {
 static void SetFullscreenAttackTargetEnabled(BOOL enabled);
 static void SetAutoTransparentEnabled(BOOL enabled);
 static void SetAttractEnabled(BOOL enabled);
+static void SetGatherItemsEnabled(BOOL enabled);
+static void SetDamageEnabled(BOOL enabled);
+static void SetDamageMultiplier(int value);
+static void SetInvincibleEnabled(BOOL enabled);
 
-static void ApplyControlActions(const HelperControlV2& snapshot) {
+static void ApplyControlActions(const HelperControlV4& snapshot) {
 	if (g_control_fullscreen_attack == kControlFollow &&
 		(snapshot.action_mask & kActionMaskFullscreenAttack) != 0) {
 		SetFullscreenAttackTargetEnabled(snapshot.desired_fullscreen_attack != 0);
@@ -1874,6 +1916,19 @@ static void ApplyControlActions(const HelperControlV2& snapshot) {
 		if ((snapshot.action_mask & kActionMaskAttractPositive) != 0) {
 			g_attract_positive_enabled = snapshot.desired_attract_positive != 0;
 		}
+		if ((snapshot.action_mask & kActionMaskGatherItems) != 0) {
+			SetGatherItemsEnabled(snapshot.desired_gather_items_enabled != 0);
+		}
+	}
+
+	if ((snapshot.action_mask & kActionMaskDamageMultiplier) != 0) {
+		SetDamageMultiplier(static_cast<int>(snapshot.desired_damage_multiplier));
+	}
+	if ((snapshot.action_mask & kActionMaskDamageEnabled) != 0) {
+		SetDamageEnabled(snapshot.desired_damage_enabled != 0);
+	}
+	if ((snapshot.action_mask & kActionMaskInvincibleEnabled) != 0) {
+		SetInvincibleEnabled(snapshot.desired_invincible_enabled != 0);
 	}
 }
 
@@ -1882,54 +1937,9 @@ static void ControlReaderTick() {
 	if (!InitializeControlMemory()) {
 		return;
 	}
-	HelperControlV2 snapshotV2 = {0};
-	memcpy(&snapshotV2, g_control_memory_view, sizeof(snapshotV2));
-	if (snapshotV2.version == kControlMemoryVersionV2 && snapshotV2.size >= sizeof(HelperControlV2)) {
-		snapshotV2.fullscreen_attack = NormalizeControlValue(snapshotV2.fullscreen_attack);
-		snapshotV2.fullscreen_skill = NormalizeControlValue(snapshotV2.fullscreen_skill);
-		snapshotV2.auto_transparent = NormalizeControlValue(snapshotV2.auto_transparent);
-		snapshotV2.attract = NormalizeControlValue(snapshotV2.attract);
-		snapshotV2.hotkey_enabled = NormalizeControlValue(snapshotV2.hotkey_enabled);
-
-		BOOL control_changed = FALSE;
-		if (snapshotV2.fullscreen_attack != g_control_fullscreen_attack) {
-			g_control_fullscreen_attack = snapshotV2.fullscreen_attack;
-			control_changed = TRUE;
-		}
-		if (snapshotV2.fullscreen_skill != g_control_fullscreen_skill) {
-			g_control_fullscreen_skill = snapshotV2.fullscreen_skill;
-			control_changed = TRUE;
-		}
-		if (snapshotV2.auto_transparent != g_control_auto_transparent) {
-			g_control_auto_transparent = snapshotV2.auto_transparent;
-			control_changed = TRUE;
-		}
-		if (snapshotV2.attract != g_control_attract) {
-			g_control_attract = snapshotV2.attract;
-			control_changed = TRUE;
-		}
-		if (snapshotV2.hotkey_enabled != g_control_hotkey_enabled) {
-			g_control_hotkey_enabled = snapshotV2.hotkey_enabled;
-			control_changed = TRUE;
-		}
-		if (control_changed) {
-			ApplyControlOverrides();
-		}
-		if (snapshotV2.summon_sequence != g_control_last_summon_sequence) {
-			g_control_last_summon_sequence = snapshotV2.summon_sequence;
-			TrySummonDoll();
-		}
-		if (snapshotV2.action_sequence != 0 &&
-			snapshotV2.action_sequence != g_control_last_action_sequence) {
-			g_control_last_action_sequence = snapshotV2.action_sequence;
-			ApplyControlActions(snapshotV2);
-		}
-		return;
-	}
-
-	HelperControlV1 snapshot = {0};
+	HelperControlV4 snapshot = {0};
 	memcpy(&snapshot, g_control_memory_view, sizeof(snapshot));
-	if (snapshot.version != kControlMemoryVersionV1 || snapshot.size != sizeof(HelperControlV1)) {
+	if (snapshot.version != kControlMemoryVersionV4 || snapshot.size != sizeof(HelperControlV4)) {
 		if (InterlockedCompareExchange(&g_control_protocol_logged, 1, 0) == 0) {
 			char message[160] = {0};
 			sprintf_s(
@@ -1938,8 +1948,8 @@ static void ControlReaderTick() {
 				"control_version=%lu control_size=%lu expected_version=%lu expected_size=%lu",
 				snapshot.version,
 				snapshot.size,
-				kControlMemoryVersionV1,
-				static_cast<unsigned long>(sizeof(HelperControlV1)));
+				kControlMemoryVersionV4,
+				static_cast<unsigned long>(sizeof(HelperControlV4)));
 			LogEvent("WARN", "protocol_mismatch", message);
 		}
 		return;
@@ -1978,6 +1988,11 @@ static void ControlReaderTick() {
 		g_control_last_summon_sequence = snapshot.summon_sequence;
 		TrySummonDoll();
 	}
+	if (snapshot.action_sequence != 0 &&
+		snapshot.action_sequence != g_control_last_action_sequence) {
+		g_control_last_action_sequence = snapshot.action_sequence;
+		ApplyControlActions(snapshot);
+	}
 }
 
 // 读取全屏攻击目标状态，避免多线程竞态。
@@ -2011,45 +2026,82 @@ static void FullscreenAttackGuardTick() {
 	SetFullscreenAttackEnabled(target_enabled);
 }
 
-// 吸怪聚物：根据配置把怪物/物品坐标拉到人物坐标或偏移位置。
-static void AttractMonstersAndItems(int mode) {
-	if (mode <= kAttractModeOff || mode > kAttractModeMax) {
-		return;
+typedef struct _AttractContext {
+	DWORD player_ptr;
+	DWORD start_ptr;
+	DWORD end_ptr;
+	float player_x;
+	float player_y;
+} AttractContext;
+
+// 吸怪/聚物共享前置读取，避免重复取指针。
+static BOOL BuildAttractContext(AttractContext* context) {
+	if (context == NULL) {
+		return FALSE;
 	}
 	DWORD player_ptr = ReadDwordSafely(kPlayerBaseAddress);
 	if (player_ptr == 0) {
-		return;
+		return FALSE;
 	}
 	DWORD map_ptr = ReadDwordSafely(player_ptr + kMapOffset);
 	if (map_ptr == 0) {
-		return;
+		return FALSE;
 	}
 	DWORD start_ptr = ReadDwordSafely(map_ptr + kMapStartOffset);
 	DWORD end_ptr = ReadDwordSafely(map_ptr + kMapEndOffset);
 	if (start_ptr == 0 || end_ptr == 0 || end_ptr <= start_ptr) {
-		return;
+		return FALSE;
 	}
 	int count = (int)((end_ptr - start_ptr) / 4);
 	if (count <= 0 || count > kMaxObjectCount) {
+		return FALSE;
+	}
+	context->player_ptr = player_ptr;
+	context->start_ptr = start_ptr;
+	context->end_ptr = end_ptr;
+	context->player_x = ReadFloatSafely(player_ptr + kPositionXOffset);
+	context->player_y = ReadFloatSafely(player_ptr + kPositionYOffset);
+	return TRUE;
+}
+
+// 吸怪/聚物：按需拉动怪物与物品坐标。
+static void ApplyAttractAndGather(int mode, BOOL attract_monsters, BOOL gather_items) {
+	if (!attract_monsters && !gather_items) {
 		return;
 	}
-	float player_x = ReadFloatSafely(player_ptr + kPositionXOffset);
-	float player_y = ReadFloatSafely(player_ptr + kPositionYOffset);
-	float offset = g_monster_x_offset_by_mode[mode];
-	if (offset < 0.0f) {
-		offset = -offset;
+	AttractContext context = {0};
+	if (!BuildAttractContext(&context)) {
+		return;
 	}
-	// 方向开关生效：正向为 +，负向为 -。
-	float direction = g_attract_positive_enabled ? 1.0f : -1.0f;
-	float monster_x = player_x + offset * direction;
+	float monster_x = context.player_x;
+	if (attract_monsters) {
+		if (mode <= kAttractModeOff || mode > kAttractModeMax) {
+			return;
+		}
+		float offset = g_monster_x_offset_by_mode[mode];
+		if (offset < 0.0f) {
+			offset = -offset;
+		}
+		// 方向开关生效：正向为 +，负向为 -。
+		float direction = g_attract_positive_enabled ? 1.0f : -1.0f;
+		monster_x = context.player_x + offset * direction;
+	}
 	// 以 end 为结束地址，按指针步进遍历对象
-	for (DWORD cursor = start_ptr; cursor < end_ptr; cursor += 4) {
+	for (DWORD cursor = context.start_ptr; cursor < context.end_ptr; cursor += 4) {
 		DWORD object_ptr = ReadDwordSafely(cursor);
-		if (object_ptr == 0 || object_ptr == player_ptr) {
+		if (object_ptr == 0 || object_ptr == context.player_ptr) {
 			continue;
 		}
 		int type = (int)ReadDwordSafely(object_ptr + kTypeOffset);
-		if (type != kTypeMonster && type != kTypeApc && type != kTypeItem) {
+		if (type == kTypeItem) {
+			if (!gather_items) {
+				continue;
+			}
+		} else if (type == kTypeMonster || type == kTypeApc) {
+			if (!attract_monsters) {
+				continue;
+			}
+		} else {
 			continue;
 		}
 		int faction = (int)ReadDwordSafely(object_ptr + kFactionOffset);
@@ -2062,22 +2114,24 @@ static void AttractMonstersAndItems(int mode) {
 		}
 		if (type == kTypeItem) {
 			// 物品吸到人物坐标。
-			WriteFloatFast(position_ptr + kObjectPositionXOffset, player_x);
-			WriteFloatFast(position_ptr + kObjectPositionYOffset, player_y);
+			WriteFloatFast(position_ptr + kObjectPositionXOffset, context.player_x);
+			WriteFloatFast(position_ptr + kObjectPositionYOffset, context.player_y);
 			continue;
 		}
 		// 怪物/敌对 APC 的 X 坐标按配置偏移，Y 坐标与人物一致。
 		WriteFloatFast(position_ptr + kObjectPositionXOffset, monster_x);
-		WriteFloatFast(position_ptr + kObjectPositionYOffset, player_y);
+		WriteFloatFast(position_ptr + kObjectPositionYOffset, context.player_y);
 	}
 }
 
-// 自动吸怪任务：按需调用吸怪逻辑。
+// 自动吸怪任务：按需调用吸怪/聚物逻辑。
 static void AutoAttractTick() {
-	int mode = g_attract_mode;
-	if (mode != kAttractModeOff) {
-		AttractMonstersAndItems(mode);
+	BOOL need_attract = g_attract_mode != kAttractModeOff;
+	BOOL need_gather = g_gather_items_enabled;
+	if (!need_attract && !need_gather) {
+		return;
 	}
+	ApplyAttractAndGather(g_attract_mode, need_attract, need_gather);
 }
 
 // 召唤人偶：内联汇编按 CE 脚本顺序压栈调用。
@@ -2217,7 +2271,8 @@ static DWORD WINAPI MainLogicThread(LPVOID param) {
 	for (;;) {
 		ULONGLONG now = GetTickCount64();
 
-		DWORD attract_interval = (g_attract_mode != kAttractModeOff) ? kAttractLoopIntervalMs : kAttractIdleIntervalMs;
+		BOOL need_attract_tick = g_attract_mode != kAttractModeOff || g_gather_items_enabled;
+		DWORD attract_interval = need_attract_tick ? kAttractLoopIntervalMs : kAttractIdleIntervalMs;
 		if (attract_interval == 0) {
 			attract_interval = 1;
 		}
@@ -2287,6 +2342,8 @@ static void ToggleFullscreenSkill() {
 static void ToggleAutoTransparent();
 static void ToggleAttractMode(int mode, const wchar_t* message);
 static void ToggleAttractDirection();
+static void ToggleGatherItems();
+static void DamageHookDetour();
 
 static bool IsHotkeyDown(DWORD vk) {
 	if (vk == 0) {
@@ -2306,6 +2363,7 @@ static DWORD WINAPI InputPollThread(LPVOID param) {
 	bool key9_last_down = false;
 	bool key0_last_down = false;
 	bool minus_last_down = false;
+	bool gather_last_down = false;
 	bool fullscreen_hotkey_last_down = false;
 	while (TRUE) {
 		HWND foreground = GetForegroundWindow();
@@ -2323,6 +2381,7 @@ static DWORD WINAPI InputPollThread(LPVOID param) {
 				key9_last_down = false;
 				key0_last_down = false;
 				minus_last_down = false;
+				gather_last_down = false;
 				fullscreen_hotkey_last_down = false;
 				Sleep(kInputPollIdleIntervalMs);
 				continue;
@@ -2330,9 +2389,10 @@ static DWORD WINAPI InputPollThread(LPVOID param) {
 			bool need_auto_transparent = g_control_auto_transparent == kControlFollow;
 			bool need_fullscreen_attack = g_control_fullscreen_attack == kControlFollow;
 			bool need_attract = g_control_attract == kControlFollow;
+			bool need_gather = g_control_attract == kControlFollow;
 			bool need_fullscreen_skill = g_control_fullscreen_skill == kControlFollow && g_fullscreen_skill_enabled;
 			bool need_summon = g_summon_enabled;
-			if (!need_auto_transparent && !need_fullscreen_attack && !need_attract && !need_fullscreen_skill && !need_summon) {
+			if (!need_auto_transparent && !need_fullscreen_attack && !need_attract && !need_gather && !need_fullscreen_skill && !need_summon) {
 				Sleep(kInputPollIdleIntervalMs);
 				continue;
 			}
@@ -2345,6 +2405,7 @@ static DWORD WINAPI InputPollThread(LPVOID param) {
 			bool key9_down = need_attract ? IsHotkeyDown(g_hotkey_attract_mode3) : false;
 			bool key0_down = need_attract ? IsHotkeyDown(g_hotkey_attract_mode4) : false;
 			bool minus_down = need_attract ? IsHotkeyDown(g_hotkey_toggle_attract_direction) : false;
+			bool gather_down = need_gather ? IsHotkeyDown(g_hotkey_toggle_gather_items) : false;
 			bool fullscreen_down = need_fullscreen_skill ? IsHotkeyDown(g_fullscreen_skill_hotkey) : false;
 			if (need_auto_transparent && f2_down && !f2_last_down) {
 				ToggleAutoTransparent();
@@ -2370,6 +2431,9 @@ static DWORD WINAPI InputPollThread(LPVOID param) {
 			if (need_attract && minus_down && !minus_last_down) {
 				ToggleAttractDirection();
 			}
+			if (need_gather && gather_down && !gather_last_down) {
+				ToggleGatherItems();
+			}
 			if (need_fullscreen_skill && fullscreen_down && !fullscreen_hotkey_last_down) {
 				ToggleFullscreenSkill();
 			}
@@ -2381,6 +2445,7 @@ static DWORD WINAPI InputPollThread(LPVOID param) {
 			key9_last_down = key9_down;
 			key0_last_down = key0_down;
 			minus_last_down = minus_down;
+			gather_last_down = gather_down;
 			fullscreen_hotkey_last_down = fullscreen_down;
 		} else {
 			f2_last_down = false;
@@ -2391,6 +2456,7 @@ static DWORD WINAPI InputPollThread(LPVOID param) {
 			key9_last_down = false;
 			key0_last_down = false;
 			minus_last_down = false;
+			gather_last_down = false;
 			fullscreen_hotkey_last_down = false;
 		}
 		Sleep(foreground_pid == self_pid ? kInputPollIntervalMs : kInputPollIdleIntervalMs);
@@ -2549,7 +2615,7 @@ static void ToggleAttractMode(int mode, const wchar_t* message) {
 	}
 	if (g_attract_mode == mode) {
 		g_attract_mode = kAttractModeOff;
-		AnnouncePlaceholder(L"关闭吸怪聚物");
+		AnnouncePlaceholder(L"关闭吸怪");
 		LogEvent("INFO", "attract_mode", "mode=0");
 		return;
 	}
@@ -2573,6 +2639,107 @@ static void ToggleAttractDirection() {
 	}
 	AnnouncePlaceholder(L"吸怪方向：负向");
 	LogEvent("INFO", "attract_direction", "negative");
+}
+
+// 聚物开关：仅处理物品对象。
+static void ToggleGatherItems() {
+	g_gather_items_enabled = !g_gather_items_enabled;
+	if (g_gather_items_enabled) {
+		AnnouncePlaceholder(L"聚物 [开启]");
+		LogEvent("INFO", "gather_items", "enabled");
+		return;
+	}
+	AnnouncePlaceholder(L"聚物 [关闭]");
+	LogEvent("INFO", "gather_items", "disabled");
+}
+
+static int ClampDamageMultiplier(int value) {
+	if (value < 1) {
+		return 1;
+	}
+	if (value > 1000) {
+		return 1000;
+	}
+	return value;
+}
+
+static BOOL EnsureDamageHookInstalled() {
+	if (InterlockedCompareExchange(&g_damage_hook_installed, 1, 1) == 1) {
+		return TRUE;
+	}
+	if (InterlockedCompareExchange(&g_damage_hook_installed, -1, -1) == -1) {
+		return FALSE;
+	}
+	MH_STATUS status = MH_Initialize();
+	if (status != MH_OK && status != MH_ERROR_ALREADY_INITIALIZED) {
+		if (InterlockedExchange(&g_damage_hook_failed_logged, 1) == 0) {
+			char message[64] = {0};
+			sprintf_s(message, sizeof(message), "minhook_init=%d", status);
+			LogEvent("WARN", "damage_hook", message);
+		}
+		InterlockedExchange(&g_damage_hook_installed, -1);
+		return FALSE;
+	}
+	status = MH_CreateHook(
+		reinterpret_cast<LPVOID>(kDamageHookAddress),
+		DamageHookDetour,
+		&g_damage_hook_trampoline);
+	if (status != MH_OK) {
+		if (InterlockedExchange(&g_damage_hook_failed_logged, 1) == 0) {
+			char message[64] = {0};
+			sprintf_s(message, sizeof(message), "create_hook=%d", status);
+			LogEvent("WARN", "damage_hook", message);
+		}
+		InterlockedExchange(&g_damage_hook_installed, -1);
+		return FALSE;
+	}
+	status = MH_EnableHook(reinterpret_cast<LPVOID>(kDamageHookAddress));
+	if (status != MH_OK) {
+		if (InterlockedExchange(&g_damage_hook_failed_logged, 1) == 0) {
+			char message[64] = {0};
+			sprintf_s(message, sizeof(message), "enable_hook=%d", status);
+			LogEvent("WARN", "damage_hook", message);
+		}
+		InterlockedExchange(&g_damage_hook_installed, -1);
+		return FALSE;
+	}
+	InterlockedExchange(&g_damage_hook_failed_logged, 0);
+	InterlockedExchange(&g_damage_hook_installed, 1);
+	LogEvent("INFO", "damage_hook", "installed");
+	return TRUE;
+}
+
+// 注意：内联汇编中直接使用 0x644/0x10，避免 MSVC 将 const 解析为地址偏移。
+static void __declspec(naked) DamageHookDetour() {
+	__asm {
+		pushfd
+		push eax
+		push edx
+
+		test ecx, ecx
+		je DamageHook_Player
+		cmp dword ptr [ecx + 0x644], 0
+		jne DamageHook_Enemy
+
+	DamageHook_Player:
+		cmp g_damage_enabled, 0
+		je DamageHook_Exit
+		mov eax, dword ptr [ebp + 0x10]
+		imul eax, g_damage_multiplier
+		mov dword ptr [ebp + 0x10], eax
+		jmp DamageHook_Exit
+
+	DamageHook_Enemy:
+		cmp g_invincible_enabled, 0
+		je DamageHook_Exit
+		mov dword ptr [ebp + 0x10], 0
+
+	DamageHook_Exit:
+		pop edx
+		pop eax
+		popfd
+		jmp [g_damage_hook_trampoline]
+	}
 }
 
 static void SetAutoTransparentEnabled(BOOL enabled) {
@@ -2641,8 +2808,10 @@ static void ApplyControlOverrides() {
 
 	if (g_control_attract == kControlForceOn) {
 		SetAttractEnabled(TRUE);
+		SetGatherItemsEnabled(TRUE);
 	} else if (g_control_attract == kControlForceOff) {
 		SetAttractEnabled(FALSE);
+		SetGatherItemsEnabled(FALSE);
 	}
 
 	if (g_control_fullscreen_skill == kControlForceOn) {
@@ -2683,6 +2852,12 @@ static void ApplyRuntimeConfig(const HelperConfig& config, BOOL reset_state) {
 	if (reset_state) {
 		g_fullscreen_skill_active = FALSE;
 	}
+	SetDamageMultiplier(config.damage_multiplier);
+	SetDamageEnabled(config.enable_damage_hook);
+	SetInvincibleEnabled(config.invincible_enabled);
+	if (reset_state) {
+		g_gather_items_enabled = FALSE;
+	}
 	g_hotkey_toggle_transparent = config.hotkey_toggle_transparent;
 	g_hotkey_toggle_fullscreen_attack = config.hotkey_toggle_fullscreen_attack;
 	g_hotkey_summon_doll = config.hotkey_summon_doll;
@@ -2691,6 +2866,7 @@ static void ApplyRuntimeConfig(const HelperConfig& config, BOOL reset_state) {
 	g_hotkey_attract_mode3 = config.hotkey_attract_mode3;
 	g_hotkey_attract_mode4 = config.hotkey_attract_mode4;
 	g_hotkey_toggle_attract_direction = config.hotkey_toggle_attract_direction;
+	g_hotkey_toggle_gather_items = config.hotkey_toggle_gather_items;
 	g_player_name_encoding = config.player_name_encoding;
 	for (int i = 0; i <= kAttractModeMax; ++i) {
 		g_monster_x_offset_by_mode[i] = config.monster_x_offset_by_mode[i];
@@ -2735,6 +2911,67 @@ static void ReloadConfigIfChanged() {
 		} else {
 			LogEvent("WARN", "config_reload", "failed");
 		}
+	}
+}
+
+static void SetGatherItemsEnabled(BOOL enabled) {
+	if (enabled) {
+		if (!g_gather_items_enabled) {
+			g_gather_items_enabled = TRUE;
+			LogEvent("INFO", "gather_items", "enabled");
+		}
+		return;
+	}
+	if (g_gather_items_enabled) {
+		g_gather_items_enabled = FALSE;
+		LogEvent("INFO", "gather_items", "disabled");
+	}
+}
+
+static void SetDamageEnabled(BOOL enabled) {
+	if (enabled) {
+		if (!EnsureDamageHookInstalled()) {
+			g_damage_enabled = FALSE;
+			return;
+		}
+		if (!g_damage_enabled) {
+			g_damage_enabled = TRUE;
+			LogEvent("INFO", "damage_hook", "damage_enabled");
+		}
+		return;
+	}
+	if (g_damage_enabled) {
+		g_damage_enabled = FALSE;
+		LogEvent("INFO", "damage_hook", "damage_disabled");
+	}
+}
+
+static void SetDamageMultiplier(int value) {
+	int clamped = ClampDamageMultiplier(value);
+	if (g_damage_multiplier == clamped) {
+		return;
+	}
+	g_damage_multiplier = clamped;
+	char message[64] = {0};
+	sprintf_s(message, sizeof(message), "multiplier=%d", g_damage_multiplier);
+	LogEvent("INFO", "damage_hook", message);
+}
+
+static void SetInvincibleEnabled(BOOL enabled) {
+	if (enabled) {
+		if (!EnsureDamageHookInstalled()) {
+			g_invincible_enabled = FALSE;
+			return;
+		}
+		if (!g_invincible_enabled) {
+			g_invincible_enabled = TRUE;
+			LogEvent("INFO", "damage_hook", "invincible_enabled");
+		}
+		return;
+	}
+	if (g_invincible_enabled) {
+		g_invincible_enabled = FALSE;
+		LogEvent("INFO", "damage_hook", "invincible_disabled");
 	}
 }
 
@@ -3018,6 +3255,16 @@ static DWORD WINAPI WorkerThread(LPVOID param) {
 		config.fullscreen_skill_hotkey);
 	LogEvent("INFO", "config_fullscreen", fullscreen_message);
 
+	char damage_message[160] = {0};
+	sprintf_s(
+		damage_message,
+		sizeof(damage_message),
+		"enable_damage_hook=%d damage_multiplier=%d invincible_enabled=%d",
+		config.enable_damage_hook,
+		config.damage_multiplier,
+		config.invincible_enabled);
+	LogEvent("INFO", "config_damage", damage_message);
+
 	char attract_message[200] = {0};
 	sprintf_s(
 		attract_message,
@@ -3033,7 +3280,7 @@ static DWORD WINAPI WorkerThread(LPVOID param) {
 	sprintf_s(
 		hotkey_message,
 		sizeof(hotkey_message),
-		"toggle_transparent=0x%02lX toggle_fullscreen_attack=0x%02lX summon_doll=0x%02lX attract1=0x%02lX attract2=0x%02lX attract3=0x%02lX attract4=0x%02lX toggle_attract_dir=0x%02lX fullscreen_skill=0x%02lX",
+		"toggle_transparent=0x%02lX toggle_fullscreen_attack=0x%02lX summon_doll=0x%02lX attract1=0x%02lX attract2=0x%02lX attract3=0x%02lX attract4=0x%02lX toggle_attract_dir=0x%02lX toggle_gather_items=0x%02lX fullscreen_skill=0x%02lX",
 		config.hotkey_toggle_transparent,
 		config.hotkey_toggle_fullscreen_attack,
 		config.hotkey_summon_doll,
@@ -3042,6 +3289,7 @@ static DWORD WINAPI WorkerThread(LPVOID param) {
 		config.hotkey_attract_mode3,
 		config.hotkey_attract_mode4,
 		config.hotkey_toggle_attract_direction,
+		config.hotkey_toggle_gather_items,
 		config.fullscreen_skill_hotkey);
 	LogEvent("INFO", "config_hotkey", hotkey_message);
 

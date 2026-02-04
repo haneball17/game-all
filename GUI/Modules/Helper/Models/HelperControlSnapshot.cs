@@ -17,4 +17,8 @@ public sealed class HelperControlSnapshot
     public byte DesiredAttractMode { get; set; }
     public bool DesiredAttractPositive { get; set; }
     public bool DesiredHotkeyEnabled { get; set; }
+    public bool DesiredGatherItemsEnabled { get; set; }
+    public bool DesiredDamageEnabled { get; set; }
+    public int DesiredDamageMultiplier { get; set; }
+    public bool DesiredInvincibleEnabled { get; set; }
 }

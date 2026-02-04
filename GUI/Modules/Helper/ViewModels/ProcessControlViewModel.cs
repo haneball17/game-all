@@ -19,7 +19,11 @@ public sealed class ProcessControlViewModel : INotifyPropertyChanged
         AttractEnabled = 1 << 3,
         AttractMode = 1 << 4,
         AttractPositive = 1 << 5,
-        HotkeyEnabled = 1 << 6
+        HotkeyEnabled = 1 << 6,
+        GatherItems = 1 << 7,
+        DamageEnabled = 1 << 8,
+        DamageMultiplier = 1 << 9,
+        InvincibleEnabled = 1 << 10
     }
 
     private readonly SharedMemoryControlWriter _writer = new();
@@ -38,6 +42,10 @@ public sealed class ProcessControlViewModel : INotifyPropertyChanged
     private bool _attractEnabled;
     private bool _attractPositive = true;
     private int _attractModeIndex;
+    private bool _gatherItemsEnabled;
+    private bool _damageEnabled;
+    private int _damageMultiplier = 10;
+    private bool _invincibleEnabled;
     private bool _hotkeyEnabled;
     private uint _summonSequence;
     private string _statusMessage = string.Empty;
@@ -150,6 +158,72 @@ public sealed class ProcessControlViewModel : INotifyPropertyChanged
         });
     }
 
+    public bool GatherItemsEnabled
+    {
+        get => _gatherItemsEnabled;
+        set => SetToggle(ref _gatherItemsEnabled, value, ControlActionMask.GatherItems, snapshot =>
+        {
+            snapshot.DesiredGatherItemsEnabled = value;
+        });
+    }
+
+    public bool DamageEnabled
+    {
+        get => _damageEnabled;
+        set => SetToggle(ref _damageEnabled, value, ControlActionMask.DamageEnabled, snapshot =>
+        {
+            snapshot.DesiredDamageEnabled = value;
+            if (value)
+            {
+                snapshot.DesiredDamageMultiplier = _damageMultiplier;
+                snapshot.ActionMask |= (uint)ControlActionMask.DamageMultiplier;
+            }
+        });
+    }
+
+    public bool InvincibleEnabled
+    {
+        get => _invincibleEnabled;
+        set => SetToggle(ref _invincibleEnabled, value, ControlActionMask.InvincibleEnabled, snapshot =>
+        {
+            snapshot.DesiredInvincibleEnabled = value;
+        });
+    }
+
+    public int DamageMultiplier
+    {
+        get => _damageMultiplier;
+        set
+        {
+            int normalized = ClampDamageMultiplier(value);
+            if (SetField(ref _damageMultiplier, normalized))
+            {
+                OnPropertyChanged(nameof(DamageMultiplierText));
+                if (_suspendStatusSync)
+                {
+                    return;
+                }
+                SendAction(ControlActionMask.DamageMultiplier, snapshot =>
+                {
+                    snapshot.DesiredDamageMultiplier = normalized;
+                });
+            }
+        }
+    }
+
+    public string DamageMultiplierText
+    {
+        get => _damageMultiplier.ToString();
+        set
+        {
+            if (!int.TryParse(value, out int parsed))
+            {
+                return;
+            }
+            DamageMultiplier = parsed;
+        }
+    }
+
     public int AttractModeIndex
     {
         get => _attractModeIndex;
@@ -179,11 +253,16 @@ public sealed class ProcessControlViewModel : INotifyPropertyChanged
     public string AttractEnabledStateText => _attractEnabled ? "已开启" : "已关闭";
     public string AttractDirectionText => _attractPositive ? "正向" : "负向";
     public string AttractModeText => AttractModeOptions[Math.Clamp(_attractModeIndex, 0, 3)];
+    public string GatherItemsStateText => _gatherItemsEnabled ? "已开启" : "已关闭";
+    public string DamageEnabledStateText => _damageEnabled ? "已开启" : "已关闭";
+    public string InvincibleEnabledStateText => _invincibleEnabled ? "已开启" : "已关闭";
 
     public bool CanControlFullscreenAttack => HasTarget && _fullscreenAttackOverride == ControlOverride.Follow;
     public bool CanControlFullscreenSkill => HasTarget && _fullscreenSkillOverride == ControlOverride.Follow;
     public bool CanControlAutoTransparent => HasTarget && _autoTransparentOverride == ControlOverride.Follow;
     public bool CanControlAttract => HasTarget && _attractOverride == ControlOverride.Follow;
+    public bool CanControlGatherItems => HasTarget && _attractOverride == ControlOverride.Follow;
+    public bool CanControlDamage => HasTarget;
     public bool CanControlHotkeyEnabled => HasTarget && _hotkeyEnabledOverride == ControlOverride.Follow;
 
     public ICommand SummonCommand { get; }
@@ -239,6 +318,11 @@ public sealed class ProcessControlViewModel : INotifyPropertyChanged
             SetField(ref _attractEnabled, false, nameof(AttractEnabled));
             SetField(ref _attractPositive, true, nameof(AttractPositive));
             SetField(ref _attractModeIndex, 0, nameof(AttractModeIndex));
+            SetField(ref _gatherItemsEnabled, false, nameof(GatherItemsEnabled));
+            SetField(ref _damageEnabled, false, nameof(DamageEnabled));
+            SetField(ref _invincibleEnabled, false, nameof(InvincibleEnabled));
+            SetField(ref _damageMultiplier, 10, nameof(DamageMultiplier));
+            OnPropertyChanged(nameof(DamageMultiplierText));
         }
         else
         {
@@ -250,6 +334,12 @@ public sealed class ProcessControlViewModel : INotifyPropertyChanged
             SetField(ref _attractPositive, process.AttractPositive, nameof(AttractPositive));
             int modeIndex = process.AttractMode > 0 ? Math.Clamp(process.AttractMode - 1, 0, 3) : _attractModeIndex;
             SetField(ref _attractModeIndex, modeIndex, nameof(AttractModeIndex));
+            SetField(ref _gatherItemsEnabled, process.GatherItemsEnabled, nameof(GatherItemsEnabled));
+            SetField(ref _damageEnabled, process.DamageEnabled, nameof(DamageEnabled));
+            SetField(ref _invincibleEnabled, process.InvincibleEnabled, nameof(InvincibleEnabled));
+            int multiplier = ClampDamageMultiplier(process.DamageMultiplier);
+            SetField(ref _damageMultiplier, multiplier, nameof(DamageMultiplier));
+            OnPropertyChanged(nameof(DamageMultiplierText));
         }
         _suspendStatusSync = false;
         NotifyStatusText();
@@ -395,6 +485,9 @@ public sealed class ProcessControlViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(AttractEnabledStateText));
         OnPropertyChanged(nameof(AttractDirectionText));
         OnPropertyChanged(nameof(AttractModeText));
+        OnPropertyChanged(nameof(GatherItemsStateText));
+        OnPropertyChanged(nameof(DamageEnabledStateText));
+        OnPropertyChanged(nameof(InvincibleEnabledStateText));
     }
 
     private void NotifyControlAvailability()
@@ -403,7 +496,22 @@ public sealed class ProcessControlViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(CanControlFullscreenSkill));
         OnPropertyChanged(nameof(CanControlAutoTransparent));
         OnPropertyChanged(nameof(CanControlAttract));
+        OnPropertyChanged(nameof(CanControlGatherItems));
+        OnPropertyChanged(nameof(CanControlDamage));
         OnPropertyChanged(nameof(CanControlHotkeyEnabled));
+    }
+
+    private static int ClampDamageMultiplier(int value)
+    {
+        if (value < 1)
+        {
+            return 1;
+        }
+        if (value > 1000)
+        {
+            return 1000;
+        }
+        return value;
     }
 
     private bool SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)

@@ -20,6 +20,10 @@ public sealed class ProcessStatusViewModel : INotifyPropertyChanged
     private bool _fullscreenAttackPatchOn;
     private int _attractMode;
     private bool _attractPositive;
+    private bool _gatherItemsEnabled;
+    private bool _damageEnabled;
+    private int _damageMultiplier = 1;
+    private bool _invincibleEnabled;
     private bool _summonEnabled;
     private bool _fullscreenSkillEnabled;
     private bool _fullscreenSkillActive;
@@ -102,6 +106,30 @@ public sealed class ProcessStatusViewModel : INotifyPropertyChanged
         private set => SetField(ref _attractPositive, value);
     }
 
+    public bool GatherItemsEnabled
+    {
+        get => _gatherItemsEnabled;
+        private set => SetField(ref _gatherItemsEnabled, value);
+    }
+
+    public bool DamageEnabled
+    {
+        get => _damageEnabled;
+        private set => SetField(ref _damageEnabled, value);
+    }
+
+    public int DamageMultiplier
+    {
+        get => _damageMultiplier;
+        private set => SetField(ref _damageMultiplier, value);
+    }
+
+    public bool InvincibleEnabled
+    {
+        get => _invincibleEnabled;
+        private set => SetField(ref _invincibleEnabled, value);
+    }
+
     public bool SummonEnabled
     {
         get => _summonEnabled;
@@ -150,6 +178,9 @@ public sealed class ProcessStatusViewModel : INotifyPropertyChanged
             builder.AppendLine($"全屏攻击：目标={(FullscreenAttackTarget ? "开" : "关")} / 当前={(FullscreenAttackPatchOn ? "开" : "关")}");
             builder.AppendLine($"自动透明：{(AutoTransparentEnabled ? "开" : "关")}");
             builder.AppendLine($"吸怪模式：{AttractMode}，方向：{(AttractPositive ? "正向" : "负向")}");
+            builder.AppendLine($"聚物：{(GatherItemsEnabled ? "开" : "关")}");
+            builder.AppendLine($"倍攻：{(DamageEnabled ? "开" : "关")} 倍率：{DamageMultiplier}");
+            builder.AppendLine($"怪物零伤：{(InvincibleEnabled ? "开" : "关")}");
             builder.AppendLine($"召唤人偶：{(SummonEnabled ? "启用" : "停用")}");
             builder.AppendLine($"全屏技能：{(FullscreenSkillEnabled ? "启用" : "停用")} / {(FullscreenSkillActive ? "激活" : "关闭")}");
             builder.AppendLine($"技能热键：{HotkeyTextFormatter.Format((int)FullscreenSkillHotkey)}");
@@ -192,6 +223,10 @@ public sealed class ProcessStatusViewModel : INotifyPropertyChanged
         changed |= SetField(ref _fullscreenAttackPatchOn, snapshot.FullscreenAttackPatchOn, nameof(FullscreenAttackPatchOn));
         changed |= SetField(ref _attractMode, snapshot.AttractMode, nameof(AttractMode));
         changed |= SetField(ref _attractPositive, snapshot.AttractPositive, nameof(AttractPositive));
+        changed |= SetField(ref _gatherItemsEnabled, snapshot.GatherItemsEnabled, nameof(GatherItemsEnabled));
+        changed |= SetField(ref _damageEnabled, snapshot.DamageEnabled, nameof(DamageEnabled));
+        changed |= SetField(ref _damageMultiplier, snapshot.DamageMultiplier, nameof(DamageMultiplier));
+        changed |= SetField(ref _invincibleEnabled, snapshot.InvincibleEnabled, nameof(InvincibleEnabled));
         changed |= SetField(ref _summonEnabled, snapshot.SummonEnabled, nameof(SummonEnabled));
         changed |= SetField(ref _fullscreenSkillEnabled, snapshot.FullscreenSkillEnabled, nameof(FullscreenSkillEnabled));
         changed |= SetField(ref _fullscreenSkillActive, snapshot.FullscreenSkillActive, nameof(FullscreenSkillActive));
@@ -218,6 +253,10 @@ public sealed class ProcessStatusViewModel : INotifyPropertyChanged
         changed |= SetField(ref _fullscreenAttackPatchOn, false, nameof(FullscreenAttackPatchOn));
         changed |= SetField(ref _attractMode, 0, nameof(AttractMode));
         changed |= SetField(ref _attractPositive, false, nameof(AttractPositive));
+        changed |= SetField(ref _gatherItemsEnabled, false, nameof(GatherItemsEnabled));
+        changed |= SetField(ref _damageEnabled, false, nameof(DamageEnabled));
+        changed |= SetField(ref _damageMultiplier, 1, nameof(DamageMultiplier));
+        changed |= SetField(ref _invincibleEnabled, false, nameof(InvincibleEnabled));
         changed |= SetField(ref _summonEnabled, false, nameof(SummonEnabled));
         changed |= SetField(ref _fullscreenSkillEnabled, false, nameof(FullscreenSkillEnabled));
         changed |= SetField(ref _fullscreenSkillActive, false, nameof(FullscreenSkillActive));

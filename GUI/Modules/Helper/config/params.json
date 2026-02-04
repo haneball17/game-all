@@ -134,6 +134,35 @@
       ]
     },
     {
+      "name": "damage",
+      "title": "动态倍攻",
+      "items": [
+        {
+          "key": "enable_damage_hook",
+          "label": "启用动态倍攻",
+          "type": "bool",
+          "default": false,
+          "desc": "启用伤害倍攻 Hook"
+        },
+        {
+          "key": "damage_multiplier",
+          "label": "伤害倍率",
+          "type": "int",
+          "default": 10,
+          "min": 1,
+          "max": 1000,
+          "desc": "倍攻倍率（1~1000）"
+        },
+        {
+          "key": "invincible_enabled",
+          "label": "怪物零伤",
+          "type": "bool",
+          "default": false,
+          "desc": "开启后怪物伤害强制为 0"
+        }
+      ]
+    },
+    {
       "name": "attract",
       "title": "吸怪参数",
       "items": [
