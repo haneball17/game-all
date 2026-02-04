@@ -24,7 +24,7 @@ public sealed class SharedMemoryStatusReader
         "Global\\GameHelperStatus_"
     };
 
-    private const uint ExpectedVersion = 3;
+    private const uint ExpectedVersion = 5;
     private static int _protocolLogged;
 
     public SharedMemoryReadStatus TryRead(uint pid, out HelperStatusSnapshot snapshot)
@@ -49,9 +49,9 @@ public sealed class SharedMemoryStatusReader
         try
         {
             using var mapping = MemoryMappedFile.OpenExisting(mappingName, MemoryMappedFileRights.Read);
-            using var accessor = mapping.CreateViewAccessor(0, Marshal.SizeOf<HelperStatusV2>(), MemoryMappedFileAccess.Read);
-            accessor.Read(0, out HelperStatusV2 raw);
-            uint expectedSize = (uint)Marshal.SizeOf<HelperStatusV2>();
+            using var accessor = mapping.CreateViewAccessor(0, Marshal.SizeOf<HelperStatusV5>(), MemoryMappedFileAccess.Read);
+            accessor.Read(0, out HelperStatusV5 raw);
+            uint expectedSize = (uint)Marshal.SizeOf<HelperStatusV5>();
             if (raw.Version != ExpectedVersion || raw.Size != expectedSize)
             {
                 if (Interlocked.Exchange(ref _protocolLogged, 1) == 0)
@@ -67,7 +67,7 @@ public sealed class SharedMemoryStatusReader
                 }
                 return SharedMemoryReadStatus.VersionMismatch;
             }
-            HelperStatusV2* ptr = &raw;
+            HelperStatusV5* ptr = &raw;
             string name = new string(ptr->PlayerName).TrimEnd('\0');
             snapshot = new HelperStatusSnapshot
             {
@@ -79,6 +79,10 @@ public sealed class SharedMemoryStatusReader
                 FullscreenAttackPatchOn = raw.FullscreenAttackPatchOn != 0,
                 AttractMode = raw.AttractMode,
                 AttractPositive = raw.AttractPositive != 0,
+                GatherItemsEnabled = raw.GatherItemsEnabled != 0,
+                DamageEnabled = raw.DamageEnabled != 0,
+                DamageMultiplier = raw.DamageMultiplier,
+                InvincibleEnabled = raw.InvincibleEnabled != 0,
                 SummonEnabled = raw.SummonEnabled != 0,
                 SummonLastTick = raw.SummonLastTick,
                 FullscreenSkillEnabled = raw.FullscreenSkillEnabled != 0,

@@ -35,7 +35,7 @@ struct InjectorConfig {
 };
 
 #pragma pack(push, 1)
-struct HelperStatusV2 {
+struct HelperStatusV5 {
     uint32_t Version;
     uint32_t Size;
     uint64_t LastTickMs;
@@ -46,6 +46,10 @@ struct HelperStatusV2 {
     int32_t FullscreenAttackPatchOn;
     int32_t AttractMode;
     int32_t AttractPositive;
+    int32_t GatherItemsEnabled;
+    int32_t DamageEnabled;
+    int32_t DamageMultiplier;
+    int32_t InvincibleEnabled;
     int32_t SummonEnabled;
     uint64_t SummonLastTick;
     int32_t FullscreenSkillEnabled;
@@ -56,7 +60,7 @@ struct HelperStatusV2 {
 };
 #pragma pack(pop)
 
-static_assert(sizeof(HelperStatusV2) == 136, "HelperStatusV2 size mismatch");
+static_assert(sizeof(HelperStatusV5) == 152, "HelperStatusV5 size mismatch");
 
 static std::wstring GetExeDirectory() {
     wchar_t buffer[MAX_PATH] = {0};
@@ -597,17 +601,17 @@ static bool WaitForSuccessFile(const std::wstring& path, DWORD timeout_ms, DWORD
     return false;
 }
 
-static bool TryReadHelperStatus(const std::wstring& mapping_name, HelperStatusV2* output) {
+static bool TryReadHelperStatus(const std::wstring& mapping_name, HelperStatusV5* output) {
     HANDLE mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, mapping_name.c_str());
     if (!mapping) {
         return false;
     }
-    void* view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(HelperStatusV2));
+    void* view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(HelperStatusV5));
     if (!view) {
         CloseHandle(mapping);
         return false;
     }
-    memcpy(output, view, sizeof(HelperStatusV2));
+    memcpy(output, view, sizeof(HelperStatusV5));
     UnmapViewOfFile(view);
     CloseHandle(mapping);
     return true;
@@ -618,11 +622,11 @@ static bool HasHelperHeartbeat(DWORD pid, DWORD timeout_ms) {
     for (int i = 0; i < 2; ++i) {
         wchar_t mapping_name[64] = {0};
         swprintf_s(mapping_name, L"%s%lu", prefixes[i], pid);
-        HelperStatusV2 status = {};
+        HelperStatusV5 status = {};
         if (!TryReadHelperStatus(mapping_name, &status)) {
             continue;
         }
-        if (status.Version != 3 || status.Size != sizeof(HelperStatusV2)) {
+        if (status.Version != 5 || status.Size != sizeof(HelperStatusV5)) {
             continue;
         }
         ULONGLONG now = GetTickCount64();

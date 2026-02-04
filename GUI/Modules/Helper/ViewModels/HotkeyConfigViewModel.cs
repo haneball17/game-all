@@ -183,6 +183,7 @@ public sealed class HotkeyConfigViewModel : INotifyPropertyChanged
             new HotkeyItemViewModel { Key = "attract_mode3", Label = "吸怪配置3", DefaultVk = 0x39 },
             new HotkeyItemViewModel { Key = "attract_mode4", Label = "吸怪配置4", DefaultVk = 0x30 },
             new HotkeyItemViewModel { Key = "toggle_attract_direction", Label = "吸怪方向切换", DefaultVk = 0xBD },
+            new HotkeyItemViewModel { Key = "toggle_gather_items", Label = "聚物开关", DefaultVk = 0xDC },
             new HotkeyItemViewModel { Key = "toggle_fullscreen_skill", Label = "全屏技能", DefaultVk = 0x24 }
         };
     }

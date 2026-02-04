@@ -10,6 +10,10 @@ public sealed class HelperStatusSnapshot
     public bool FullscreenAttackPatchOn { get; init; }
     public int AttractMode { get; init; }
     public bool AttractPositive { get; init; }
+    public bool GatherItemsEnabled { get; init; }
+    public bool DamageEnabled { get; init; }
+    public int DamageMultiplier { get; init; }
+    public bool InvincibleEnabled { get; init; }
     public bool SummonEnabled { get; init; }
     public ulong SummonLastTick { get; init; }
     public bool FullscreenSkillEnabled { get; init; }

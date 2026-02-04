@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 namespace GameHelperGUI.Models;
 
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
-public unsafe struct HelperStatusV2
+public unsafe struct HelperStatusV5
 {
     public uint Version;
     public uint Size;
@@ -15,6 +15,10 @@ public unsafe struct HelperStatusV2
     public int FullscreenAttackPatchOn;
     public int AttractMode;
     public int AttractPositive;
+    public int GatherItemsEnabled;
+    public int DamageEnabled;
+    public int DamageMultiplier;
+    public int InvincibleEnabled;
     public int SummonEnabled;
     public ulong SummonLastTick;
     public int FullscreenSkillEnabled;
