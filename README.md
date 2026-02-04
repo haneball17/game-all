@@ -195,7 +195,7 @@ Shared/Protocols/协议说明.md
 通道：
 - Helper Status：`Local\GameHelperStatus_{pid}` / `Global\GameHelperStatus_{pid}`（**Local 优先，Global 兜底**）
 - Helper Control：`Local\GameHelperControl_{pid}` / `Global\GameHelperControl_{pid}`（**Local 优先，Global 兜底**）
-- Sync State：`Local\DNFSyncBox.KeyboardState.V3`
+- Sync State：`Local\DNFSyncBox.KeyboardState.V2`
 
 ---
 
