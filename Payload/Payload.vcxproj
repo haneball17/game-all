@@ -62,10 +62,12 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
+    <ClInclude Include="runtime\payload_runtime.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
     <ClCompile Include="dllmain.cpp" />
+    <ClCompile Include="runtime\payload_runtime.cpp" />
     <ClCompile Include="modules\helper\HelperMod.cpp" />
     <ClCompile Include="modules\sync\SyncMod.cpp" />
   </ItemGroup>

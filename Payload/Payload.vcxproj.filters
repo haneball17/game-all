@@ -12,6 +12,9 @@
     <ClInclude Include="pch.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="runtime\payload_runtime.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp">
@@ -20,7 +23,14 @@
     <ClCompile Include="dllmain.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
-    <ClCompile Include="modules\helper\HelperMod.cpp" />
-    <ClCompile Include="modules\sync\SyncMod.cpp" />
+    <ClCompile Include="runtime\payload_runtime.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="modules\helper\HelperMod.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="modules\sync\SyncMod.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
 </Project>

