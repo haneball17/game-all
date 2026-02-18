@@ -6,6 +6,7 @@
 #include <intrin.h>
 #include <wctype.h>
 #include "MinHook.h"
+#include "../../runtime/payload_runtime.h"
 
 
 // LDR 断链与抹头（可选）支持，使用私有结构以规避 SDK 结构差异。
@@ -92,6 +93,7 @@ static const LONG kHideModuleResultNotAttempted = -1;
 static const LONG kHideModuleResultOk = 0;
 static const LONG kHideModuleResultLdrMissing = 1;
 static const LONG kHideModuleResultNotFound = 2;
+static const LONG kHideModuleResultDisabledByGate = 3;
 static volatile LONG g_hide_module_result = kHideModuleResultNotAttempted;
 
 static PPEB_LDR_DATA_PRIVATE GetPebLdr() {
@@ -733,7 +735,7 @@ static HelperConfig GetDefaultHelperConfig() {
 	config.apply_fullscreen_attack_patch = FALSE;
 	config.fullscreen_attack_poll_interval_ms = kFullscreenAttackPollIntervalMs;
 	config.safe_mode = FALSE;
-	config.wipe_pe_header = TRUE;
+	config.wipe_pe_header = FALSE;
 	config.disable_input_thread = FALSE;
 	config.disable_attract_thread = FALSE;
 	config.enable_summon_doll = TRUE;
@@ -891,7 +893,7 @@ static BOOL WriteDefaultConfigFile(const wchar_t* config_path) {
 		"; fullscreen_attack_poll_interval_ms=1000\r\n"
 		"\r\n"
 		"[stealth]\r\n"
-		"wipe_pe_header=true\r\n"
+		"wipe_pe_header=false\r\n"
 		"\r\n"
 		"[feature]\r\n"
 		"disable_input_thread=false\r\n"
@@ -3055,6 +3057,8 @@ static DWORD WINAPI BackgroundWorkerThread(LPVOID param) {
 }
 
 static void InitializeHelper(const wchar_t* output_directory, const HelperConfig& config) {
+	const bool stealth_enabled = PayloadRuntime::IsStealthEnabled();
+
 	if (config.safe_mode) {
 		LogEvent("INFO", "safe_mode", "enabled");
 		if (config.wipe_pe_header) {
@@ -3065,7 +3069,9 @@ static void InitializeHelper(const wchar_t* output_directory, const HelperConfig
 
 	ApplyRuntimeConfig(config, TRUE);
 
-	if (config.wipe_pe_header) {
+	if (!stealth_enabled && config.wipe_pe_header) {
+		LogEvent("INFO", "module_header_wipe", "skip_by_payload_gate");
+	} else if (config.wipe_pe_header) {
 		if (WipeModuleHeader(g_self_module)) {
 			LogEvent("INFO", "module_header_wipe", "ok");
 		} else {
@@ -3206,6 +3212,8 @@ static DWORD WINAPI WorkerThread(LPVOID param) {
 
 	if (g_hide_module_result == kHideModuleResultOk) {
 		LogEvent("INFO", "hide_module", "ok");
+	} else if (g_hide_module_result == kHideModuleResultDisabledByGate) {
+		LogEvent("INFO", "hide_module", "disabled_by_payload_gate");
 	} else if (g_hide_module_result == kHideModuleResultLdrMissing) {
 		LogEvent("WARN", "hide_module", "ldr_missing");
 	} else if (g_hide_module_result == kHideModuleResultNotFound) {
@@ -3218,18 +3226,19 @@ static DWORD WINAPI WorkerThread(LPVOID param) {
 		LogEventWithPath("output_dir_invalid", config.output_directory);
 	}
 
-	char config_message[220] = {0};
+	char config_message[256] = {0};
 	sprintf_s(
 		config_message,
 		sizeof(config_message),
-		"startup_delay_ms=%lu fullscreen_attack_poll_interval_ms=%lu safe_mode=%d wipe_pe_header=%d disable_input_thread=%d disable_attract_thread=%d apply_fullscreen_attack_patch_ignored=%d",
+		"startup_delay_ms=%lu fullscreen_attack_poll_interval_ms=%lu safe_mode=%d wipe_pe_header=%d disable_input_thread=%d disable_attract_thread=%d apply_fullscreen_attack_patch_ignored=%d payload_stealth_enabled=%d",
 		config.startup_delay_ms,
 		config.fullscreen_attack_poll_interval_ms,
 		config.safe_mode,
 		config.wipe_pe_header,
 		config.disable_input_thread,
 		config.disable_attract_thread,
-		config.apply_fullscreen_attack_patch);
+		config.apply_fullscreen_attack_patch,
+		PayloadRuntime::IsStealthEnabled() ? 1 : 0);
 	LogEvent("INFO", "config_effective", config_message);
 
 	char summon_message[160] = {0};
@@ -3312,8 +3321,12 @@ static void StartHelperInternal() {
 
 	if (module != NULL) {
 		g_self_module = module;
-		// 先断链隐藏模块，降低被模块枚举发现的概率。
-		g_hide_module_result = HideModule(module);
+		// 统一由 Payload 级开关控制隐蔽相关逻辑，默认关闭。
+		if (PayloadRuntime::IsStealthEnabled()) {
+			g_hide_module_result = HideModule(module);
+		} else {
+			g_hide_module_result = kHideModuleResultDisabledByGate;
+		}
 		// 避免线程通知开销，并把工作放到新线程，降低加载期风险。
 		DisableThreadLibraryCalls(module);
 	}

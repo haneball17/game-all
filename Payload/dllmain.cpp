@@ -2,6 +2,7 @@
 #include "pch.h"
 #include <atomic>
 #include <string>
+#include "runtime/payload_runtime.h"
 
 #ifdef _DEBUG
 #include <vector>
@@ -17,8 +18,12 @@ std::atomic<bool> g_IsInitialized(false);
 static HMODULE g_selfModule = nullptr;
 static bool g_enableHelper = true;
 static bool g_enableSync = true;
+static bool g_enableStealth = false;
+static bool g_strictStartupRollback = true;
 static std::wstring g_payloadSuccessFilePath;
 static bool g_payloadSuccessWritten = false;
+static volatile LONG g_syncStarted = 0;
+static volatile LONG g_helperStarted = 0;
 
 static std::wstring GetModuleDirectory(HMODULE module)
 {
@@ -91,6 +96,38 @@ static void LoadPayloadConfig()
     std::wstring configPath = JoinPath(JoinPath(baseDir, L"config"), L"payload.ini");
     g_enableHelper = ReadIniBool(configPath, L"EnableHelper", true);
     g_enableSync = ReadIniBool(configPath, L"EnableSync", true);
+    g_enableStealth = ReadIniBool(configPath, L"EnableStealth", false);
+    g_strictStartupRollback = ReadIniBool(configPath, L"StrictStartupRollback", true);
+}
+
+// 在启动失败时回滚已启动模块，避免部分成功导致状态不一致。
+static void RollbackStartedModules(bool stopSync, bool stopHelper)
+{
+    if (stopHelper)
+    {
+        try
+        {
+            Helper::Stop();
+        }
+        catch (...)
+        {
+            OutputDebugStringA("[Unified] Helper rollback failed.");
+        }
+        InterlockedExchange(&g_helperStarted, 0);
+    }
+
+    if (stopSync)
+    {
+        try
+        {
+            Sync::Stop();
+        }
+        catch (...)
+        {
+            OutputDebugStringA("[Unified] Sync rollback failed.");
+        }
+        InterlockedExchange(&g_syncStarted, 0);
+    }
 }
 
 static std::wstring BuildPayloadSuccessFilePath()
@@ -312,22 +349,36 @@ static void AppendPayloadDebugLog(const std::wstring& message)
 
 // 统一初始化线程
 DWORD WINAPI UnifiedWorkerThread(LPVOID lpParam) {
+    UNREFERENCED_PARAMETER(lpParam);
 #ifdef _DEBUG
     // Debug 模式记录 payload 启动信息。
     AppendPayloadDebugLog(L"payload 线程启动");
 #endif
+    PayloadRuntime::SetInitState(PayloadRuntime::InitState::kLoadingConfig);
     LoadPayloadConfig();
+    PayloadRuntime::SetStealthEnabled(g_enableStealth);
     // 即使模块被禁用也需要写入 successfile，保证注入判定一致。
     WritePayloadSuccessFile();
 #ifdef _DEBUG
     AppendPayloadDebugLog(std::wstring(L"配置载入：EnableSync=") + (g_enableSync ? L"true" : L"false") +
-        L" EnableHelper=" + (g_enableHelper ? L"true" : L"false"));
+        L" EnableHelper=" + (g_enableHelper ? L"true" : L"false") +
+        L" EnableStealth=" + (g_enableStealth ? L"true" : L"false") +
+        L" StrictStartupRollback=" + (g_strictStartupRollback ? L"true" : L"false"));
 #endif
+
+    bool syncStarted = false;
+    bool helperStarted = false;
+    bool syncStartFailed = false;
+    bool helperStartFailed = false;
+
     // 1. 启动同步模块 (通常 Hook 底层输入建议先启动)
+    PayloadRuntime::SetInitState(PayloadRuntime::InitState::kStartingSync);
     try {
         if (g_enableSync)
         {
             Sync::Start();
+            syncStarted = true;
+            InterlockedExchange(&g_syncStarted, 1);
         }
         else
         {
@@ -335,13 +386,17 @@ DWORD WINAPI UnifiedWorkerThread(LPVOID lpParam) {
         }
     } catch (...) {
         OutputDebugStringA("[Unified] Sync module failed to start.");
+        syncStartFailed = true;
     }
 
     // 2. 启动辅助模块 (Helper)
+    PayloadRuntime::SetInitState(PayloadRuntime::InitState::kStartingHelper);
     try {
         if (g_enableHelper)
         {
             Helper::Start();
+            helperStarted = true;
+            InterlockedExchange(&g_helperStarted, 1);
         }
         else
         {
@@ -349,10 +404,43 @@ DWORD WINAPI UnifiedWorkerThread(LPVOID lpParam) {
         }
     } catch (...) {
         OutputDebugStringA("[Unified] Helper module failed to start.");
+        helperStartFailed = true;
+    }
+
+    const bool hasStartFailure =
+        (g_enableSync && (syncStartFailed || !syncStarted)) ||
+        (g_enableHelper && (helperStartFailed || !helperStarted));
+
+    if (hasStartFailure && g_strictStartupRollback)
+    {
+        OutputDebugStringA("[Unified] Startup failed, strict rollback is enabled.");
+        PayloadRuntime::SetInitState(PayloadRuntime::InitState::kDegraded);
+        RollbackStartedModules(syncStarted, helperStarted);
+        PayloadRuntime::SetInitState(PayloadRuntime::InitState::kStopped);
+#ifdef _DEBUG
+        AppendPayloadDebugLog(L"启动失败，已执行严格回滚并停止");
+#endif
+    }
+    else if (hasStartFailure)
+    {
+        OutputDebugStringA("[Unified] Startup failed, run in degraded mode.");
+        PayloadRuntime::SetInitState(PayloadRuntime::InitState::kDegraded);
+#ifdef _DEBUG
+        AppendPayloadDebugLog(L"启动失败，进入降级运行模式");
+#endif
+    }
+    else
+    {
+        PayloadRuntime::SetInitState(PayloadRuntime::InitState::kRunning);
+#ifdef _DEBUG
+        AppendPayloadDebugLog(L"启动成功，进入运行状态");
+#endif
     }
 
 #ifdef _DEBUG
-    AppendPayloadDebugLog(L"payload 模块启动完成");
+    AppendPayloadDebugLog(
+        std::wstring(L"payload 模块启动完成，状态=") +
+        PayloadRuntime::InitStateToText(PayloadRuntime::GetInitState()));
 #endif
     return 0;
 }
@@ -361,6 +449,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH:
         g_selfModule = hModule;
+        InterlockedExchange(&g_syncStarted, 0);
+        InterlockedExchange(&g_helperStarted, 0);
+        PayloadRuntime::SetInitState(PayloadRuntime::InitState::kNotStarted);
         // 核心改动：使用原子操作确保只执行一次
         // expected 为 false，如果 g_IsInitialized 是 false，则将其设为 true 并返回 true
         // 否则返回 false (代表已经被其他线程初始化了)
@@ -370,23 +461,35 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                 DisableThreadLibraryCalls(hModule);
                 
                 // 必须在独立线程中初始化，避免卡死 DllMain (Loader Lock)
-                CreateThread(NULL, 0, UnifiedWorkerThread, NULL, 0, NULL);
+                HANDLE thread = CreateThread(NULL, 0, UnifiedWorkerThread, NULL, 0, NULL);
+                if (thread != NULL)
+                {
+                    CloseHandle(thread);
+                }
+                else
+                {
+                    PayloadRuntime::SetInitState(PayloadRuntime::InitState::kDegraded);
+                    OutputDebugStringA("[Unified] Failed to create initialization thread.");
+                }
             }
         }
         break;
     case DLL_PROCESS_DETACH:
+        PayloadRuntime::SetInitState(PayloadRuntime::InitState::kStopping);
         // 进程退出时清理 successfile 等轻量资源。
         try {
-            if (g_enableSync)
+            if (InterlockedCompareExchange(&g_syncStarted, 0, 0) == 1)
             {
                 Sync::Stop();
+                InterlockedExchange(&g_syncStarted, 0);
             }
         } catch (...) {
         }
         try {
-            if (g_enableHelper)
+            if (InterlockedCompareExchange(&g_helperStarted, 0, 0) == 1)
             {
                 Helper::Stop();
+                InterlockedExchange(&g_helperStarted, 0);
             }
         } catch (...) {
         }
@@ -394,6 +497,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         ArchivePayloadDebugLog();
 #endif
         RemovePayloadSuccessFile();
+        PayloadRuntime::SetInitState(PayloadRuntime::InitState::kStopped);
         break;
     }
     return TRUE;
