@@ -769,6 +769,7 @@ struct HelperConfig {
 	DWORD offset_fullscreen_skill_type;
 	DWORD offset_fullscreen_skill_pos_x;
 	DWORD offset_fullscreen_skill_pos_y;
+	BOOL enable_runtime_address_log;
 };
 
 static HelperConfig g_config_snapshot = {0};
@@ -836,6 +837,7 @@ static HelperConfig GetDefaultHelperConfig() {
 	config.offset_fullscreen_skill_type = kDefaultFullscreenSkillTypeOffset;
 	config.offset_fullscreen_skill_pos_x = kDefaultFullscreenSkillPosXOffset;
 	config.offset_fullscreen_skill_pos_y = kDefaultFullscreenSkillPosYOffset;
+	config.enable_runtime_address_log = FALSE;
 	return config;
 }
 
@@ -1039,7 +1041,10 @@ static BOOL WriteDefaultConfigFile(const wchar_t* config_path) {
 		"[gui_log]\r\n"
 		"log_level=INFO\r\n"
 		"log_path=auto\r\n"
-		"console_output=false\r\n";
+		"console_output=false\r\n"
+		"\r\n"
+		"[debug]\r\n"
+		"enable_runtime_address_log=false\r\n";
 
 	WriteFile(file, content, static_cast<DWORD>(strlen(content)), &written, NULL);
 	CloseHandle(file);
@@ -1170,6 +1175,7 @@ static BOOL LoadHelperConfig(const wchar_t* config_path, HelperConfig* config) {
 	config->offset_fullscreen_skill_type = ReadIniUInt32(config_path, L"offset", L"fullscreen_skill_type", config->offset_fullscreen_skill_type);
 	config->offset_fullscreen_skill_pos_x = ReadIniUInt32(config_path, L"offset", L"fullscreen_skill_pos_x", config->offset_fullscreen_skill_pos_x);
 	config->offset_fullscreen_skill_pos_y = ReadIniUInt32(config_path, L"offset", L"fullscreen_skill_pos_y", config->offset_fullscreen_skill_pos_y);
+	config->enable_runtime_address_log = ReadIniBool(config_path, L"debug", L"enable_runtime_address_log", config->enable_runtime_address_log);
 	if (ReadIniStringValue(config_path, L"output", L"output_dir", config->output_directory, MAX_PATH)) {
 		config->output_directory_set = TRUE;
 	}
@@ -3039,7 +3045,9 @@ static void ApplyRuntimeConfig(const HelperConfig& config, BOOL reset_state) {
 	g_fullscreen_skill_type_offset = config.offset_fullscreen_skill_type;
 	g_fullscreen_skill_pos_x_offset = config.offset_fullscreen_skill_pos_x;
 	g_fullscreen_skill_pos_y_offset = config.offset_fullscreen_skill_pos_y;
-	LogRuntimeAddressOffsets();
+	if (config.enable_runtime_address_log) {
+		LogRuntimeAddressOffsets();
+	}
 	if (reset_state) {
 		// 全屏攻击默认关闭，由轮询线程维持目标状态。
 		SetFullscreenAttackTargetEnabled(FALSE);
@@ -3436,7 +3444,7 @@ static DWORD WINAPI WorkerThread(LPVOID param) {
 	sprintf_s(
 		config_message,
 		sizeof(config_message),
-		"startup_delay_ms=%lu fullscreen_attack_poll_interval_ms=%lu safe_mode=%d wipe_pe_header=%d disable_input_thread=%d disable_attract_thread=%d apply_fullscreen_attack_patch_ignored=%d payload_stealth_enabled=%d",
+		"startup_delay_ms=%lu fullscreen_attack_poll_interval_ms=%lu safe_mode=%d wipe_pe_header=%d disable_input_thread=%d disable_attract_thread=%d apply_fullscreen_attack_patch_ignored=%d payload_stealth_enabled=%d enable_runtime_address_log=%d",
 		config.startup_delay_ms,
 		config.fullscreen_attack_poll_interval_ms,
 		config.safe_mode,
@@ -3444,7 +3452,8 @@ static DWORD WINAPI WorkerThread(LPVOID param) {
 		config.disable_input_thread,
 		config.disable_attract_thread,
 		config.apply_fullscreen_attack_patch,
-		PayloadRuntime::IsStealthEnabled() ? 1 : 0);
+		PayloadRuntime::IsStealthEnabled() ? 1 : 0,
+		config.enable_runtime_address_log);
 	LogEvent("INFO", "config_effective", config_message);
 
 	char summon_message[160] = {0};
