@@ -155,37 +155,37 @@ static BOOL WipeModuleHeader(HMODULE module) {
 // 透明功能的绝对地址配置（x86）。
 
 // 人物基址
-static const DWORD kPlayerBaseAddress = 0x01AC790C;
+static const DWORD kDefaultPlayerBaseAddress = 0x01AC790C;
 
 // 全屏攻击补丁地址
-static const DWORD kFullScreenAttackPatchAddress = 0x00825282;
+static const DWORD kDefaultFullScreenAttackPatchAddress = 0x00825282;
 
 // 透明调用地址
-static const DWORD kTransparentCallAddress = 0x011499E0;
+static const DWORD kDefaultTransparentCallAddress = 0x011499E0;
 
 // 召唤人偶调用参数（x86）
-static const DWORD kSummonCallParam = 0x0119FEF0;
+static const DWORD kDefaultSummonCallParam = 0x0119FEF0;
 // 召唤函数偏移
-static const DWORD kSummonFunctionOffset = 0x354;
+static const DWORD kDefaultSummonFunctionOffset = 0x354;
 // 召唤位置参数
-static const DWORD kSummonPositionParam = 0x08AE;
+static const DWORD kDefaultSummonPositionParam = 0x08AE;
 // 召唤默认配置
 static const DWORD kSummonDefaultMonsterId = 25301;
 static const DWORD kSummonDefaultLevel = 70;
 static const DWORD kSummonDefaultCooldownMs = 0;
 // 全屏技能模拟调用地址
-static const DWORD kFullscreenSkillCallAddress = 0x00879320;
+static const DWORD kDefaultFullscreenSkillCallAddress = 0x00879320;
 // 全屏技能专用偏移（对应 CE 脚本）
-static const DWORD kFullscreenSkillTypeOffset = 0x90;
-static const DWORD kFullscreenSkillPosXOffset = 0x3CE4;
-static const DWORD kFullscreenSkillPosYOffset = 0x3CE8;
+static const DWORD kDefaultFullscreenSkillTypeOffset = 0x90;
+static const DWORD kDefaultFullscreenSkillPosXOffset = 0x3CE4;
+static const DWORD kDefaultFullscreenSkillPosYOffset = 0x3CE8;
 // 全屏技能默认配置
 static const DWORD kFullscreenSkillDefaultCode = 20022;
 static const DWORD kFullscreenSkillDefaultDamage = 13333;
 static const DWORD kFullscreenSkillDefaultIntervalMs = 1000;
 static const DWORD kFullscreenSkillDefaultHotkey = VK_HOME;
 // 动态倍攻 Hook 地址与参数偏移
-static const DWORD kDamageHookAddress = 0x0087B8E3;
+static const DWORD kDefaultDamageHookAddress = 0x0087B8E3;
 // 默认热键配置
 static const DWORD kHotkeyToggleTransparent = VK_F2;
 static const DWORD kHotkeyToggleFullscreenAttack = VK_F3;
@@ -239,19 +239,19 @@ static const DWORD kInputPollIdleIntervalMs = 120;
 static const DWORD kConfigReloadIntervalMs = 1000;
 
 // 地图与对象偏移
-static const DWORD kMapOffset = 0xB8;
-static const DWORD kMapStartOffset = 0xB0;
-static const DWORD kMapEndOffset = 0xB4;
+static const DWORD kDefaultMapOffset = 0xB8;
+static const DWORD kDefaultMapStartOffset = 0xB0;
+static const DWORD kDefaultMapEndOffset = 0xB4;
 // 类型偏移
-static const DWORD kTypeOffset = 0x94;
+static const DWORD kDefaultTypeOffset = 0x94;
 // 位置 X 偏移
-static const DWORD kPositionXOffset = 0x18C;
+static const DWORD kDefaultPositionXOffset = 0x18C;
 // 位置 Y 偏移
-static const DWORD kPositionYOffset = 0x190;
+static const DWORD kDefaultPositionYOffset = 0x190;
 // 角色名偏移
-static const DWORD kPlayerNameOffset = 0x258;
+static const DWORD kDefaultPlayerNameOffset = 0x258;
 // 角色名二级偏移
-static const DWORD kPlayerNameSecondOffset = 0x0;
+static const DWORD kDefaultPlayerNameSecondOffset = 0x0;
 // 角色名最大字符数
 static const size_t kPlayerNameMaxChars = 32;
 // 角色名编码模式
@@ -260,11 +260,11 @@ static const int kPlayerNameEncodingUtf16 = 1;
 static const int kPlayerNameEncodingUtf8 = 2;
 static const int kPlayerNameEncodingAnsi = 3;
 // 对象坐标指针与子偏移
-static const DWORD kObjectPositionBaseOffset = 0xA8;
-static const DWORD kObjectPositionXOffset = 0x0C;
-static const DWORD kObjectPositionYOffset = 0x10;
+static const DWORD kDefaultObjectPositionBaseOffset = 0xA8;
+static const DWORD kDefaultObjectPositionXOffset = 0x0C;
+static const DWORD kDefaultObjectPositionYOffset = 0x10;
 // 阵营偏移
-static const DWORD kFactionOffset = 0x644;
+static const DWORD kDefaultFactionOffset = 0x644;
 static const int kTypeItem = 289;
 static const int kTypeMonster = 529;
 static const int kTypeApc = 273;
@@ -280,6 +280,31 @@ static const int kAttractModeMax = 4;
 // 怪物 X 坐标偏移默认配置（索引为配置模式）
 static const float kDefaultMonsterXOffsetByMode[kAttractModeMax + 1] = {0.0f, 0.0f, 80.0f, 150.0f, 250.0f};
 static float g_monster_x_offset_by_mode[kAttractModeMax + 1] = {0.0f, 0.0f, 80.0f, 150.0f, 250.0f};
+
+// 运行时地址/偏移：默认值由常量提供，可被配置覆盖。
+static DWORD g_player_base_address = kDefaultPlayerBaseAddress;
+static DWORD g_fullscreen_attack_patch_address = kDefaultFullScreenAttackPatchAddress;
+static DWORD g_transparent_call_address = kDefaultTransparentCallAddress;
+static DWORD g_summon_call_param = kDefaultSummonCallParam;
+static DWORD g_summon_function_offset = kDefaultSummonFunctionOffset;
+static DWORD g_summon_position_param = kDefaultSummonPositionParam;
+static DWORD g_fullscreen_skill_call_address = kDefaultFullscreenSkillCallAddress;
+static DWORD g_fullscreen_skill_type_offset = kDefaultFullscreenSkillTypeOffset;
+static DWORD g_fullscreen_skill_pos_x_offset = kDefaultFullscreenSkillPosXOffset;
+static DWORD g_fullscreen_skill_pos_y_offset = kDefaultFullscreenSkillPosYOffset;
+static DWORD g_damage_hook_address = kDefaultDamageHookAddress;
+static DWORD g_map_offset = kDefaultMapOffset;
+static DWORD g_map_start_offset = kDefaultMapStartOffset;
+static DWORD g_map_end_offset = kDefaultMapEndOffset;
+static DWORD g_type_offset = kDefaultTypeOffset;
+static DWORD g_position_x_offset = kDefaultPositionXOffset;
+static DWORD g_position_y_offset = kDefaultPositionYOffset;
+static DWORD g_player_name_offset = kDefaultPlayerNameOffset;
+static DWORD g_player_name_second_offset = kDefaultPlayerNameSecondOffset;
+static DWORD g_object_position_base_offset = kDefaultObjectPositionBaseOffset;
+static DWORD g_object_position_x_offset = kDefaultObjectPositionXOffset;
+static DWORD g_object_position_y_offset = kDefaultObjectPositionYOffset;
+static DWORD g_faction_offset = kDefaultFactionOffset;
 
 static const BYTE kControlFollow = 0;
 static const BYTE kControlForceOff = 1;
@@ -721,6 +746,29 @@ struct HelperConfig {
 	float monster_x_offset_by_mode[kAttractModeMax + 1];
 	wchar_t output_directory[MAX_PATH];
 	BOOL output_directory_set;
+	DWORD addr_player_base;
+	DWORD addr_fullscreen_attack_patch;
+	DWORD addr_transparent_call;
+	DWORD addr_summon_call_param;
+	DWORD addr_summon_function_offset;
+	DWORD addr_summon_position_param;
+	DWORD addr_fullscreen_skill_call;
+	DWORD addr_damage_hook;
+	DWORD offset_map;
+	DWORD offset_map_start;
+	DWORD offset_map_end;
+	DWORD offset_type;
+	DWORD offset_position_x;
+	DWORD offset_position_y;
+	DWORD offset_player_name;
+	DWORD offset_player_name_second;
+	DWORD offset_object_position_base;
+	DWORD offset_object_position_x;
+	DWORD offset_object_position_y;
+	DWORD offset_faction;
+	DWORD offset_fullscreen_skill_type;
+	DWORD offset_fullscreen_skill_pos_x;
+	DWORD offset_fullscreen_skill_pos_y;
 };
 
 static HelperConfig g_config_snapshot = {0};
@@ -765,6 +813,29 @@ static HelperConfig GetDefaultHelperConfig() {
 	}
 	config.output_directory[0] = L'\0';
 	config.output_directory_set = FALSE;
+	config.addr_player_base = kDefaultPlayerBaseAddress;
+	config.addr_fullscreen_attack_patch = kDefaultFullScreenAttackPatchAddress;
+	config.addr_transparent_call = kDefaultTransparentCallAddress;
+	config.addr_summon_call_param = kDefaultSummonCallParam;
+	config.addr_summon_function_offset = kDefaultSummonFunctionOffset;
+	config.addr_summon_position_param = kDefaultSummonPositionParam;
+	config.addr_fullscreen_skill_call = kDefaultFullscreenSkillCallAddress;
+	config.addr_damage_hook = kDefaultDamageHookAddress;
+	config.offset_map = kDefaultMapOffset;
+	config.offset_map_start = kDefaultMapStartOffset;
+	config.offset_map_end = kDefaultMapEndOffset;
+	config.offset_type = kDefaultTypeOffset;
+	config.offset_position_x = kDefaultPositionXOffset;
+	config.offset_position_y = kDefaultPositionYOffset;
+	config.offset_player_name = kDefaultPlayerNameOffset;
+	config.offset_player_name_second = kDefaultPlayerNameSecondOffset;
+	config.offset_object_position_base = kDefaultObjectPositionBaseOffset;
+	config.offset_object_position_x = kDefaultObjectPositionXOffset;
+	config.offset_object_position_y = kDefaultObjectPositionYOffset;
+	config.offset_faction = kDefaultFactionOffset;
+	config.offset_fullscreen_skill_type = kDefaultFullscreenSkillTypeOffset;
+	config.offset_fullscreen_skill_pos_x = kDefaultFullscreenSkillPosXOffset;
+	config.offset_fullscreen_skill_pos_y = kDefaultFullscreenSkillPosYOffset;
 	return config;
 }
 
@@ -804,7 +875,8 @@ static DWORD ReadIniUInt32(const wchar_t* path, const wchar_t* section, const wc
 		return default_value;
 	}
 	wchar_t* end = NULL;
-	unsigned long parsed = wcstoul(buffer, &end, 10);
+	// base=0 支持十进制与 0x 十六进制配置。
+	unsigned long parsed = wcstoul(buffer, &end, 0);
 	if (end == buffer) {
 		return default_value;
 	}
@@ -934,6 +1006,33 @@ static BOOL WriteDefaultConfigFile(const wchar_t* config_path) {
 		"; monster_x_offset_mode3=150.0\r\n"
 		"; monster_x_offset_mode4=250.0\r\n"
 		"\r\n"
+		"[address]\r\n"
+		"player_base=0x01AC790C\r\n"
+		"fullscreen_attack_patch=0x00825282\r\n"
+		"transparent_call=0x011499E0\r\n"
+		"summon_call_param=0x0119FEF0\r\n"
+		"summon_function_offset=0x354\r\n"
+		"summon_position_param=0x08AE\r\n"
+		"fullscreen_skill_call=0x00879320\r\n"
+		"damage_hook=0x0087B8E3\r\n"
+		"\r\n"
+		"[offset]\r\n"
+		"map=0xB8\r\n"
+		"map_start=0xB0\r\n"
+		"map_end=0xB4\r\n"
+		"type=0x94\r\n"
+		"position_x=0x18C\r\n"
+		"position_y=0x190\r\n"
+		"player_name=0x258\r\n"
+		"player_name_second=0x0\r\n"
+		"object_position_base=0xA8\r\n"
+		"object_position_x=0x0C\r\n"
+		"object_position_y=0x10\r\n"
+		"faction=0x644\r\n"
+		"fullscreen_skill_type=0x90\r\n"
+		"fullscreen_skill_pos_x=0x3CE4\r\n"
+		"fullscreen_skill_pos_y=0x3CE8\r\n"
+		"\r\n"
 		"[output]\r\n"
 		"; output_dir=\r\n"
 		"\r\n"
@@ -1048,6 +1147,29 @@ static BOOL LoadHelperConfig(const wchar_t* config_path, HelperConfig* config) {
 	config->monster_x_offset_by_mode[2] = ReadIniFloat(config_path, L"attract", L"monster_x_offset_mode2", config->monster_x_offset_by_mode[2]);
 	config->monster_x_offset_by_mode[3] = ReadIniFloat(config_path, L"attract", L"monster_x_offset_mode3", config->monster_x_offset_by_mode[3]);
 	config->monster_x_offset_by_mode[4] = ReadIniFloat(config_path, L"attract", L"monster_x_offset_mode4", config->monster_x_offset_by_mode[4]);
+	config->addr_player_base = ReadIniUInt32(config_path, L"address", L"player_base", config->addr_player_base);
+	config->addr_fullscreen_attack_patch = ReadIniUInt32(config_path, L"address", L"fullscreen_attack_patch", config->addr_fullscreen_attack_patch);
+	config->addr_transparent_call = ReadIniUInt32(config_path, L"address", L"transparent_call", config->addr_transparent_call);
+	config->addr_summon_call_param = ReadIniUInt32(config_path, L"address", L"summon_call_param", config->addr_summon_call_param);
+	config->addr_summon_function_offset = ReadIniUInt32(config_path, L"address", L"summon_function_offset", config->addr_summon_function_offset);
+	config->addr_summon_position_param = ReadIniUInt32(config_path, L"address", L"summon_position_param", config->addr_summon_position_param);
+	config->addr_fullscreen_skill_call = ReadIniUInt32(config_path, L"address", L"fullscreen_skill_call", config->addr_fullscreen_skill_call);
+	config->addr_damage_hook = ReadIniUInt32(config_path, L"address", L"damage_hook", config->addr_damage_hook);
+	config->offset_map = ReadIniUInt32(config_path, L"offset", L"map", config->offset_map);
+	config->offset_map_start = ReadIniUInt32(config_path, L"offset", L"map_start", config->offset_map_start);
+	config->offset_map_end = ReadIniUInt32(config_path, L"offset", L"map_end", config->offset_map_end);
+	config->offset_type = ReadIniUInt32(config_path, L"offset", L"type", config->offset_type);
+	config->offset_position_x = ReadIniUInt32(config_path, L"offset", L"position_x", config->offset_position_x);
+	config->offset_position_y = ReadIniUInt32(config_path, L"offset", L"position_y", config->offset_position_y);
+	config->offset_player_name = ReadIniUInt32(config_path, L"offset", L"player_name", config->offset_player_name);
+	config->offset_player_name_second = ReadIniUInt32(config_path, L"offset", L"player_name_second", config->offset_player_name_second);
+	config->offset_object_position_base = ReadIniUInt32(config_path, L"offset", L"object_position_base", config->offset_object_position_base);
+	config->offset_object_position_x = ReadIniUInt32(config_path, L"offset", L"object_position_x", config->offset_object_position_x);
+	config->offset_object_position_y = ReadIniUInt32(config_path, L"offset", L"object_position_y", config->offset_object_position_y);
+	config->offset_faction = ReadIniUInt32(config_path, L"offset", L"faction", config->offset_faction);
+	config->offset_fullscreen_skill_type = ReadIniUInt32(config_path, L"offset", L"fullscreen_skill_type", config->offset_fullscreen_skill_type);
+	config->offset_fullscreen_skill_pos_x = ReadIniUInt32(config_path, L"offset", L"fullscreen_skill_pos_x", config->offset_fullscreen_skill_pos_x);
+	config->offset_fullscreen_skill_pos_y = ReadIniUInt32(config_path, L"offset", L"fullscreen_skill_pos_y", config->offset_fullscreen_skill_pos_y);
 	if (ReadIniStringValue(config_path, L"output", L"output_dir", config->output_directory, MAX_PATH)) {
 		config->output_directory_set = TRUE;
 	}
@@ -1456,8 +1578,11 @@ static void RememberFullscreenAttackOffBytes(const BYTE* bytes) {
 
 // 全屏攻击补丁：仅在识别到预期字节时才切换，避免写错版本。
 static BOOL SetFullscreenAttackEnabled(BOOL enabled) {
+	if (g_fullscreen_attack_patch_address == 0) {
+		return FALSE;
+	}
 	BYTE current[2] = {0};
-	if (!ReadBytesSafely(kFullScreenAttackPatchAddress, current, sizeof(current))) {
+	if (!ReadBytesSafely(g_fullscreen_attack_patch_address, current, sizeof(current))) {
 		return FALSE;
 	}
 	RememberFullscreenAttackOffBytes(current);
@@ -1468,7 +1593,7 @@ static BOOL SetFullscreenAttackEnabled(BOOL enabled) {
 		if (!IsFullscreenAttackOffBytes(current)) {
 			return FALSE;
 		}
-		return WriteBytesSafely(kFullScreenAttackPatchAddress, kFullscreenAttackPatchOn, kFullscreenAttackPatchSize);
+		return WriteBytesSafely(g_fullscreen_attack_patch_address, kFullscreenAttackPatchOn, kFullscreenAttackPatchSize);
 	}
 	if (IsFullscreenAttackOffBytes(current)) {
 		return TRUE;
@@ -1477,7 +1602,7 @@ static BOOL SetFullscreenAttackEnabled(BOOL enabled) {
 		return FALSE;
 	}
 	const BYTE* off_patch = g_fullscreen_attack_off_patch_set ? g_fullscreen_attack_off_patch : kFullscreenAttackPatchOffB;
-	return WriteBytesSafely(kFullScreenAttackPatchAddress, off_patch, kFullscreenAttackPatchSize);
+	return WriteBytesSafely(g_fullscreen_attack_patch_address, off_patch, kFullscreenAttackPatchSize);
 }
 
 static void BuildSharedMemoryName(const wchar_t* prefix, wchar_t* output, size_t output_capacity, DWORD pid) {
@@ -1742,16 +1867,16 @@ static void ReadPlayerName(wchar_t* output, size_t output_capacity) {
 		return;
 	}
 	output[0] = L'\0';
-	DWORD player_ptr = ReadDwordSafely(kPlayerBaseAddress);
+	DWORD player_ptr = ReadDwordSafely(g_player_base_address);
 	if (player_ptr == 0) {
 		return;
 	}
-	DWORD name_ptr = ReadDwordSafely(player_ptr + kPlayerNameOffset);
+	DWORD name_ptr = ReadDwordSafely(player_ptr + g_player_name_offset);
 	if (name_ptr == 0) {
 		return;
 	}
 	BYTE raw[kPlayerNameMaxChars * sizeof(wchar_t)] = {0};
-	if (!ReadBytesSafely(name_ptr + kPlayerNameSecondOffset, raw, sizeof(raw))) {
+	if (!ReadBytesSafely(name_ptr + g_player_name_second_offset, raw, sizeof(raw))) {
 		output[0] = L'\0';
 		return;
 	}
@@ -1833,7 +1958,7 @@ static void WriteSharedMemorySnapshot() {
 	snapshot.auto_transparent_enabled = g_auto_transparent_enabled;
 	snapshot.fullscreen_attack_target = IsFullscreenAttackTargetEnabled() ? TRUE : FALSE;
 	BYTE current[2] = {0};
-	if (ReadBytesSafely(kFullScreenAttackPatchAddress, current, sizeof(current))) {
+	if (ReadBytesSafely(g_fullscreen_attack_patch_address, current, sizeof(current))) {
 		if (memcmp(current, kFullscreenAttackPatchOn, kFullscreenAttackPatchSize) == 0) {
 			snapshot.fullscreen_attack_patch_on = TRUE;
 		} else if (IsFullscreenAttackOffBytes(current)) {
@@ -2041,16 +2166,16 @@ static BOOL BuildAttractContext(AttractContext* context) {
 	if (context == NULL) {
 		return FALSE;
 	}
-	DWORD player_ptr = ReadDwordSafely(kPlayerBaseAddress);
+	DWORD player_ptr = ReadDwordSafely(g_player_base_address);
 	if (player_ptr == 0) {
 		return FALSE;
 	}
-	DWORD map_ptr = ReadDwordSafely(player_ptr + kMapOffset);
+	DWORD map_ptr = ReadDwordSafely(player_ptr + g_map_offset);
 	if (map_ptr == 0) {
 		return FALSE;
 	}
-	DWORD start_ptr = ReadDwordSafely(map_ptr + kMapStartOffset);
-	DWORD end_ptr = ReadDwordSafely(map_ptr + kMapEndOffset);
+	DWORD start_ptr = ReadDwordSafely(map_ptr + g_map_start_offset);
+	DWORD end_ptr = ReadDwordSafely(map_ptr + g_map_end_offset);
 	if (start_ptr == 0 || end_ptr == 0 || end_ptr <= start_ptr) {
 		return FALSE;
 	}
@@ -2061,8 +2186,8 @@ static BOOL BuildAttractContext(AttractContext* context) {
 	context->player_ptr = player_ptr;
 	context->start_ptr = start_ptr;
 	context->end_ptr = end_ptr;
-	context->player_x = ReadFloatSafely(player_ptr + kPositionXOffset);
-	context->player_y = ReadFloatSafely(player_ptr + kPositionYOffset);
+	context->player_x = ReadFloatSafely(player_ptr + g_position_x_offset);
+	context->player_y = ReadFloatSafely(player_ptr + g_position_y_offset);
 	return TRUE;
 }
 
@@ -2094,7 +2219,7 @@ static void ApplyAttractAndGather(int mode, BOOL attract_monsters, BOOL gather_i
 		if (object_ptr == 0 || object_ptr == context.player_ptr) {
 			continue;
 		}
-		int type = (int)ReadDwordSafely(object_ptr + kTypeOffset);
+		int type = (int)ReadDwordSafely(object_ptr + g_type_offset);
 		if (type == kTypeItem) {
 			if (!gather_items) {
 				continue;
@@ -2106,23 +2231,23 @@ static void ApplyAttractAndGather(int mode, BOOL attract_monsters, BOOL gather_i
 		} else {
 			continue;
 		}
-		int faction = (int)ReadDwordSafely(object_ptr + kFactionOffset);
+		int faction = (int)ReadDwordSafely(object_ptr + g_faction_offset);
 		if (faction == 0) {
 			continue;
 		}
-		DWORD position_ptr = ReadDwordSafely(object_ptr + kObjectPositionBaseOffset);
+		DWORD position_ptr = ReadDwordSafely(object_ptr + g_object_position_base_offset);
 		if (position_ptr == 0) {
 			continue;
 		}
 		if (type == kTypeItem) {
 			// 物品吸到人物坐标。
-			WriteFloatFast(position_ptr + kObjectPositionXOffset, context.player_x);
-			WriteFloatFast(position_ptr + kObjectPositionYOffset, context.player_y);
+			WriteFloatFast(position_ptr + g_object_position_x_offset, context.player_x);
+			WriteFloatFast(position_ptr + g_object_position_y_offset, context.player_y);
 			continue;
 		}
 		// 怪物/敌对 APC 的 X 坐标按配置偏移，Y 坐标与人物一致。
-		WriteFloatFast(position_ptr + kObjectPositionXOffset, monster_x);
-		WriteFloatFast(position_ptr + kObjectPositionYOffset, context.player_y);
+		WriteFloatFast(position_ptr + g_object_position_x_offset, monster_x);
+		WriteFloatFast(position_ptr + g_object_position_y_offset, context.player_y);
 	}
 }
 
@@ -2138,7 +2263,7 @@ static void AutoAttractTick() {
 
 // 召唤人偶：内联汇编按 CE 脚本顺序压栈调用。
 static BOOL CallSummonDoll(int monster_id, int level) {
-	DWORD player_ptr = ReadDwordSafely(kPlayerBaseAddress);
+	DWORD player_ptr = ReadDwordSafely(g_player_base_address);
 	if (player_ptr == 0) {
 		return FALSE;
 	}
@@ -2146,11 +2271,14 @@ static BOOL CallSummonDoll(int monster_id, int level) {
 	if (vtable == 0) {
 		return FALSE;
 	}
+	if (g_summon_call_param == 0 || g_summon_position_param == 0 || g_summon_function_offset == 0) {
+		return FALSE;
+	}
 	__asm {
 		pushad
 		push 0
 		push 1
-		push kSummonCallParam
+		push g_summon_call_param
 		push 0
 		push 0
 		push -1
@@ -2160,7 +2288,7 @@ static BOOL CallSummonDoll(int monster_id, int level) {
 		push 1
 		push 0
 		push 0
-		push kSummonPositionParam
+		push g_summon_position_param
 		push level
 		push 0
 		push monster_id
@@ -2168,7 +2296,7 @@ static BOOL CallSummonDoll(int monster_id, int level) {
 		mov ecx, esi
 		mov edx, [ecx]
 		mov eax, edx
-		add eax, kSummonFunctionOffset
+		add eax, g_summon_function_offset
 		mov ebx, [eax]
 		call ebx
 		popad
@@ -2195,11 +2323,14 @@ static void TrySummonDoll() {
 
 // 全屏技能：按 CE 参数顺序执行模拟 CALL。
 static void CallFullscreenSkill(DWORD x_raw, DWORD y_raw, int z, int damage, int skill_code) {
-	DWORD player_obj = ReadDwordSafely(kPlayerBaseAddress);
+	DWORD player_obj = ReadDwordSafely(g_player_base_address);
 	if (player_obj == 0) {
 		return;
 	}
-	DWORD call_address = kFullscreenSkillCallAddress;
+	DWORD call_address = g_fullscreen_skill_call_address;
+	if (call_address == 0) {
+		return;
+	}
 	__asm {
 		pushad
 		push 0
@@ -2226,16 +2357,16 @@ static void CallFullscreenSkill(DWORD x_raw, DWORD y_raw, int z, int damage, int
 
 // 全屏技能遍历：按当前地图对象执行技能。
 static void FullscreenSkillOnce() {
-	DWORD player_ptr = ReadDwordSafely(kPlayerBaseAddress);
+	DWORD player_ptr = ReadDwordSafely(g_player_base_address);
 	if (player_ptr == 0) {
 		return;
 	}
-	DWORD map_ptr = ReadDwordSafely(player_ptr + kMapOffset);
+	DWORD map_ptr = ReadDwordSafely(player_ptr + g_map_offset);
 	if (map_ptr == 0) {
 		return;
 	}
-	DWORD start_ptr = ReadDwordSafely(map_ptr + kMapStartOffset);
-	DWORD end_ptr = ReadDwordSafely(map_ptr + kMapEndOffset);
+	DWORD start_ptr = ReadDwordSafely(map_ptr + g_map_start_offset);
+	DWORD end_ptr = ReadDwordSafely(map_ptr + g_map_end_offset);
 	if (start_ptr == 0 || end_ptr == 0 || end_ptr <= start_ptr || end_ptr < 4) {
 		return;
 	}
@@ -2249,16 +2380,16 @@ static void FullscreenSkillOnce() {
 		if (object_ptr == 0) {
 			continue;
 		}
-		int faction = (int)ReadDwordSafely(object_ptr + kFactionOffset);
+		int faction = (int)ReadDwordSafely(object_ptr + g_faction_offset);
 		if (faction == 0) {
 			continue;
 		}
-		int type = (int)ReadDwordSafely(object_ptr + kFullscreenSkillTypeOffset);
+		int type = (int)ReadDwordSafely(object_ptr + g_fullscreen_skill_type_offset);
 		if (type != kTypeMonster && type != kTypeApc) {
 			continue;
 		}
-		DWORD x_raw = ReadDwordSafely(object_ptr + kFullscreenSkillPosXOffset);
-		DWORD y_raw = ReadDwordSafely(object_ptr + kFullscreenSkillPosYOffset);
+		DWORD x_raw = ReadDwordSafely(object_ptr + g_fullscreen_skill_pos_x_offset);
+		DWORD y_raw = ReadDwordSafely(object_ptr + g_fullscreen_skill_pos_y_offset);
 		CallFullscreenSkill(x_raw, y_raw, 0,
 			static_cast<int>(g_fullscreen_skill_damage),
 			static_cast<int>(g_fullscreen_skill_code));
@@ -2468,7 +2599,10 @@ static DWORD WINAPI InputPollThread(LPVOID param) {
 
 // 透明调用实现：参数/调用约定与旧逻辑保持一致。
 static void CallTransparent(DWORD player_ptr) {
-	DWORD call_address = kTransparentCallAddress;
+	DWORD call_address = g_transparent_call_address;
+	if (call_address == 0) {
+		return;
+	}
 	__asm {
 		mov ecx, player_ptr
 		mov esi, ecx
@@ -2543,7 +2677,7 @@ static DWORD WINAPI TransparentThread(LPVOID param) {
 	UNREFERENCED_PARAMETER(param);
 	int effect_state = 0;
 	while (TRUE) {
-		DWORD player_ptr = ReadDwordSafely(kPlayerBaseAddress);
+		DWORD player_ptr = ReadDwordSafely(g_player_base_address);
 		if (player_ptr == 0) {
 			g_character_transparent = FALSE;
 			effect_state = 0;
@@ -2574,7 +2708,7 @@ static DWORD WINAPI TransparentThread(LPVOID param) {
 
 // 尝试解除透明状态，无法保证一定生效，仅做最佳努力。
 static void TryClearTransparentState() {
-	DWORD player_ptr = ReadDwordSafely(kPlayerBaseAddress);
+	DWORD player_ptr = ReadDwordSafely(g_player_base_address);
 	if (player_ptr != 0) {
 		CallTransparent(player_ptr);
 	}
@@ -2672,6 +2806,13 @@ static BOOL EnsureDamageHookInstalled() {
 	if (InterlockedCompareExchange(&g_damage_hook_installed, -1, -1) == -1) {
 		return FALSE;
 	}
+	if (g_damage_hook_address == 0) {
+		if (InterlockedExchange(&g_damage_hook_failed_logged, 1) == 0) {
+			LogEvent("WARN", "damage_hook", "address_zero");
+		}
+		InterlockedExchange(&g_damage_hook_installed, -1);
+		return FALSE;
+	}
 	MH_STATUS status = MH_Initialize();
 	if (status != MH_OK && status != MH_ERROR_ALREADY_INITIALIZED) {
 		if (InterlockedExchange(&g_damage_hook_failed_logged, 1) == 0) {
@@ -2683,7 +2824,7 @@ static BOOL EnsureDamageHookInstalled() {
 		return FALSE;
 	}
 	status = MH_CreateHook(
-		reinterpret_cast<LPVOID>(kDamageHookAddress),
+		reinterpret_cast<LPVOID>(g_damage_hook_address),
 		DamageHookDetour,
 		&g_damage_hook_trampoline);
 	if (status != MH_OK) {
@@ -2695,7 +2836,7 @@ static BOOL EnsureDamageHookInstalled() {
 		InterlockedExchange(&g_damage_hook_installed, -1);
 		return FALSE;
 	}
-	status = MH_EnableHook(reinterpret_cast<LPVOID>(kDamageHookAddress));
+	status = MH_EnableHook(reinterpret_cast<LPVOID>(g_damage_hook_address));
 	if (status != MH_OK) {
 		if (InterlockedExchange(&g_damage_hook_failed_logged, 1) == 0) {
 			char message[64] = {0};
@@ -2711,7 +2852,7 @@ static BOOL EnsureDamageHookInstalled() {
 	return TRUE;
 }
 
-// 注意：内联汇编中直接使用 0x644/0x10，避免 MSVC 将 const 解析为地址偏移。
+// 注意：伤害参数仍使用 [ebp+0x10] 约定，阵营偏移改为运行时配置变量。
 static void __declspec(naked) DamageHookDetour() {
 	__asm {
 		pushfd
@@ -2720,7 +2861,8 @@ static void __declspec(naked) DamageHookDetour() {
 
 		test ecx, ecx
 		je DamageHook_Player
-		cmp dword ptr [ecx + 0x644], 0
+		mov eax, g_faction_offset
+		cmp dword ptr [ecx + eax], 0
 		jne DamageHook_Enemy
 
 	DamageHook_Player:
@@ -2830,10 +2972,74 @@ static void ApplyControlOverrides() {
 	}
 }
 
+// 输出运行时生效的地址与偏移，便于排查配置覆盖导致的崩溃。
+static void LogRuntimeAddressOffsets() {
+	char address_message[384] = {0};
+	sprintf_s(
+		address_message,
+		sizeof(address_message),
+		"player_base=0x%08lX fullscreen_attack_patch=0x%08lX transparent_call=0x%08lX summon_call_param=0x%08lX summon_function_offset=0x%08lX summon_position_param=0x%08lX fullscreen_skill_call=0x%08lX damage_hook=0x%08lX",
+		g_player_base_address,
+		g_fullscreen_attack_patch_address,
+		g_transparent_call_address,
+		g_summon_call_param,
+		g_summon_function_offset,
+		g_summon_position_param,
+		g_fullscreen_skill_call_address,
+		g_damage_hook_address);
+	LogEvent("INFO", "runtime_address", address_message);
+
+	char offset_message[448] = {0};
+	sprintf_s(
+		offset_message,
+		sizeof(offset_message),
+		"map=0x%08lX map_start=0x%08lX map_end=0x%08lX type=0x%08lX position_x=0x%08lX position_y=0x%08lX player_name=0x%08lX player_name_second=0x%08lX object_pos_base=0x%08lX object_pos_x=0x%08lX object_pos_y=0x%08lX faction=0x%08lX fullscreen_skill_type=0x%08lX fullscreen_skill_pos_x=0x%08lX fullscreen_skill_pos_y=0x%08lX",
+		g_map_offset,
+		g_map_start_offset,
+		g_map_end_offset,
+		g_type_offset,
+		g_position_x_offset,
+		g_position_y_offset,
+		g_player_name_offset,
+		g_player_name_second_offset,
+		g_object_position_base_offset,
+		g_object_position_x_offset,
+		g_object_position_y_offset,
+		g_faction_offset,
+		g_fullscreen_skill_type_offset,
+		g_fullscreen_skill_pos_x_offset,
+		g_fullscreen_skill_pos_y_offset);
+	LogEvent("INFO", "runtime_offset", offset_message);
+}
+
 // 应用配置到运行时变量，避免线程直接读结构体。
 static void ApplyRuntimeConfig(const HelperConfig& config, BOOL reset_state) {
 	g_config_snapshot = config;
 	g_config_snapshot_ready = TRUE;
+	g_player_base_address = config.addr_player_base;
+	g_fullscreen_attack_patch_address = config.addr_fullscreen_attack_patch;
+	g_transparent_call_address = config.addr_transparent_call;
+	g_summon_call_param = config.addr_summon_call_param;
+	g_summon_function_offset = config.addr_summon_function_offset;
+	g_summon_position_param = config.addr_summon_position_param;
+	g_fullscreen_skill_call_address = config.addr_fullscreen_skill_call;
+	g_damage_hook_address = config.addr_damage_hook;
+	g_map_offset = config.offset_map;
+	g_map_start_offset = config.offset_map_start;
+	g_map_end_offset = config.offset_map_end;
+	g_type_offset = config.offset_type;
+	g_position_x_offset = config.offset_position_x;
+	g_position_y_offset = config.offset_position_y;
+	g_player_name_offset = config.offset_player_name;
+	g_player_name_second_offset = config.offset_player_name_second;
+	g_object_position_base_offset = config.offset_object_position_base;
+	g_object_position_x_offset = config.offset_object_position_x;
+	g_object_position_y_offset = config.offset_object_position_y;
+	g_faction_offset = config.offset_faction;
+	g_fullscreen_skill_type_offset = config.offset_fullscreen_skill_type;
+	g_fullscreen_skill_pos_x_offset = config.offset_fullscreen_skill_pos_x;
+	g_fullscreen_skill_pos_y_offset = config.offset_fullscreen_skill_pos_y;
+	LogRuntimeAddressOffsets();
 	if (reset_state) {
 		// 全屏攻击默认关闭，由轮询线程维持目标状态。
 		SetFullscreenAttackTargetEnabled(FALSE);
