@@ -25,6 +25,10 @@
 | **门状态检测** | 检测当前房间怪物是否已清除，门是否已打开 |
 | **过图调用** | 通过游戏内部CALL直接进入下一房间 |
 
+> **0725 版本约束（强制）**  
+> 本文档中的基址/偏移仅用于说明字段语义，**禁止在代码中硬编码**。  
+> 实际值必须通过外部配置（如 `config/offsets_0725.json`）或签名扫描结果在运行时注入。
+
 ---
 
 ## 核心技术原理
@@ -40,7 +44,7 @@ DNF游戏中，房间门的开关状态存储在特定内存地址中：
 
 **检测路径：**
 ```
-人物基址 → 地图偏移 → +280 → 解密读取
+人物基址(配置) → 地图偏移(配置) → 门状态偏移(配置) → 解密函数(配置)
 ```
 
 ### 过图原理
@@ -55,24 +59,48 @@ DNF游戏中，房间门的开关状态存储在特定内存地址中：
 
 ## 内存地址映射表
 
-### 基础基址
+### 配置键位（替代硬编码）
 
-| 名称 | 地址 (十进制) | 地址 (十六进制) | 说明 |
-|------|--------------|----------------|------|
-| 人物基址 | 81325736 | 0x4D8EEA8 | 角色对象基础地址 |
-| 地图偏移 | 188 | 0xBC | 地图对象偏移量 |
-| 房间编号 | 80315732 | 0x4C98554 | 当前房间信息基址 |
-| 时间基址 | 2138152 | 0x20A028 | 房间结构时间基址 |
-| 过图Call | 22239664 | 0x15359B0 | 过图函数地址 |
-| 解密基址 | 81589368 | 0x4DCF478 | 数据解密函数基址 |
+| 配置键 | 示例值（0725需以实测为准） | 说明 |
+|------|---------------------------|------|
+| `player_base` | `0x00000000` | 角色对象基址 |
+| `map_offset` | `0x00000000` | 地图对象偏移 |
+| `door_state_offset` | `0x00000000` | 门状态字段偏移 |
+| `room_info_base` | `0x00000000` | 房间信息基址 |
+| `room_level1_offset` | `0x00000000` | 房间一级对象偏移 |
+| `room_level2_offset` | `0x00000000` | 房间二级对象偏移 |
+| `change_room_call` | `0x00000000` | 过图函数地址 |
+| `decrypt_call` | `0x00000000` | 解密函数地址（或算法入口） |
+| `room_time_base_offset` | `0x00000000` | 房间时间结构偏移 |
+| `room_base_offset` | `0x00000000` | 房间结构根偏移 |
+| `boss_x_offset` | `0x00000000` | BOSS 房间 X 偏移 |
+| `boss_y_offset` | `0x00000000` | BOSS 房间 Y 偏移 |
+| `cur_x_offset` | `0x00000000` | 当前房间 X 偏移 |
+| `cur_y_offset` | `0x00000000` | 当前房间 Y 偏移 |
 
-### 关键偏移
+### 推荐配置文件示例
 
-| 偏移位置 | 说明 | 数据类型 |
-|---------|------|---------|
-| 地图偏移 + 280 | 门状态标记 | 加密int |
-| 时间基址 + 0x20A024 | 房间一级对象 | 指针 |
-| + 0x8C | 房间二级对象 | 指针 |
+```json
+{
+  "version_tag": "0725",
+  "offsets": {
+    "player_base": "0x00000000",
+    "map_offset": "0x00000000",
+    "door_state_offset": "0x00000000",
+    "room_info_base": "0x00000000",
+    "room_level1_offset": "0x00000000",
+    "room_level2_offset": "0x00000000",
+    "change_room_call": "0x00000000",
+    "decrypt_call": "0x00000000",
+    "room_time_base_offset": "0x00000000",
+    "room_base_offset": "0x00000000",
+    "boss_x_offset": "0x00000000",
+    "boss_y_offset": "0x00000000",
+    "cur_x_offset": "0x00000000",
+    "cur_y_offset": "0x00000000"
+  }
+}
+```
 
 ---
 
@@ -86,6 +114,20 @@ DNF游戏中，房间门的开关状态存储在特定内存地址中：
 
 // 进程句柄（需要通过进程名或窗口获取）
 HANDLE g_hProcess = NULL;
+
+// 偏移配置（运行时加载，禁止硬编码）
+struct DoorOffsets {
+    DWORD player_base;
+    DWORD map_offset;
+    DWORD door_state_offset;
+    DWORD room_info_base;
+    DWORD room_level1_offset;
+    DWORD room_level2_offset;
+    DWORD change_room_call;
+    DWORD decrypt_call;
+};
+
+DoorOffsets g_offsets = {};
 
 // 读取内存
 template<typename T>
@@ -101,9 +143,17 @@ int ReadInt(DWORD address) {
 }
 
 // 简单解密函数（根据实际游戏版本调整）
-int Decrypt(int value) {
-    // DNF使用简单的异或加密
-    return value ^ 0x4DCF478;  // 解密基址作为密钥
+// 从配置文件加载偏移（示例）
+bool LoadDoorOffsets(const wchar_t* configPath, DoorOffsets& outOffsets);
+
+// 解密函数：通过配置提供的入口地址调用（示例签名，按实际调整）
+int DecryptByGame(int encrypted) {
+    if (g_offsets.decrypt_call == 0) {
+        return encrypted;
+    }
+    using DecryptFn = int(__cdecl*)(int);
+    DecryptFn fn = reinterpret_cast<DecryptFn>(g_offsets.decrypt_call);
+    return fn(encrypted);
 }
 ```
 
@@ -112,20 +162,17 @@ int Decrypt(int value) {
 ```cpp
 // 检测当前房间的门是否已打开（怪物是否已清除）
 bool IsDoorOpen() {
-    const DWORD 人物基址 = 0x81325736;
-    const DWORD 地图偏移 = 0xBC;
-
     // 获取人物对象
-    int playerBase = ReadInt(人物基址);
+    int playerBase = ReadInt(g_offsets.player_base);
     if (playerBase == 0) return false;
 
     // 获取地图对象
-    int mapBase = ReadInt(playerBase + 地图偏移);
+    int mapBase = ReadInt(playerBase + g_offsets.map_offset);
     if (mapBase == 0) return false;
 
-    // 读取门状态（+280偏移）
-    int doorStateEncrypted = ReadInt(mapBase + 280);
-    int doorState = Decrypt(doorStateEncrypted);
+    // 读取门状态（偏移来自配置）
+    int doorStateEncrypted = ReadInt(mapBase + g_offsets.door_state_offset);
+    int doorState = DecryptByGame(doorStateEncrypted);
 
     // 0表示门已打开
     return doorState == 0;
@@ -145,15 +192,17 @@ enum class DoorDirection {
 
 // 使用内联汇编调用过图函数
 void ChangeRoom(DoorDirection direction) {
-    const DWORD 房间编号 = 0x80315732;
-    const DWORD 过图Call = 0x22239664;
-
+    if (g_offsets.room_info_base == 0 || g_offsets.change_room_call == 0) {
+        return;
+    }
     __asm {
         // 获取房间对象
-        mov ecx, 房间编号
+        mov ecx, g_offsets.room_info_base
         mov ecx, [ecx]
-        mov ecx, [ecx + 0x20A024]
-        mov ecx, [ecx + 0x8C]
+        mov eax, g_offsets.room_level1_offset
+        mov ecx, [ecx + eax]
+        mov eax, g_offsets.room_level2_offset
+        mov ecx, [ecx + eax]
 
         // 压入参数
         push 0xFF
@@ -166,7 +215,7 @@ void ChangeRoom(DoorDirection direction) {
         push direction  // 方向参数
 
         // 调用过图函数
-        mov eax, 过图Call
+        mov eax, g_offsets.change_room_call
         call eax
     }
 }
@@ -194,6 +243,9 @@ HANDLE GetDNFProcessHandle() {
 
 // 初始化
 bool Initialize() {
+    if (!LoadDoorOffsets(L"config\\offsets_0725.json", g_offsets)) {
+        return false;
+    }
     g_hProcess = GetDNFProcessHandle();
     return g_hProcess != NULL;
 }
@@ -262,12 +314,23 @@ HANDLE GetProcessByName(const wchar_t* processName) {
 
 class DNFDoorDetector {
 public:
-    // 地址常量
-    static const DWORD ADDR_PLAYER_BASE = 0x81325736;
-    static const DWORD ADDR_MAP_OFFSET = 0xBC;
-    static const DWORD ADDR_ROOM_INFO = 0x80315732;
-    static const DWORD ADDR_CHANGE_ROOM_CALL = 0x22239664;
-    static const DWORD ADDR_DECRYPT_BASE = 0x4DCF478;
+    // 偏移配置（由外部加载，禁止硬编码）
+    struct Offsets {
+        DWORD PlayerBase;
+        DWORD MapOffset;
+        DWORD DoorStateOffset;
+        DWORD RoomInfoBase;
+        DWORD RoomLevel1Offset;
+        DWORD RoomLevel2Offset;
+        DWORD ChangeRoomCall;
+        DWORD DecryptCall;
+        DWORD RoomTimeBaseOffset;
+        DWORD RoomBaseOffset;
+        DWORD BossXOffset;
+        DWORD BossYOffset;
+        DWORD CurXOffset;
+        DWORD CurYOffset;
+    };
 
     // 方向枚举
     enum Direction {
@@ -277,8 +340,8 @@ public:
         DIR_DOWN = 3
     };
 
-    // 初始化
-    bool Init();
+    // 初始化（同时加载配置）
+    bool Init(const wchar_t* configPath);
 
     // 检测门是否打开
     bool IsDoorOpen();
@@ -290,8 +353,11 @@ public:
     bool IsInDungeon();
 
 private:
-    HANDLE m_hProcess;
-    int Decrypt(int value);
+    HANDLE m_hProcess = NULL;
+    Offsets m_offsets{};
+
+    bool LoadOffsets(const wchar_t* configPath);
+    int DecryptByGame(int value);
 
     template<typename T>
     T ReadMemory(DWORD addr);
@@ -302,7 +368,10 @@ private:
 // DNFDoorDetector.cpp
 #include "DNFDoorDetector.h"
 
-bool DNFDoorDetector::Init() {
+bool DNFDoorDetector::Init(const wchar_t* configPath) {
+    if (!LoadOffsets(configPath)) {
+        return false;
+    }
     // 获取DNF窗口
     HWND hwnd = FindWindowW(L"DNF Client", NULL);
     if (!hwnd) return false;
@@ -317,28 +386,31 @@ bool DNFDoorDetector::Init() {
 bool DNFDoorDetector::IsDoorOpen() {
     if (!m_hProcess) return false;
 
-    // 读取路径: 人物基址 → +地图偏移 → +280 → 解密
-    int playerBase = ReadMemory<int>(ADDR_PLAYER_BASE);
+    // 读取路径: 人物基址(配置) → 地图偏移(配置) → 门状态偏移(配置) → 解密
+    int playerBase = ReadMemory<int>(m_offsets.PlayerBase);
     if (playerBase == 0) return false;
 
-    int mapBase = ReadMemory<int>(playerBase + ADDR_MAP_OFFSET);
+    int mapBase = ReadMemory<int>(playerBase + m_offsets.MapOffset);
     if (mapBase == 0) return false;
 
-    int doorState = ReadMemory<int>(mapBase + 280);
-    doorState = Decrypt(doorState);
+    int doorState = ReadMemory<int>(mapBase + m_offsets.DoorStateOffset);
+    doorState = DecryptByGame(doorState);
 
     return doorState == 0;
 }
 
 void DNFDoorDetector::ChangeRoom(Direction dir) {
-    const DWORD offset1 = 0x20A024;
-    const DWORD offset2 = 0x8C;
+    if (m_offsets.RoomInfoBase == 0 || m_offsets.ChangeRoomCall == 0) {
+        return;
+    }
 
     __asm {
-        mov ecx, ADDR_ROOM_INFO
+        mov ecx, m_offsets.RoomInfoBase
         mov ecx, [ecx]
-        mov ecx, [ecx + offset1]
-        mov ecx, [ecx + offset2]
+        mov eax, m_offsets.RoomLevel1Offset
+        mov ecx, [ecx + eax]
+        mov eax, m_offsets.RoomLevel2Offset
+        mov ecx, [ecx + eax]
 
         push 0xFF
         push 0xFF
@@ -349,7 +421,7 @@ void DNFDoorDetector::ChangeRoom(Direction dir) {
         push 0x00
         push dir
 
-        mov eax, ADDR_CHANGE_ROOM_CALL
+        mov eax, m_offsets.ChangeRoomCall
         call eax
     }
 }
@@ -357,16 +429,21 @@ void DNFDoorDetector::ChangeRoom(Direction dir) {
 bool DNFDoorDetector::IsInDungeon() {
     if (!m_hProcess) return false;
 
-    int playerBase = ReadMemory<int>(ADDR_PLAYER_BASE);
+    int playerBase = ReadMemory<int>(m_offsets.PlayerBase);
     if (playerBase == 0) return false;
 
-    int mapBase = ReadMemory<int>(playerBase + ADDR_MAP_OFFSET);
+    int mapBase = ReadMemory<int>(playerBase + m_offsets.MapOffset);
     // 在副本中 mapBase != 0，在城镇中 mapBase == 0
     return mapBase != 0;
 }
 
-int DNFDoorDetector::Decrypt(int value) {
-    return value ^ ADDR_DECRYPT_BASE;
+int DNFDoorDetector::DecryptByGame(int value) {
+    if (m_offsets.DecryptCall == 0) {
+        return value;
+    }
+    using DecryptFn = int(__cdecl*)(int);
+    DecryptFn fn = reinterpret_cast<DecryptFn>(m_offsets.DecryptCall);
+    return fn(value);
 }
 
 template<typename T>
@@ -385,7 +462,7 @@ T DNFDoorDetector::ReadMemory(DWORD addr) {
 int main() {
     DNFDoorDetector detector;
 
-    if (!detector.Init()) {
+    if (!detector.Init(L"config\\offsets_0725.json")) {
         std::cout << "无法连接到DNF进程，请确保游戏正在运行" << std::endl;
         return 1;
     }
@@ -468,14 +545,15 @@ int main() {
 
 ### 🔍 地址扫描方法
 
-如果地址失效，可用以下方法重新扫描：
+0725 版本请将扫描结果写入配置文件，不要改源码常量：
 
 1. **打开游戏，进入副本**
 2. **使用CE搜索特征值：**
    - 门关闭时：非0值
    - 门开启时：0
 3. **找出基址和偏移链**
-4. **更新代码中的常量**
+4. **更新 `config/offsets_0725.json` 对应键值**
+5. **重启模块并进行版本标记校验**
 
 ### 📝 调试建议
 
@@ -501,26 +579,27 @@ void DebugPrint(const char* format, ...) {
 
 ```cpp
 bool IsInBossRoom() {
-    const DWORD ADDR_TIME_BASE = 0x20A028;
-    const DWORD OFFSET_BOSS_X = 0xB70;  // BOSS房间X坐标偏移
-    const DWORD OFFSET_BOSS_Y = 0xB78;  // BOSS房间Y坐标偏移
-    const DWORD OFFSET_CUR_X = 0xAC4;   // 当前房间X坐标偏移
-    const DWORD OFFSET_CUR_Y = 0xACC;   // 当前房间Y坐标偏移
-    const DWORD OFFSET_ROOM_BASE = 0xCC;
+    // 以下偏移均来自配置，不允许硬编码
+    const DWORD offsetTimeBase = m_offsets.RoomTimeBaseOffset;
+    const DWORD offsetBossX = m_offsets.BossXOffset;
+    const DWORD offsetBossY = m_offsets.BossYOffset;
+    const DWORD offsetCurX = m_offsets.CurXOffset;
+    const DWORD offsetCurY = m_offsets.CurYOffset;
+    const DWORD offsetRoomBase = m_offsets.RoomBaseOffset;
 
-    int roomBase = ReadMemory<int>(ADDR_ROOM_INFO);
+    int roomBase = ReadMemory<int>(m_offsets.RoomInfoBase);
     if (roomBase == 0) return false;
 
-    int timeBase = ReadMemory<int>(roomBase + ADDR_TIME_BASE);
+    int timeBase = ReadMemory<int>(roomBase + offsetTimeBase);
     if (timeBase == 0) return false;
 
-    int roomStruct = ReadMemory<int>(timeBase + OFFSET_ROOM_BASE);
+    int roomStruct = ReadMemory<int>(timeBase + offsetRoomBase);
     if (roomStruct == 0) return false;
 
-    int bossX = Decrypt(ReadMemory<int>(roomStruct + OFFSET_BOSS_X));
-    int bossY = Decrypt(ReadMemory<int>(roomStruct + OFFSET_BOSS_Y));
-    int curX = ReadMemory<int>(roomStruct + OFFSET_CUR_X);
-    int curY = ReadMemory<int>(roomStruct + OFFSET_CUR_Y);
+    int bossX = DecryptByGame(ReadMemory<int>(roomStruct + offsetBossX));
+    int bossY = DecryptByGame(ReadMemory<int>(roomStruct + offsetBossY));
+    int curX = ReadMemory<int>(roomStruct + offsetCurX);
+    int curY = ReadMemory<int>(roomStruct + offsetCurY);
 
     return (curX == bossX && curY == bossY);
 }
