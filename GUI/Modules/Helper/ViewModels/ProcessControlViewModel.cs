@@ -44,7 +44,7 @@ public sealed class ProcessControlViewModel : INotifyPropertyChanged
     private int _attractModeIndex;
     private bool _gatherItemsEnabled;
     private bool _damageEnabled;
-    private int _damageMultiplier = 10;
+    private int _damageMultiplier = 20;
     private bool _invincibleEnabled;
     private bool _hotkeyEnabled;
     private uint _summonSequence;
@@ -321,7 +321,7 @@ public sealed class ProcessControlViewModel : INotifyPropertyChanged
             SetField(ref _gatherItemsEnabled, false, nameof(GatherItemsEnabled));
             SetField(ref _damageEnabled, false, nameof(DamageEnabled));
             SetField(ref _invincibleEnabled, false, nameof(InvincibleEnabled));
-            SetField(ref _damageMultiplier, 10, nameof(DamageMultiplier));
+            SetField(ref _damageMultiplier, 20, nameof(DamageMultiplier));
             OnPropertyChanged(nameof(DamageMultiplierText));
         }
         else

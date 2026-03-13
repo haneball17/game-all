@@ -291,11 +291,11 @@ static int g_attract_last_mode = kAttractModeAllToPlayer;
 // 吸怪方向开关（TRUE=正向，FALSE=负向）
 static BOOL g_attract_positive_enabled = FALSE;
 // 聚物开关（仅物品）
-static BOOL g_gather_items_enabled = FALSE;
+static BOOL g_gather_items_enabled = TRUE;
 // 动态倍攻与怪物零伤
 static BOOL g_damage_enabled = FALSE;
-static BOOL g_invincible_enabled = FALSE;
-static int g_damage_multiplier = 1;
+static BOOL g_invincible_enabled = TRUE;
+static int g_damage_multiplier = 20;
 // 召唤人偶配置（由配置文件覆盖）
 static BOOL g_summon_enabled = TRUE;
 static DWORD g_summon_monster_id = kSummonDefaultMonsterId;
@@ -745,9 +745,9 @@ static HelperConfig GetDefaultHelperConfig() {
 	config.fullscreen_skill_damage = kFullscreenSkillDefaultDamage;
 	config.fullscreen_skill_interval_ms = kFullscreenSkillDefaultIntervalMs;
 	config.fullscreen_skill_hotkey = kFullscreenSkillDefaultHotkey;
-	config.enable_damage_hook = FALSE;
-	config.damage_multiplier = 10;
-	config.invincible_enabled = FALSE;
+	config.enable_damage_hook = TRUE;
+	config.damage_multiplier = 20;
+	config.invincible_enabled = TRUE;
 	config.hotkey_toggle_transparent = kHotkeyToggleTransparent;
 	config.hotkey_toggle_fullscreen_attack = kHotkeyToggleFullscreenAttack;
 	config.hotkey_summon_doll = kHotkeySummonDoll;
@@ -910,9 +910,9 @@ static BOOL WriteDefaultConfigFile(const wchar_t* config_path) {
 		"; hotkey_vk=36\r\n"
 		"\r\n"
 		"[damage]\r\n"
-		"enable_damage_hook=false\r\n"
-		"damage_multiplier=10\r\n"
-		"invincible_enabled=false\r\n"
+		"enable_damage_hook=true\r\n"
+		"damage_multiplier=20\r\n"
+		"invincible_enabled=true\r\n"
 		"\r\n"
 		"[hotkey]\r\n"
 		"toggle_transparent=113\r\n"
@@ -2833,8 +2833,8 @@ static void ApplyRuntimeConfig(const HelperConfig& config, BOOL reset_state) {
 	g_config_snapshot = config;
 	g_config_snapshot_ready = TRUE;
 	if (reset_state) {
-		// 全屏攻击默认关闭，由轮询线程维持目标状态。
-		SetFullscreenAttackTargetEnabled(FALSE);
+		// 全屏攻击默认开启，由轮询线程维持目标状态。
+		SetFullscreenAttackTargetEnabled(TRUE);
 	}
 	g_fullscreen_attack_poll_interval_ms = config.fullscreen_attack_poll_interval_ms;
 	g_summon_enabled = config.enable_summon_doll;
@@ -2856,7 +2856,7 @@ static void ApplyRuntimeConfig(const HelperConfig& config, BOOL reset_state) {
 	SetDamageEnabled(config.enable_damage_hook);
 	SetInvincibleEnabled(config.invincible_enabled);
 	if (reset_state) {
-		g_gather_items_enabled = FALSE;
+		g_gather_items_enabled = TRUE;
 	}
 	g_hotkey_toggle_transparent = config.hotkey_toggle_transparent;
 	g_hotkey_toggle_fullscreen_attack = config.hotkey_toggle_fullscreen_attack;
@@ -3085,10 +3085,10 @@ static void InitializeHelper(const wchar_t* output_directory, const HelperConfig
 		LogEvent("WARN", "success_file", "output_directory_missing");
 	}
 
-	if (SetFullscreenAttackEnabled(FALSE)) {
-		LogEvent("INFO", "fullscreen_attack", "default_off");
+	if (SetFullscreenAttackEnabled(TRUE)) {
+		LogEvent("INFO", "fullscreen_attack", "default_on");
 	} else {
-		LogEvent("WARN", "fullscreen_attack", "default_off_failed");
+		LogEvent("WARN", "fullscreen_attack", "default_on_failed");
 	}
 
 	HANDLE background_thread = CreateThread(NULL, 0, BackgroundWorkerThread, NULL, 0, NULL);
