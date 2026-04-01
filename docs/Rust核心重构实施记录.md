@@ -144,3 +144,41 @@
 - 对齐《实机问题分析—同步延迟与方向键卡住.md》
   - 先处理方向键释放窗口与旧快照复用问题
   - 不贸然大改 Hook 面，优先把状态与收敛逻辑集中到 Rust
+
+---
+
+## 第四批落地：方向键强制抬起掩码接入 Win32 / RawInput / DirectInput（2026-04-01）
+
+### 本次新增
+- `SyncMod` 新增线程级 Rust 收敛状态：
+  - `t_directionConvergenceState`
+  - `t_directionLastState`
+  - `t_forceReleaseMask`
+- 共享快照刷新后，立即从 Rust 收敛状态机取出本轮 `force release mask`。
+- 强制抬起掩码已真正接入以下执行路径：
+  1. `Hook_GetAsyncKeyState`
+  2. `Hook_GetKeyboardState`
+  3. `Hook_GetRawInputBuffer`
+  4. `Hook_GetRawInputData`
+  5. `Hook_GetDeviceState`
+
+### 当前价值
+- 方向键进入释放窗口后，不再只是“促使缓存刷新”，而是会真正把后台读取到的键态压成抬起。
+- 这一步比上一批更接近实机问题根因：后台窗口在 Win32 / RawInput / DirectInput 中残留“按住方向键”的概率进一步下降。
+- 仍然保持 C++ Hook 外壳，风险控制在局部。
+
+### Windows 再验证
+本轮代码改动后，已再次完成：
+
+1. `cargo test`
+2. `cargo clippy --all-targets --all-features -- -D warnings`
+3. `MSBuild.exe E:\\code\\game-all\\game-all.sln /p:Configuration=Debug /p:Platform=x86 /m`
+4. `MSBuild.exe E:\\code\\game-all\\game-all.sln /p:Configuration=Release /p:Platform=x86 /m`
+
+结果：
+- Rust 测试与静态检查全部通过
+- 顶层解决方案 Debug / Release 均通过
+- Payload 仅保留已有链接警告：
+  - `LNK4075`
+  - `LNK4098`
+  暂未引入新的构建错误

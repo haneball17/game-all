@@ -196,6 +196,9 @@ static LONG g_cfgKeyLogLevel = -1;
 static LONG g_cfgKeyUpTimeoutMs = -1;
 static LONG g_cfgSpoofDelayMs = -1;
 static const uint8_t kDirectionConvergenceExtraReleasePulses = 2;
+static thread_local void* t_directionConvergenceState = nullptr;
+static thread_local BYTE t_directionLastState[256] = {};
+static thread_local BYTE t_forceReleaseMask[256] = {};
 
 // 窗口缓存只由后台线程更新，Hook 回调仅做只读访问
 static volatile HWND g_selfWindowCache = nullptr;
@@ -238,6 +241,8 @@ static bool EvaluateRuntimeDecision(const SharedSnapshot& snapshot, PayloadRunti
 static bool EvaluateRuntimeDecision(const SharedSnapshotLite& snapshot, PayloadRuntimeDecisionInterop& decision);
 static bool IsDirectionVKey(int vKey);
 static void SyncDirectionConvergenceState(void* convergenceState, BYTE lastDirectionState[256], const SharedSnapshot& snapshot);
+static void EnsureDirectionConvergenceState();
+static bool ShouldForceReleaseKey(int vKey);
 
 static SIZE_T GetViewRegionSize(void* view)
 {
@@ -1477,6 +1482,24 @@ static void SyncDirectionConvergenceState(void* convergenceState, BYTE lastDirec
     }
 }
 
+static void EnsureDirectionConvergenceState()
+{
+    if (!t_directionConvergenceState)
+    {
+        t_directionConvergenceState = payload_core_convergence_create(kDirectionConvergenceExtraReleasePulses);
+        memset(t_directionLastState, 0, sizeof(t_directionLastState));
+        memset(t_forceReleaseMask, 0, sizeof(t_forceReleaseMask));
+    }
+}
+
+static bool ShouldForceReleaseKey(int vKey)
+{
+    return vKey >= 0 &&
+           vKey < 256 &&
+           t_directionConvergenceState != nullptr &&
+           t_forceReleaseMask[vKey] != 0;
+}
+
 static bool IsSnapshotAlive(const SharedSnapshot& snapshot)
 {
     PayloadRuntimeDecisionInterop decision = {};
@@ -2322,14 +2345,13 @@ static bool ReadSharedSnapshotCached(SharedSnapshot& snapshot)
     thread_local SharedSnapshot cached = {};
     thread_local ULONGLONG cachedTick = 0;
     thread_local bool cachedValid = false;
-    thread_local void* convergenceState = payload_core_convergence_create(kDirectionConvergenceExtraReleasePulses);
-    thread_local BYTE lastDirectionState[256] = {};
+    EnsureDirectionConvergenceState();
 
     ULONGLONG now = GetTickCount64();
     const ULONGLONG cacheAge = cachedValid ? (now - cachedTick) : 0;
     const bool shouldForceRefresh = cachedValid &&
-        convergenceState &&
-        payload_core_convergence_should_refresh(convergenceState, cacheAge, cacheMs) != 0;
+        t_directionConvergenceState &&
+        payload_core_convergence_should_refresh(t_directionConvergenceState, cacheAge, cacheMs) != 0;
     if (cachedValid && !shouldForceRefresh && cacheAge <= cacheMs)
     {
         snapshot = cached;
@@ -2359,7 +2381,15 @@ static bool ReadSharedSnapshotCached(SharedSnapshot& snapshot)
         return false;
     }
 
-    SyncDirectionConvergenceState(convergenceState, lastDirectionState, cached);
+    SyncDirectionConvergenceState(t_directionConvergenceState, t_directionLastState, cached);
+    memset(t_forceReleaseMask, 0, sizeof(t_forceReleaseMask));
+    if (t_directionConvergenceState)
+    {
+        payload_core_convergence_take_force_release_mask(
+            t_directionConvergenceState,
+            t_forceReleaseMask,
+            sizeof(t_forceReleaseMask));
+    }
     cachedTick = now;
     cachedValid = true;
     snapshot = cached;
@@ -2695,7 +2725,8 @@ static SHORT WINAPI Hook_GetAsyncKeyState(int vKey)
     }
 
     SHORT result = 0;
-    if (snapshot.keyboardState[vKey] & 0x80)
+    const bool forceRelease = ShouldForceReleaseKey(vKey);
+    if (!forceRelease && (snapshot.keyboardState[vKey] & 0x80))
     {
         result |= static_cast<SHORT>(0x8000);
     }
@@ -2753,7 +2784,7 @@ static BOOL WINAPI Hook_GetKeyboardState(PBYTE lpKeyState)
     {
         if (snapshot.targetMask[i] != 0)
         {
-            if (!alive || paused_full)
+            if (!alive || paused_full || ShouldForceReleaseKey(i))
             {
                 lpKeyState[i] &= static_cast<BYTE>(~0x81);
                 spoofed = true;
@@ -2851,7 +2882,7 @@ static UINT WINAPI Hook_GetRawInputBuffer(PRAWINPUT data, PUINT size, UINT heade
                             BuildRawKeyboardEvent(vKey, false, raw->data.keyboard);
                             spoofed = true;
                         }
-                        else if (snapshot.targetMask[vKey] != 0 && (!alive || paused))
+                        else if (snapshot.targetMask[vKey] != 0 && (!alive || paused || ShouldForceReleaseKey(vKey)))
                         {
                             // 暂停或失联时强制抬起，避免后台继续响应真实输入。
                             g_lastRawKeyboardState[vKey] = 0;
@@ -2968,7 +2999,11 @@ static UINT WINAPI Hook_GetRawInputData(HRAWINPUT hRawInput, UINT command, LPVOI
                             }
                             else if (snapshot.targetMask[vKey] != 0)
                             {
-                                const bool desiredDown = alive && !paused && (snapshot.keyboardState[vKey] & 0x80) != 0;
+                                const bool desiredDown =
+                                    alive &&
+                                    !paused &&
+                                    !ShouldForceReleaseKey(vKey) &&
+                                    (snapshot.keyboardState[vKey] & 0x80) != 0;
                                 const bool rawDown = (raw->data.keyboard.Flags & RI_KEY_BREAK) == 0;
 
                                 if (allowDataSpoof)
@@ -3241,7 +3276,7 @@ static HRESULT STDMETHODCALLTYPE Hook_GetDeviceState(IDirectInputDevice8W* devic
 
         if (snapshot.targetMask[vKey] != 0)
         {
-            if (!alive || paused_full)
+            if (!alive || paused_full || ShouldForceReleaseKey(vKey))
             {
                 state[dik] = 0;
                 spoofed = true;
