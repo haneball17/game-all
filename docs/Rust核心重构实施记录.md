@@ -244,6 +244,7 @@
 1. `ShouldSpoofFocus`
 2. `Hook_GetRawInputBuffer` 中“是否走 Mapping 重写”
 3. `Hook_GetRawInputData` 中“是否走 Mapping 重写”
+4. `Hook_GetDeviceState` 中“是否旁路当前进程”
 
 ### 当前价值
 - 焦点伪造不再由 C++ 散落判断 `alive / paused / bypass / active_pid`，而是改为 Rust 统一输出。

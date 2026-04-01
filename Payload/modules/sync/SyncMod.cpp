@@ -3304,7 +3304,13 @@ static HRESULT STDMETHODCALLTYPE Hook_GetDeviceState(IDirectInputDevice8W* devic
     }
 
     ApplyClearIfNeeded(snapshot);
-    if (IsBypassProcess(snapshot))
+    PayloadPathDecisionInterop pathDecision = {};
+    if (!EvaluatePathDecision(snapshot, pathDecision))
+    {
+        return hr;
+    }
+
+    if (pathDecision.is_bypass_process != 0)
     {
         return hr;
     }
