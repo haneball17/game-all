@@ -41,6 +41,22 @@ typedef struct PayloadKeyDecisionInterop {
     uint64_t last_tick;
 } PayloadKeyDecisionInterop;
 
+typedef struct PayloadPathDecisionInterop {
+    uint32_t is_valid;
+    uint32_t is_alive;
+    uint32_t is_paused;
+    uint32_t should_clear;
+    uint32_t is_bypass_process;
+    uint32_t should_spoof_focus;
+    uint32_t can_process_keys;
+    uint32_t should_use_mapping;
+    uint32_t active_pid;
+    uint32_t flags;
+    uint32_t profile_id;
+    uint32_t profile_mode;
+    uint64_t last_tick;
+} PayloadPathDecisionInterop;
+
 GAME_PAYLOAD_CORE_API uint32_t payload_core_evaluate_runtime_state(
     const void* snapshot_ptr,
     size_t mapping_size,
@@ -74,6 +90,18 @@ GAME_PAYLOAD_CORE_API uint32_t payload_core_evaluate_key_state_header(
     uint32_t keyboard_down,
     uint32_t force_release,
     PayloadKeyDecisionInterop* out_decision);
+
+GAME_PAYLOAD_CORE_API uint32_t payload_core_evaluate_path_decision_header(
+    uint32_t flags,
+    uint32_t active_pid,
+    uint32_t profile_id,
+    uint32_t profile_mode,
+    uint64_t last_tick,
+    uint32_t current_pid,
+    uint64_t now_tick,
+    uint64_t heartbeat_timeout_ms,
+    uint32_t mapping_mode_value,
+    PayloadPathDecisionInterop* out_decision);
 
 GAME_PAYLOAD_CORE_API void* payload_core_convergence_create(uint8_t extra_release_pulses);
 GAME_PAYLOAD_CORE_API void payload_core_convergence_destroy(void* state);

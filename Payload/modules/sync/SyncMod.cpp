@@ -240,6 +240,7 @@ static void LoadDebugConfig();
 static bool EvaluateRuntimeDecision(const SharedSnapshot& snapshot, PayloadRuntimeDecisionInterop& decision);
 static bool EvaluateRuntimeDecision(const SharedSnapshotLite& snapshot, PayloadRuntimeDecisionInterop& decision);
 static bool EvaluateKeyDecision(const SharedSnapshot& snapshot, int vKey, PayloadKeyDecisionInterop& decision);
+static bool EvaluatePathDecision(const SharedSnapshot& snapshot, PayloadPathDecisionInterop& decision);
 static bool IsDirectionVKey(int vKey);
 static void SyncDirectionConvergenceState(void* convergenceState, BYTE lastDirectionState[256], const SharedSnapshot& snapshot);
 static void EnsureDirectionConvergenceState();
@@ -1456,6 +1457,23 @@ static bool EvaluateKeyDecision(const SharedSnapshot& snapshot, int vKey, Payloa
            decision.is_valid != 0;
 }
 
+static bool EvaluatePathDecision(const SharedSnapshot& snapshot, PayloadPathDecisionInterop& decision)
+{
+    memset(&decision, 0, sizeof(decision));
+    return payload_core_evaluate_path_decision_header(
+               snapshot.flags,
+               snapshot.activePid,
+               snapshot.profileId,
+               snapshot.profileMode,
+               snapshot.lastTick,
+               GetCurrentProcessId(),
+               GetTickCount64(),
+               GetSharedTimeoutMs(),
+               kProfileModeMapping,
+               &decision) != 0 &&
+           decision.is_valid != 0;
+}
+
 static bool IsDirectionVKey(int vKey)
 {
     switch (vKey)
@@ -2614,33 +2632,13 @@ static bool ShouldSpoofFocus()
         return false;
     }
 
-    PayloadRuntimeDecisionInterop decision = {};
-    if (!EvaluateRuntimeDecision(snapshot, decision))
+    PayloadPathDecisionInterop decision = {};
+    if (!EvaluatePathDecision(snapshot, decision))
     {
         return false;
     }
 
-    if (decision.is_alive == 0)
-    {
-        return false;
-    }
-
-    if (decision.is_paused != 0)
-    {
-        return false;
-    }
-
-    if (decision.active_pid == 0)
-    {
-        return false;
-    }
-
-    if (decision.is_bypass_process != 0)
-    {
-        return false;
-    }
-
-    return true;
+    return decision.should_spoof_focus != 0;
 }
 
 static bool IsKeyboardRawInputHandle(HRAWINPUT hRawInput)
@@ -2887,15 +2885,23 @@ static UINT WINAPI Hook_GetRawInputBuffer(PRAWINPUT data, PUINT size, UINT heade
             bool spoofed = false;
             if (hasSnapshot && !IsBypassProcess(snapshot))
             {
-                const bool alive = IsSnapshotAlive(snapshot);
-                const bool paused = (snapshot.flags & kFlagPaused) != 0;
+                PayloadPathDecisionInterop pathDecision = {};
+                if (!EvaluatePathDecision(snapshot, pathDecision))
+                {
+                    continue;
+                }
 
-                if (snapshot.profileMode == kProfileModeMapping)
+                if (pathDecision.should_use_mapping != 0)
                 {
                     // 映射模式下用目标键序列重写 RawInput，确保后台能收到映射后的按键事件。
                     int vKey = 0;
                     bool isDown = false;
-                    if (TryPickMappingRawKey(snapshot, alive, paused, &vKey, &isDown))
+                    if (TryPickMappingRawKey(
+                            snapshot,
+                            pathDecision.is_alive != 0,
+                            pathDecision.is_paused != 0,
+                            &vKey,
+                            &isDown))
                     {
                         BuildRawKeyboardEvent(vKey, isDown, raw->data.keyboard);
                         spoofed = true;
@@ -3007,15 +3013,23 @@ static UINT WINAPI Hook_GetRawInputData(HRAWINPUT hRawInput, UINT command, LPVOI
 
                 if (!IsBypassProcess(snapshot))
                 {
-                    const bool alive = IsSnapshotAlive(snapshot);
-                    const bool paused = (snapshot.flags & kFlagPaused) != 0;
+                    PayloadPathDecisionInterop pathDecision = {};
+                    if (!EvaluatePathDecision(snapshot, pathDecision))
+                    {
+                        goto SkipRawDataSpoof;
+                    }
 
-                    if (allowDataSpoof && snapshot.profileMode == kProfileModeMapping)
+                    if (allowDataSpoof && pathDecision.should_use_mapping != 0)
                     {
                         // 映射模式下用目标键序列重写 RawInput，确保后台能收到映射后的按键事件。
                         int vKey = 0;
                         bool isDown = false;
-                        if (TryPickMappingRawKey(snapshot, alive, paused, &vKey, &isDown))
+                        if (TryPickMappingRawKey(
+                                snapshot,
+                                pathDecision.is_alive != 0,
+                                pathDecision.is_paused != 0,
+                                &vKey,
+                                &isDown))
                         {
                             BuildRawKeyboardEvent(vKey, isDown, raw->data.keyboard);
                             spoofed = true;
@@ -3063,6 +3077,7 @@ static UINT WINAPI Hook_GetRawInputData(HRAWINPUT hRawInput, UINT command, LPVOI
                     }
                 }
             }
+SkipRawDataSpoof:
 
             if (spoofed)
             {

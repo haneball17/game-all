@@ -225,3 +225,42 @@
 结果：
 - Rust 测试新增 2 个 `KeyDecision` 用例后全部通过
 - 顶层解决方案 Debug / Release 均通过
+
+---
+
+## 第六批落地：路径级决策收口到 Rust（2026-04-01）
+
+### 本次新增
+- `game_payload_core` 新增路径级决策模型：
+  - `PathDecision`
+  - `evaluate_path_decision_header(...)`
+- 新增 FFI：
+  - `payload_core_evaluate_path_decision_header(...)`
+  - `PayloadPathDecisionInterop`
+
+### 当前接入范围
+`SyncMod` 下列路径级判断已优先走 Rust：
+
+1. `ShouldSpoofFocus`
+2. `Hook_GetRawInputBuffer` 中“是否走 Mapping 重写”
+3. `Hook_GetRawInputData` 中“是否走 Mapping 重写”
+
+### 当前价值
+- 焦点伪造不再由 C++ 散落判断 `alive / paused / bypass / active_pid`，而是改为 Rust 统一输出。
+- RawInput 的“是否进入 Mapping 重写”开始统一基于 Rust 路径决策，减少执行端路径分支继续漂移。
+- 这一步是从“单键决策 Rust 化”继续推进到“路径决策 Rust 化”，为后续继续收口 DirectInput / Focus / RawInput 适配层打基础。
+
+### 本轮验证
+已完成：
+
+1. `cargo test`
+2. `cargo clippy --all-targets --all-features -- -D warnings`
+3. `MSBuild.exe E:\\code\\game-all\\game-all.sln /p:Configuration=Debug /p:Platform=x86 /m`
+4. `MSBuild.exe E:\\code\\game-all\\game-all.sln /p:Configuration=Release /p:Platform=x86 /m`
+
+结果：
+- Rust 测试与静态检查通过
+- 顶层解决方案 Debug / Release 均通过
+- Payload 仍只有既有链接警告：
+  - `LNK4075`
+  - `LNK4098`

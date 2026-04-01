@@ -26,6 +26,14 @@ pub struct KeyDecision {
     pub desired_down: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PathDecision {
+    pub runtime: RuntimeDecision,
+    pub should_spoof_focus: bool,
+    pub can_process_keys: bool,
+    pub should_use_mapping: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn evaluate_runtime_header(
     flags: u32,
@@ -124,6 +132,41 @@ pub fn evaluate_key_state_header(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_path_decision_header(
+    flags: u32,
+    active_pid: u32,
+    profile_id: u32,
+    profile_mode: u32,
+    last_tick: u64,
+    current_pid: u32,
+    now_tick: u64,
+    heartbeat_timeout_ms: u64,
+    mapping_mode_value: u32,
+) -> PathDecision {
+    let runtime = evaluate_runtime_header(
+        flags,
+        active_pid,
+        profile_id,
+        profile_mode,
+        last_tick,
+        current_pid,
+        now_tick,
+        heartbeat_timeout_ms,
+    );
+    let can_process_keys = runtime.is_alive && !runtime.is_paused && !runtime.is_bypass_process;
+    let should_spoof_focus =
+        can_process_keys && runtime.active_pid != 0 && !runtime.should_clear;
+    let should_use_mapping = can_process_keys && runtime.profile_mode == mapping_mode_value;
+
+    PathDecision {
+        runtime,
+        should_spoof_focus,
+        can_process_keys,
+        should_use_mapping,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,5 +260,27 @@ mod tests {
         assert!(!state.target_marked);
         assert!(state.should_block);
         assert!(!state.desired_down);
+    }
+
+    #[test]
+    fn path_state_spoofs_focus_for_background_slave() {
+        let state = evaluate_path_decision_header(0, 321, 9, 3, 1000, 111, 1100, 500, 3);
+        assert!(state.runtime.is_alive);
+        assert!(!state.runtime.is_bypass_process);
+        assert!(state.can_process_keys);
+        assert!(state.should_spoof_focus);
+        assert!(state.should_use_mapping);
+    }
+
+    #[test]
+    fn path_state_stops_processing_when_paused() {
+        let state = evaluate_path_decision_header(
+            SYNC_FLAG_PAUSED, 321, 9, 3, 1000, 111, 1100, 500, 3,
+        );
+        assert!(state.runtime.is_alive);
+        assert!(state.runtime.is_paused);
+        assert!(!state.can_process_keys);
+        assert!(!state.should_spoof_focus);
+        assert!(!state.should_use_mapping);
     }
 }
