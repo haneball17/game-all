@@ -17,6 +17,7 @@
 #include <cwctype>
 
 #include "MinHook.h"
+#include "game_payload_core_ffi.h"
 
 // ------------------------------
 // 全局状态与计数器
@@ -194,6 +195,7 @@ static LONG g_cfgKeyLogIntervalMs = -1;
 static LONG g_cfgKeyLogLevel = -1;
 static LONG g_cfgKeyUpTimeoutMs = -1;
 static LONG g_cfgSpoofDelayMs = -1;
+static const uint8_t kDirectionConvergenceExtraReleasePulses = 2;
 
 // 窗口缓存只由后台线程更新，Hook 回调仅做只读访问
 static volatile HWND g_selfWindowCache = nullptr;
@@ -224,12 +226,18 @@ static DWORD GetKeyLogIntervalMs();
 static LONG GetKeyLogLevel();
 static DWORD GetKeyUpTimeoutMs();
 static bool IsSnapshotAlive(const SharedSnapshot& snapshot);
+static bool IsSnapshotAliveLite(const SharedSnapshotLite& snapshot);
 static bool IsBypassProcess(const SharedSnapshot& snapshot);
+static bool IsBypassProcessLite(const SharedSnapshotLite& snapshot);
 static bool ShouldBlockKey(const SharedSnapshot& snapshot, int vKey, bool alive, bool paused);
 static void LogKeyFix(const wchar_t* reason, int vKey, bool isDown);
 static bool ShouldLogKeyEvent();
 static std::wstring BuildDebugConfigPath();
 static void LoadDebugConfig();
+static bool EvaluateRuntimeDecision(const SharedSnapshot& snapshot, PayloadRuntimeDecisionInterop& decision);
+static bool EvaluateRuntimeDecision(const SharedSnapshotLite& snapshot, PayloadRuntimeDecisionInterop& decision);
+static bool IsDirectionVKey(int vKey);
+static void SyncDirectionConvergenceState(void* convergenceState, BYTE lastDirectionState[256], const SharedSnapshot& snapshot);
 
 static SIZE_T GetViewRegionSize(void* view)
 {
@@ -1372,8 +1380,111 @@ static bool TryPickMappingRawKey(
     return false;
 }
 
+static bool EvaluateRuntimeDecision(
+    uint32_t flags,
+    uint32_t activePid,
+    uint32_t profileId,
+    uint32_t profileMode,
+    uint64_t lastTick,
+    PayloadRuntimeDecisionInterop& decision)
+{
+    memset(&decision, 0, sizeof(decision));
+    return payload_core_evaluate_runtime_header(
+               flags,
+               activePid,
+               profileId,
+               profileMode,
+               lastTick,
+               GetCurrentProcessId(),
+               GetTickCount64(),
+               GetSharedTimeoutMs(),
+               &decision) != 0 &&
+           decision.is_valid != 0;
+}
+
+static bool EvaluateRuntimeDecision(const SharedSnapshot& snapshot, PayloadRuntimeDecisionInterop& decision)
+{
+    return EvaluateRuntimeDecision(
+        snapshot.flags,
+        snapshot.activePid,
+        snapshot.profileId,
+        snapshot.profileMode,
+        snapshot.lastTick,
+        decision);
+}
+
+static bool EvaluateRuntimeDecision(const SharedSnapshotLite& snapshot, PayloadRuntimeDecisionInterop& decision)
+{
+    return EvaluateRuntimeDecision(
+        snapshot.flags,
+        snapshot.activePid,
+        snapshot.profileId,
+        snapshot.profileMode,
+        snapshot.lastTick,
+        decision);
+}
+
+static bool IsDirectionVKey(int vKey)
+{
+    switch (vKey)
+    {
+        case VK_LEFT:
+        case VK_UP:
+        case VK_RIGHT:
+        case VK_DOWN:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static void SyncDirectionConvergenceState(void* convergenceState, BYTE lastDirectionState[256], const SharedSnapshot& snapshot)
+{
+    if (!convergenceState || !lastDirectionState)
+    {
+        return;
+    }
+
+    PayloadRuntimeDecisionInterop decision = {};
+    if (!EvaluateRuntimeDecision(snapshot, decision))
+    {
+        return;
+    }
+
+    for (int vKey = 0; vKey < 256; vKey++)
+    {
+        if (!IsDirectionVKey(vKey))
+        {
+            continue;
+        }
+
+        const BYTE desiredDown =
+            (decision.is_alive != 0 &&
+             decision.is_paused == 0 &&
+             decision.should_clear == 0 &&
+             snapshot.targetMask[vKey] != 0 &&
+             (snapshot.keyboardState[vKey] & 0x80) != 0)
+                ? 1
+                : 0;
+
+        if (lastDirectionState[vKey] == desiredDown)
+        {
+            continue;
+        }
+
+        lastDirectionState[vKey] = desiredDown;
+        payload_core_convergence_on_key_event(convergenceState, static_cast<uint32_t>(vKey), desiredDown ? 1u : 0u);
+    }
+}
+
 static bool IsSnapshotAlive(const SharedSnapshot& snapshot)
 {
+    PayloadRuntimeDecisionInterop decision = {};
+    if (EvaluateRuntimeDecision(snapshot, decision))
+    {
+        return decision.is_alive != 0;
+    }
+
     if (snapshot.lastTick == 0)
     {
         return false;
@@ -1385,6 +1496,12 @@ static bool IsSnapshotAlive(const SharedSnapshot& snapshot)
 
 static bool IsSnapshotAliveLite(const SharedSnapshotLite& snapshot)
 {
+    PayloadRuntimeDecisionInterop decision = {};
+    if (EvaluateRuntimeDecision(snapshot, decision))
+    {
+        return decision.is_alive != 0;
+    }
+
     if (snapshot.lastTick == 0)
     {
         return false;
@@ -1396,6 +1513,12 @@ static bool IsSnapshotAliveLite(const SharedSnapshotLite& snapshot)
 
 static bool IsBypassProcess(const SharedSnapshot& snapshot)
 {
+    PayloadRuntimeDecisionInterop decision = {};
+    if (EvaluateRuntimeDecision(snapshot, decision))
+    {
+        return decision.is_bypass_process != 0;
+    }
+
     if (snapshot.activePid == 0)
     {
         return false;
@@ -1406,6 +1529,12 @@ static bool IsBypassProcess(const SharedSnapshot& snapshot)
 
 static bool IsBypassProcessLite(const SharedSnapshotLite& snapshot)
 {
+    PayloadRuntimeDecisionInterop decision = {};
+    if (EvaluateRuntimeDecision(snapshot, decision))
+    {
+        return decision.is_bypass_process != 0;
+    }
+
     if (snapshot.activePid == 0)
     {
         return false;
@@ -2193,9 +2322,15 @@ static bool ReadSharedSnapshotCached(SharedSnapshot& snapshot)
     thread_local SharedSnapshot cached = {};
     thread_local ULONGLONG cachedTick = 0;
     thread_local bool cachedValid = false;
+    thread_local void* convergenceState = payload_core_convergence_create(kDirectionConvergenceExtraReleasePulses);
+    thread_local BYTE lastDirectionState[256] = {};
 
     ULONGLONG now = GetTickCount64();
-    if (cachedValid && now - cachedTick <= cacheMs)
+    const ULONGLONG cacheAge = cachedValid ? (now - cachedTick) : 0;
+    const bool shouldForceRefresh = cachedValid &&
+        convergenceState &&
+        payload_core_convergence_should_refresh(convergenceState, cacheAge, cacheMs) != 0;
+    if (cachedValid && !shouldForceRefresh && cacheAge <= cacheMs)
     {
         snapshot = cached;
         return true;
@@ -2224,6 +2359,7 @@ static bool ReadSharedSnapshotCached(SharedSnapshot& snapshot)
         return false;
     }
 
+    SyncDirectionConvergenceState(convergenceState, lastDirectionState, cached);
     cachedTick = now;
     cachedValid = true;
     snapshot = cached;
@@ -2421,22 +2557,28 @@ static bool ShouldSpoofFocus()
         return false;
     }
 
-    if (!IsSnapshotAlive(snapshot))
+    PayloadRuntimeDecisionInterop decision = {};
+    if (!EvaluateRuntimeDecision(snapshot, decision))
     {
         return false;
     }
 
-    if ((snapshot.flags & kFlagPaused) != 0)
+    if (decision.is_alive == 0)
     {
         return false;
     }
 
-    if (snapshot.activePid == 0)
+    if (decision.is_paused != 0)
     {
         return false;
     }
 
-    if (IsBypassProcess(snapshot))
+    if (decision.active_pid == 0)
+    {
+        return false;
+    }
+
+    if (decision.is_bypass_process != 0)
     {
         return false;
     }

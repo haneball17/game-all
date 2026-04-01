@@ -93,3 +93,6 @@ references/
 # ============================
 !Payload/lib/minhook/build/**/lib/*.lib
 !Payload/lib/minhook/lib/*.lib
+# Rust
+rust/target/
+target/

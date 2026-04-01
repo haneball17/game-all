@@ -9,6 +9,7 @@
 #include <unordered_set>
 #include <memory>
 #include <limits>
+#include "game_injector_core_ffi.h"
 
 #ifdef _DEBUG
 #include <algorithm>
@@ -61,6 +62,89 @@ struct HelperStatusV5 {
 #pragma pack(pop)
 
 static_assert(sizeof(HelperStatusV5) == 152, "HelperStatusV5 size mismatch");
+
+static InjectorConfig BuildDefaultInjectorConfig() {
+    InjectorConfigView defaults = injector_core_default_view();
+    InjectorConfig config;
+    config.process_name = L"DNF.exe";
+    config.dll_path = L"game-payload.dll";
+    config.output_dir = L"";
+    config.scan_interval_ms = defaults.scan_interval_ms;
+    config.inject_delay_ms = defaults.inject_delay_ms;
+    config.window_wait_timeout_ms = defaults.window_wait_timeout_ms;
+    config.window_poll_interval_ms = defaults.window_poll_interval_ms;
+    config.post_window_delay_ms = defaults.post_window_delay_ms;
+    config.max_retries = static_cast<int>(defaults.max_retries);
+    config.retry_interval_ms = defaults.retry_interval_ms;
+    config.success_timeout_ms = defaults.success_timeout_ms;
+    config.success_interval_ms = defaults.success_interval_ms;
+    config.heartbeat_timeout_ms = defaults.heartbeat_timeout_ms;
+    config.heartbeat_interval_ms = defaults.heartbeat_interval_ms;
+    config.watch_mode = defaults.watch_mode != 0;
+    config.idle_exit_seconds = defaults.idle_exit_seconds;
+    config.max_concurrent_tasks = defaults.max_concurrent_tasks;
+    return config;
+}
+
+static std::string GetRustDefaultInjectorConfigUtf8() {
+    const char* text = reinterpret_cast<const char*>(injector_core_default_ini_text_utf8());
+    size_t length = injector_core_default_ini_text_utf8_len();
+    if (!text || length == 0) {
+        return {};
+    }
+    return std::string(text, text + length);
+}
+
+static bool ReadFileBytes(const std::wstring& path, std::vector<unsigned char>* output) {
+    if (!output) {
+        return false;
+    }
+    output->clear();
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    LARGE_INTEGER size = {};
+    if (!GetFileSizeEx(file, &size) || size.QuadPart < 0 || size.QuadPart > static_cast<LONGLONG>(64 * 1024)) {
+        CloseHandle(file);
+        return false;
+    }
+    output->resize(static_cast<size_t>(size.QuadPart));
+    DWORD read = 0;
+    BOOL ok = output->empty() ? TRUE : ReadFile(file, output->data(), static_cast<DWORD>(output->size()), &read, nullptr);
+    CloseHandle(file);
+    if (!ok) {
+        output->clear();
+        return false;
+    }
+    output->resize(read);
+    return true;
+}
+
+static std::wstring Utf8ToWide(const std::string& value) {
+    if (value.empty()) {
+        return L"";
+    }
+    int length = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), static_cast<int>(value.size()), nullptr, 0);
+    if (length <= 0) {
+        return L"";
+    }
+    std::wstring wide(static_cast<size_t>(length), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, value.c_str(), static_cast<int>(value.size()), &wide[0], length);
+    return wide;
+}
+
+static std::string ReadCStringFromBuffer(const char* buffer, size_t capacity) {
+    if (!buffer || capacity == 0) {
+        return {};
+    }
+    size_t length = 0;
+    while (length < capacity && buffer[length] != '\0') {
+        ++length;
+    }
+    return std::string(buffer, buffer + length);
+}
 
 static std::wstring GetExeDirectory() {
     wchar_t buffer[MAX_PATH] = {0};
@@ -212,39 +296,42 @@ static void EnsureDefaultInjectorConfig(const std::wstring& config_path) {
     if (FileExists(config_path)) {
         return;
     }
-    std::string content =
-        "[injector]\r\n"
-        "; 目标进程名（不区分大小写，自动补 .exe）\r\n"
-        "process_name=DNF.exe\r\n"
-        "; DLL 路径（默认相对注入器输出目录）\r\n"
-        "dll_path=game-payload.dll\r\n"
-        "; 成功文件目录（为空则使用 DLL\\\\logs 目录）\r\n"
-        "; output_dir=\r\n"
-        "; 扫描进程间隔（毫秒）\r\n"
-        "scan_interval_ms=1000\r\n"
-        "; 等待窗口出现的超时（毫秒）\r\n"
-        "window_wait_timeout_ms=30000\r\n"
-        "; 窗口检测轮询间隔（毫秒）\r\n"
-        "window_poll_interval_ms=500\r\n"
-        "; 窗口出现后强制等待时间（毫秒）\r\n"
-        "post_window_delay_ms=10000\r\n"
-        "; 发现窗口后额外延迟（毫秒，可选）\r\n"
-        "inject_delay_ms=0\r\n"
-        "; 重试次数与间隔\r\n"
-        "max_retries=3\r\n"
-        "retry_interval_ms=1000\r\n"
-        "; 成功文件检测\r\n"
-        "success_timeout_ms=6000\r\n"
-        "success_interval_ms=200\r\n"
-        "; 共享内存心跳兜底\r\n"
-        "heartbeat_timeout_ms=6000\r\n"
-        "heartbeat_interval_ms=200\r\n"
-        "; 常驻监听模式\r\n"
-        "watch_mode=true\r\n"
-        "; 无新目标进程出现后自动退出（秒，0 表示不退出）\r\n"
-        "idle_exit_seconds=600\r\n"
-        "; 并发注入任务上限（0 表示不限制）\r\n"
-        "max_concurrent_tasks=3\r\n";
+    std::string content = GetRustDefaultInjectorConfigUtf8();
+    if (content.empty()) {
+        content =
+            "[injector]\r\n"
+            "; 目标进程名（不区分大小写，自动补 .exe）\r\n"
+            "process_name=DNF.exe\r\n"
+            "; DLL 路径（默认相对注入器输出目录）\r\n"
+            "dll_path=game-payload.dll\r\n"
+            "; 成功文件目录（为空则使用 DLL\\\\logs 目录）\r\n"
+            "; output_dir=\r\n"
+            "; 扫描进程间隔（毫秒）\r\n"
+            "scan_interval_ms=1000\r\n"
+            "; 等待窗口出现的超时（毫秒）\r\n"
+            "window_wait_timeout_ms=30000\r\n"
+            "; 窗口检测轮询间隔（毫秒）\r\n"
+            "window_poll_interval_ms=500\r\n"
+            "; 窗口出现后强制等待时间（毫秒）\r\n"
+            "post_window_delay_ms=10000\r\n"
+            "; 发现窗口后额外延迟（毫秒，可选）\r\n"
+            "inject_delay_ms=0\r\n"
+            "; 重试次数与间隔\r\n"
+            "max_retries=3\r\n"
+            "retry_interval_ms=1000\r\n"
+            "; 成功文件检测\r\n"
+            "success_timeout_ms=6000\r\n"
+            "success_interval_ms=200\r\n"
+            "; 共享内存心跳兜底\r\n"
+            "heartbeat_timeout_ms=6000\r\n"
+            "heartbeat_interval_ms=200\r\n"
+            "; 常驻监听模式\r\n"
+            "watch_mode=true\r\n"
+            "; 无新目标进程出现后自动退出（秒，0 表示不退出）\r\n"
+            "idle_exit_seconds=600\r\n"
+            "; 并发注入任务上限（0 表示不限制）\r\n"
+            "max_concurrent_tasks=3\r\n";
+    }
     WriteTextFileUtf8(config_path, content);
 }
 
@@ -462,6 +549,28 @@ static void Log(const std::wstring& message) {
 #endif
 }
 
+static bool ValidateRustContracts(std::wstring* error_message) {
+    uint32_t rust_helper_status_size = injector_core_helper_status_size();
+    uint32_t rust_helper_status_version = injector_core_helper_status_version();
+    if (rust_helper_status_size != sizeof(HelperStatusV5)) {
+        if (error_message) {
+            *error_message = L"Rust HelperStatus 合约尺寸不一致：Rust="
+                + std::to_wstring(rust_helper_status_size)
+                + L", C++=" + std::to_wstring(sizeof(HelperStatusV5));
+        }
+        return false;
+    }
+    if (rust_helper_status_version != 5) {
+        if (error_message) {
+            *error_message = L"Rust HelperStatus 合约版本不一致：Rust="
+                + std::to_wstring(rust_helper_status_version)
+                + L", 预期=5";
+        }
+        return false;
+    }
+    return true;
+}
+
 static bool EnableDebugPrivilege() {
     HANDLE hToken = nullptr;
     TOKEN_PRIVILEGES tp = {};
@@ -618,6 +727,8 @@ static bool TryReadHelperStatus(const std::wstring& mapping_name, HelperStatusV5
 }
 
 static bool HasHelperHeartbeat(DWORD pid, DWORD timeout_ms) {
+    uint32_t expected_version = injector_core_helper_status_version();
+    uint32_t expected_size = injector_core_helper_status_size();
     const wchar_t* prefixes[] = {L"Local\\GameHelperStatus_", L"Global\\GameHelperStatus_"};
     for (int i = 0; i < 2; ++i) {
         wchar_t mapping_name[64] = {0};
@@ -626,7 +737,7 @@ static bool HasHelperHeartbeat(DWORD pid, DWORD timeout_ms) {
         if (!TryReadHelperStatus(mapping_name, &status)) {
             continue;
         }
-        if (status.Version != 5 || status.Size != sizeof(HelperStatusV5)) {
+        if (status.Version != expected_version || status.Size != expected_size) {
             continue;
         }
         ULONGLONG now = GetTickCount64();
@@ -764,12 +875,42 @@ static void DeleteSuccessFileForPid(DWORD pid, const InjectorConfig& config) {
 }
 
 static InjectorConfig LoadInjectorConfig(const std::wstring& config_path, const std::wstring& exe_dir) {
-    InjectorConfig config;
-    config.process_name = ReadIniStringValue(config_path, L"process_name", L"DNF.exe");
-    std::wstring dll_path = ReadIniStringValue(config_path, L"dll_path", L"..\\payload\\game-payload.dll");
+    InjectorConfig config = BuildDefaultInjectorConfig();
+    std::vector<unsigned char> file_bytes;
+    if (ReadFileBytes(config_path, &file_bytes) && !file_bytes.empty()) {
+        InjectorConfigInterop interop = {};
+        if (injector_core_parse_ini_text_utf8(file_bytes.data(), file_bytes.size(), &interop) != 0) {
+            config.process_name = Utf8ToWide(ReadCStringFromBuffer(interop.process_name, sizeof(interop.process_name)));
+            std::wstring dll_path = Utf8ToWide(ReadCStringFromBuffer(interop.dll_path, sizeof(interop.dll_path)));
+            std::wstring output_dir = Utf8ToWide(ReadCStringFromBuffer(interop.output_dir, sizeof(interop.output_dir)));
+            config.scan_interval_ms = interop.view.scan_interval_ms;
+            config.inject_delay_ms = interop.view.inject_delay_ms;
+            config.window_wait_timeout_ms = interop.view.window_wait_timeout_ms;
+            config.window_poll_interval_ms = interop.view.window_poll_interval_ms;
+            config.post_window_delay_ms = interop.view.post_window_delay_ms;
+            config.max_retries = static_cast<int>(interop.view.max_retries);
+            config.retry_interval_ms = interop.view.retry_interval_ms;
+            config.success_timeout_ms = interop.view.success_timeout_ms;
+            config.success_interval_ms = interop.view.success_interval_ms;
+            config.heartbeat_timeout_ms = interop.view.heartbeat_timeout_ms;
+            config.heartbeat_interval_ms = interop.view.heartbeat_interval_ms;
+            config.watch_mode = interop.view.watch_mode != 0;
+            config.idle_exit_seconds = interop.view.idle_exit_seconds;
+            config.max_concurrent_tasks = interop.view.max_concurrent_tasks;
+            config.dll_path = NormalizePath(dll_path, exe_dir);
+            if (!output_dir.empty()) {
+                config.output_dir = NormalizePath(output_dir, exe_dir);
+            }
+            return config;
+        }
+    }
+
+    // Rust 解析失败时，保留当前 C++ 回退路径，避免配置读取中断。
+    config.process_name = ReadIniStringValue(config_path, L"process_name", config.process_name.c_str());
+    std::wstring dll_path = ReadIniStringValue(config_path, L"dll_path", config.dll_path.c_str());
     config.dll_path = NormalizePath(dll_path, exe_dir);
 
-    std::wstring output_dir = ReadIniStringValue(config_path, L"output_dir", L"");
+    std::wstring output_dir = ReadIniStringValue(config_path, L"output_dir", config.output_dir.c_str());
     if (!output_dir.empty()) {
         config.output_dir = NormalizePath(output_dir, exe_dir);
     }
@@ -903,12 +1044,24 @@ int wmain() {
     int exit_code = 0;
     std::wstring exe_dir = GetExeDirectory();
     std::wstring config_path = GetInjectorConfigPath(exe_dir);
-    EnsureDefaultInjectorConfig(config_path);
-    InjectorConfig config = LoadInjectorConfig(config_path, exe_dir);
+    InjectorConfig config;
     std::unordered_map<DWORD, InjectTask> states;
+
+    std::wstring contract_error;
+    if (!ValidateRustContracts(&contract_error)) {
+        Log(L"Rust 合约校验失败: " + contract_error);
+        exit_code = 4;
+        goto Exit;
+    }
+
+    EnsureDefaultInjectorConfig(config_path);
+    config = LoadInjectorConfig(config_path, exe_dir);
 
     Log(L"Injector 启动");
     Log(L"配置文件: " + config_path);
+    Log(L"Rust HelperStatus 合约: Version="
+        + std::to_wstring(injector_core_helper_status_version())
+        + L", Size=" + std::to_wstring(injector_core_helper_status_size()));
     Log(L"进程名: " + config.process_name);
     Log(L"DLL 路径: " + config.dll_path);
     Log(L"窗口等待超时: " + std::to_wstring(config.window_wait_timeout_ms) + L"ms");
