@@ -239,6 +239,7 @@ static std::wstring BuildDebugConfigPath();
 static void LoadDebugConfig();
 static bool EvaluateRuntimeDecision(const SharedSnapshot& snapshot, PayloadRuntimeDecisionInterop& decision);
 static bool EvaluateRuntimeDecision(const SharedSnapshotLite& snapshot, PayloadRuntimeDecisionInterop& decision);
+static bool EvaluateKeyDecision(const SharedSnapshot& snapshot, int vKey, PayloadKeyDecisionInterop& decision);
 static bool IsDirectionVKey(int vKey);
 static void SyncDirectionConvergenceState(void* convergenceState, BYTE lastDirectionState[256], const SharedSnapshot& snapshot);
 static void EnsureDirectionConvergenceState();
@@ -1427,6 +1428,32 @@ static bool EvaluateRuntimeDecision(const SharedSnapshotLite& snapshot, PayloadR
         snapshot.profileMode,
         snapshot.lastTick,
         decision);
+}
+
+static bool EvaluateKeyDecision(const SharedSnapshot& snapshot, int vKey, PayloadKeyDecisionInterop& decision)
+{
+    if (vKey < 0 || vKey >= 256)
+    {
+        memset(&decision, 0, sizeof(decision));
+        return false;
+    }
+
+    memset(&decision, 0, sizeof(decision));
+    return payload_core_evaluate_key_state_header(
+               snapshot.flags,
+               snapshot.activePid,
+               snapshot.profileId,
+               snapshot.profileMode,
+               snapshot.lastTick,
+               GetCurrentProcessId(),
+               GetTickCount64(),
+               GetSharedTimeoutMs(),
+               snapshot.targetMask[vKey] != 0 ? 1u : 0u,
+               snapshot.blockMask[vKey] != 0 ? 1u : 0u,
+               (snapshot.keyboardState[vKey] & 0x80) != 0 ? 1u : 0u,
+               ShouldForceReleaseKey(vKey) ? 1u : 0u,
+               &decision) != 0 &&
+           decision.is_valid != 0;
 }
 
 static bool IsDirectionVKey(int vKey)
@@ -2704,12 +2731,15 @@ static SHORT WINAPI Hook_GetAsyncKeyState(int vKey)
         return original;
     }
 
-    const bool alive = IsSnapshotAlive(snapshot);
-    const bool paused_full = (snapshot.flags & kFlagPaused) != 0;
-
-    if (snapshot.targetMask[vKey] == 0)
+    PayloadKeyDecisionInterop keyDecision = {};
+    if (!EvaluateKeyDecision(snapshot, vKey, keyDecision))
     {
-        if (ShouldBlockKey(snapshot, vKey, alive, paused_full))
+        return original;
+    }
+
+    if (keyDecision.target_marked == 0)
+    {
+        if (keyDecision.should_block != 0)
         {
             RecordWin32KeyEventIfNeeded(vKey, 0, true, snapshot.profileMode);
             return 0;
@@ -2718,18 +2748,14 @@ static SHORT WINAPI Hook_GetAsyncKeyState(int vKey)
         return original;
     }
 
-    if (!alive || paused_full)
+    if (keyDecision.desired_down == 0)
     {
         RecordWin32KeyEventIfNeeded(vKey, 0, true, snapshot.profileMode);
         return 0;
     }
 
     SHORT result = 0;
-    const bool forceRelease = ShouldForceReleaseKey(vKey);
-    if (!forceRelease && (snapshot.keyboardState[vKey] & 0x80))
-    {
-        result |= static_cast<SHORT>(0x8000);
-    }
+    result |= static_cast<SHORT>(0x8000);
 
     uint32_t currentEdge = snapshot.edgeCounter[vKey];
     if (currentEdge != g_lastEdgeCounter[vKey])
@@ -2776,15 +2802,19 @@ static BOOL WINAPI Hook_GetKeyboardState(PBYTE lpKeyState)
         return ok;
     }
 
-    const bool alive = IsSnapshotAlive(snapshot);
-    const bool paused_full = (snapshot.flags & kFlagPaused) != 0;
     bool spoofed = false;
 
     for (int i = 0; i < 256; i++)
     {
-        if (snapshot.targetMask[i] != 0)
+        PayloadKeyDecisionInterop keyDecision = {};
+        if (!EvaluateKeyDecision(snapshot, i, keyDecision))
         {
-            if (!alive || paused_full || ShouldForceReleaseKey(i))
+            continue;
+        }
+
+        if (keyDecision.target_marked != 0)
+        {
+            if (keyDecision.desired_down == 0)
             {
                 lpKeyState[i] &= static_cast<BYTE>(~0x81);
                 spoofed = true;
@@ -2797,7 +2827,7 @@ static BOOL WINAPI Hook_GetKeyboardState(PBYTE lpKeyState)
             continue;
         }
 
-        if (ShouldBlockKey(snapshot, i, alive, paused_full))
+        if (keyDecision.should_block != 0)
         {
             // 拦截键在同步生效时强制抬起，避免后台继续读到真实输入。
             lpKeyState[i] &= static_cast<BYTE>(~0x81);
@@ -2876,15 +2906,21 @@ static UINT WINAPI Hook_GetRawInputBuffer(PRAWINPUT data, PUINT size, UINT heade
                     int vKey = static_cast<int>(raw->data.keyboard.VKey);
                     if (vKey >= 0 && vKey < 256)
                     {
-                        if (ShouldBlockKey(snapshot, vKey, alive, paused))
+                        PayloadKeyDecisionInterop keyDecision = {};
+                        if (!EvaluateKeyDecision(snapshot, vKey, keyDecision))
+                        {
+                            continue;
+                        }
+
+                        if (keyDecision.should_block != 0)
                         {
                             g_lastRawKeyboardState[vKey] = 0;
                             BuildRawKeyboardEvent(vKey, false, raw->data.keyboard);
                             spoofed = true;
                         }
-                        else if (snapshot.targetMask[vKey] != 0 && (!alive || paused || ShouldForceReleaseKey(vKey)))
+                        else if (keyDecision.target_marked != 0 && keyDecision.desired_down == 0)
                         {
-                            // 暂停或失联时强制抬起，避免后台继续响应真实输入。
+                            // 目标键被 Rust 决策压成抬起时，立即在 RawInputBuffer 路径发抬起。
                             g_lastRawKeyboardState[vKey] = 0;
                             BuildRawKeyboardEvent(vKey, false, raw->data.keyboard);
                             spoofed = true;
@@ -2991,36 +3027,36 @@ static UINT WINAPI Hook_GetRawInputData(HRAWINPUT hRawInput, UINT command, LPVOI
                         int vKey = static_cast<int>(raw->data.keyboard.VKey);
                         if (vKey >= 0 && vKey < 256)
                         {
-                            if (ShouldBlockKey(snapshot, vKey, alive, paused))
+                            PayloadKeyDecisionInterop keyDecision = {};
+                            if (EvaluateKeyDecision(snapshot, vKey, keyDecision))
                             {
-                                BuildRawKeyboardEvent(vKey, false, raw->data.keyboard);
-                                spoofed = true;
-                                g_lastRawKeyboardState[vKey] = 0;
-                            }
-                            else if (snapshot.targetMask[vKey] != 0)
-                            {
-                                const bool desiredDown =
-                                    alive &&
-                                    !paused &&
-                                    !ShouldForceReleaseKey(vKey) &&
-                                    (snapshot.keyboardState[vKey] & 0x80) != 0;
-                                const bool rawDown = (raw->data.keyboard.Flags & RI_KEY_BREAK) == 0;
-
-                                if (allowDataSpoof)
+                                if (keyDecision.should_block != 0)
                                 {
-                                    if (desiredDown != rawDown)
-                                    {
-                                        BuildRawKeyboardEvent(vKey, desiredDown, raw->data.keyboard);
-                                        spoofed = true;
-                                    }
-                                    g_lastRawKeyboardState[vKey] = desiredDown ? 0x80 : 0x00;
-                                }
-                                else if (!desiredDown && rawDown)
-                                {
-                                    // 当 RawInputBuffer 已在使用时，只在暂停/失联时兜底抬起。
                                     BuildRawKeyboardEvent(vKey, false, raw->data.keyboard);
                                     spoofed = true;
                                     g_lastRawKeyboardState[vKey] = 0;
+                                }
+                                else if (keyDecision.target_marked != 0)
+                                {
+                                    const bool desiredDown = keyDecision.desired_down != 0;
+                                    const bool rawDown = (raw->data.keyboard.Flags & RI_KEY_BREAK) == 0;
+
+                                    if (allowDataSpoof)
+                                    {
+                                        if (desiredDown != rawDown)
+                                        {
+                                            BuildRawKeyboardEvent(vKey, desiredDown, raw->data.keyboard);
+                                            spoofed = true;
+                                        }
+                                        g_lastRawKeyboardState[vKey] = desiredDown ? 0x80 : 0x00;
+                                    }
+                                    else if (!desiredDown && rawDown)
+                                    {
+                                        // 当 RawInputBuffer 已在使用时，只在暂停/失联时兜底抬起。
+                                        BuildRawKeyboardEvent(vKey, false, raw->data.keyboard);
+                                        spoofed = true;
+                                        g_lastRawKeyboardState[vKey] = 0;
+                                    }
                                 }
                             }
                         }
@@ -3258,9 +3294,6 @@ static HRESULT STDMETHODCALLTYPE Hook_GetDeviceState(IDirectInputDevice8W* devic
         return hr;
     }
 
-    const bool alive = IsSnapshotAlive(snapshot);
-    const bool paused_full = (snapshot.flags & kFlagPaused) != 0;
-
     // DNF 走 DirectInput 轮询时需要覆盖 GetDeviceState，否则后台状态无法被读取到。
     EnsureVkeyToDikMap();
     auto* state = static_cast<BYTE*>(data);
@@ -3274,9 +3307,15 @@ static HRESULT STDMETHODCALLTYPE Hook_GetDeviceState(IDirectInputDevice8W* devic
             continue;
         }
 
-        if (snapshot.targetMask[vKey] != 0)
+        PayloadKeyDecisionInterop keyDecision = {};
+        if (!EvaluateKeyDecision(snapshot, vKey, keyDecision))
         {
-            if (!alive || paused_full || ShouldForceReleaseKey(vKey))
+            continue;
+        }
+
+        if (keyDecision.target_marked != 0)
+        {
+            if (keyDecision.desired_down == 0)
             {
                 state[dik] = 0;
                 spoofed = true;
@@ -3288,7 +3327,7 @@ static HRESULT STDMETHODCALLTYPE Hook_GetDeviceState(IDirectInputDevice8W* devic
             spoofed = true;
             RecordDirectInputKeyEventIfNeeded(vKey, (state[dik] & 0x80) != 0, true, snapshot.profileMode);
         }
-        else if (ShouldBlockKey(snapshot, vKey, alive, paused_full))
+        else if (keyDecision.should_block != 0)
         {
             state[dik] = 0;
             spoofed = true;

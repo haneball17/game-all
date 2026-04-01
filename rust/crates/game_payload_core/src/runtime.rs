@@ -17,6 +17,15 @@ pub struct RuntimeDecision {
     pub last_tick: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyDecision {
+    pub runtime: RuntimeDecision,
+    pub target_marked: bool,
+    pub block_marked: bool,
+    pub should_block: bool,
+    pub desired_down: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn evaluate_runtime_header(
     flags: u32,
@@ -71,6 +80,48 @@ pub fn evaluate_runtime_state(
     decision.is_valid = is_valid;
     decision.is_alive = decision.is_alive && is_valid;
     decision
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_key_state_header(
+    flags: u32,
+    active_pid: u32,
+    profile_id: u32,
+    profile_mode: u32,
+    last_tick: u64,
+    current_pid: u32,
+    now_tick: u64,
+    heartbeat_timeout_ms: u64,
+    target_marked: bool,
+    block_marked: bool,
+    keyboard_down: bool,
+    force_release: bool,
+) -> KeyDecision {
+    let runtime = evaluate_runtime_header(
+        flags,
+        active_pid,
+        profile_id,
+        profile_mode,
+        last_tick,
+        current_pid,
+        now_tick,
+        heartbeat_timeout_ms,
+    );
+    let should_block = runtime.is_alive && !runtime.is_paused && block_marked;
+    let desired_down = runtime.is_alive
+        && !runtime.is_paused
+        && !runtime.should_clear
+        && target_marked
+        && keyboard_down
+        && !force_release;
+
+    KeyDecision {
+        runtime,
+        target_marked,
+        block_marked,
+        should_block,
+        desired_down,
+    }
 }
 
 #[cfg(test)]
@@ -146,5 +197,25 @@ mod tests {
         );
         assert!(state.is_valid);
         assert!(!state.is_alive);
+    }
+
+    #[test]
+    fn key_state_forces_release_even_when_snapshot_is_down() {
+        let state =
+            evaluate_key_state_header(0, 321, 9, 3, 1000, 111, 1100, 500, true, false, true, true);
+        assert!(state.runtime.is_alive);
+        assert!(state.target_marked);
+        assert!(!state.desired_down);
+        assert!(!state.should_block);
+    }
+
+    #[test]
+    fn key_state_blocks_non_target_blacklist_key() {
+        let state =
+            evaluate_key_state_header(0, 321, 9, 2, 1000, 111, 1100, 500, false, true, false, false);
+        assert!(state.runtime.is_alive);
+        assert!(!state.target_marked);
+        assert!(state.should_block);
+        assert!(!state.desired_down);
     }
 }

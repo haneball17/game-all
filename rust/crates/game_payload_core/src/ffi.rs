@@ -1,5 +1,5 @@
 use crate::{
-    runtime::{RuntimeDecision, evaluate_runtime_header, evaluate_runtime_state},
+    runtime::{KeyDecision, RuntimeDecision, evaluate_key_state_header, evaluate_runtime_header, evaluate_runtime_state},
     sync::{DirectionConvergenceState, DirectionReleasePolicy, SnapshotCachePolicy},
 };
 use game_core_protocols::{SHARED_KEYBOARD_KEY_COUNT, SharedKeyboardStateV2};
@@ -12,6 +12,25 @@ pub struct PayloadRuntimeDecisionInterop {
     pub is_paused: u32,
     pub should_clear: u32,
     pub is_bypass_process: u32,
+    pub active_pid: u32,
+    pub flags: u32,
+    pub profile_id: u32,
+    pub profile_mode: u32,
+    pub last_tick: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadKeyDecisionInterop {
+    pub is_valid: u32,
+    pub is_alive: u32,
+    pub is_paused: u32,
+    pub should_clear: u32,
+    pub is_bypass_process: u32,
+    pub target_marked: u32,
+    pub block_marked: u32,
+    pub should_block: u32,
+    pub desired_down: u32,
     pub active_pid: u32,
     pub flags: u32,
     pub profile_id: u32,
@@ -32,6 +51,27 @@ impl From<RuntimeDecision> for PayloadRuntimeDecisionInterop {
             profile_id: value.profile_id,
             profile_mode: value.profile_mode,
             last_tick: value.last_tick,
+        }
+    }
+}
+
+impl From<KeyDecision> for PayloadKeyDecisionInterop {
+    fn from(value: KeyDecision) -> Self {
+        Self {
+            is_valid: u32::from(value.runtime.is_valid),
+            is_alive: u32::from(value.runtime.is_alive),
+            is_paused: u32::from(value.runtime.is_paused),
+            should_clear: u32::from(value.runtime.should_clear),
+            is_bypass_process: u32::from(value.runtime.is_bypass_process),
+            target_marked: u32::from(value.target_marked),
+            block_marked: u32::from(value.block_marked),
+            should_block: u32::from(value.should_block),
+            desired_down: u32::from(value.desired_down),
+            active_pid: value.runtime.active_pid,
+            flags: value.runtime.flags,
+            profile_id: value.runtime.profile_id,
+            profile_mode: value.runtime.profile_mode,
+            last_tick: value.runtime.last_tick,
         }
     }
 }
@@ -99,6 +139,51 @@ pub unsafe extern "C" fn payload_core_evaluate_runtime_header(
         current_pid,
         now_tick,
         heartbeat_timeout_ms,
+    );
+    // SAFETY: 调用方保证 out_decision 指向可写内存。
+    unsafe {
+        out_decision.write(decision.into());
+    }
+    1
+}
+
+#[unsafe(no_mangle)]
+/// 基于共享快照头字段和单键状态计算执行端按键决策。
+///
+/// # Safety
+/// - `out_decision` 必须指向可写的 `PayloadKeyDecisionInterop`；
+/// - 调用期间该指针必须保持有效。
+pub unsafe extern "C" fn payload_core_evaluate_key_state_header(
+    flags: u32,
+    active_pid: u32,
+    profile_id: u32,
+    profile_mode: u32,
+    last_tick: u64,
+    current_pid: u32,
+    now_tick: u64,
+    heartbeat_timeout_ms: u64,
+    target_marked: u32,
+    block_marked: u32,
+    keyboard_down: u32,
+    force_release: u32,
+    out_decision: *mut PayloadKeyDecisionInterop,
+) -> u32 {
+    if out_decision.is_null() {
+        return 0;
+    }
+    let decision = evaluate_key_state_header(
+        flags,
+        active_pid,
+        profile_id,
+        profile_mode,
+        last_tick,
+        current_pid,
+        now_tick,
+        heartbeat_timeout_ms,
+        target_marked != 0,
+        block_marked != 0,
+        keyboard_down != 0,
+        force_release != 0,
     );
     // SAFETY: 调用方保证 out_decision 指向可写内存。
     unsafe {

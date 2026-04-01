@@ -182,3 +182,46 @@
   - `LNK4075`
   - `LNK4098`
   暂未引入新的构建错误
+
+---
+
+## 第五批落地：单键决策收口到 Rust（2026-04-01）
+
+### 本次新增
+- `game_payload_core` 新增单键决策模型：
+  - `KeyDecision`
+  - `evaluate_key_state_header(...)`
+- 新增 FFI：
+  - `payload_core_evaluate_key_state_header(...)`
+  - `PayloadKeyDecisionInterop`
+
+### 当前接入范围
+`SyncMod` 下列路径的“单键是否按下 / 是否拦截 / 是否应抬起”判断已优先走 Rust：
+
+1. `Hook_GetAsyncKeyState`
+2. `Hook_GetKeyboardState`
+3. `Hook_GetRawInputBuffer`
+4. `Hook_GetRawInputData`
+5. `Hook_GetDeviceState`
+
+### 当前价值
+- 原来散落在 `SyncMod.cpp` 中的：
+  - `alive`
+  - `paused`
+  - `targetMask`
+  - `blockMask`
+  - `force release`
+  联合判断，开始由 Rust 统一输出单键决策结果。
+- 这一步让 Win32 / RawInput / DirectInput 的按键解释更一致，属于“输入适配层 Rust 化”的继续推进。
+
+### 本轮验证
+已完成：
+
+1. `cargo test`
+2. `cargo clippy --all-targets --all-features -- -D warnings`
+3. `MSBuild.exe E:\\code\\game-all\\game-all.sln /p:Configuration=Debug /p:Platform=x86 /m`
+4. `MSBuild.exe E:\\code\\game-all\\game-all.sln /p:Configuration=Release /p:Platform=x86 /m`
+
+结果：
+- Rust 测试新增 2 个 `KeyDecision` 用例后全部通过
+- 顶层解决方案 Debug / Release 均通过
