@@ -6,6 +6,7 @@
         <ToolBarTray DockPanel.Dock="Top">
             <ToolBar>
                 <Button Content="打开注入器目录" Click="OnOpenInjectorFolder" />
+                <Button Content="导出诊断日志" Click="OnExportDiagnosticLog" />
             </ToolBar>
         </ToolBarTray>
 

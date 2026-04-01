@@ -15,6 +15,7 @@ namespace GameAll.MasterGUI;
 public partial class MainWindow : Window
 {
     private readonly SharedMemoryStatusReader _helperReader = new();
+    private readonly DiagnosticExportService _diagnosticExportService = new();
     private readonly MasterGuiSettings _settings;
     private readonly DispatcherTimer _statusTimer;
     private HelperView? _helperView;
@@ -118,6 +119,36 @@ public partial class MainWindow : Window
             FileName = target,
             UseShellExecute = true
         });
+    }
+
+    private void OnExportDiagnosticLog(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            UpdateStatus();
+            string exportPath = _diagnosticExportService.Export(
+                AppContext.BaseDirectory,
+                _lastModuleSummary,
+                _lastInjectionSummary);
+
+            DebugFileLogger.Log($"诊断日志已导出：{exportPath}");
+            MessageBox.Show(
+                this,
+                $"诊断日志已导出：\n{exportPath}",
+                "导出成功",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            DebugFileLogger.Log($"导出诊断日志失败：{ex}");
+            MessageBox.Show(
+                this,
+                $"导出诊断日志失败：\n{ex.Message}",
+                "导出失败",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
     }
 
     private void UpdateStatus()
