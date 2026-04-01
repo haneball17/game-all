@@ -265,3 +265,34 @@
 - Payload 仍只有既有链接警告：
   - `LNK4075`
   - `LNK4098`
+
+---
+
+## 第七批落地：原生工程输出目录按配置隔离（2026-04-01）
+
+### 本次新增
+- `Payload/Payload.vcxproj`
+  - `OutDir` 改为 `artifacts\\bin\\payload\\$(Configuration)\\`
+  - `IntDir` 改为 `artifacts\\obj\\payload\\$(Configuration)\\`
+- `Injector/Injector.vcxproj`
+  - `OutDir` 改为 `artifacts\\bin\\injector\\$(Configuration)\\`
+  - `IntDir` 改为 `artifacts\\obj\\injector\\$(Configuration)\\`
+
+### 解决的问题
+- 原生工程此前把 Debug / Release 共用同一批 `artifacts/obj` 与 `artifacts/bin`，会导致：
+  - Debug/Release 切换后 `.obj/.pdb` 串配置
+  - 并行构建时 `vc145.pdb` 竞争
+  - `main.obj` / `SyncMod.obj` 等中间产物被旧配置污染
+- 这会直接影响 Rust 重构过程中的 Windows 验证稳定性。
+
+### 本轮验证
+本轮修复后，已再次完成：
+
+1. `cargo test`
+2. `MSBuild.exe E:\\code\\game-all\\game-all.sln /p:Configuration=Debug /p:Platform=x86 /m`
+3. `MSBuild.exe E:\\code\\game-all\\game-all.sln /p:Configuration=Release /p:Platform=x86 /m`
+
+结果：
+- 顶层解决方案并行构建恢复稳定通过
+- `Payload` / `Injector` 的 Debug 与 Release 中间产物已按配置隔离
+- `artifacts/run` 仍保持原有统一运行产物布局

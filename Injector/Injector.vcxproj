@@ -41,8 +41,8 @@
     <RustBuildArgs Condition="'$(Configuration)'=='Debug'">build -p game_injector_core --target $(RustTargetTriple)</RustBuildArgs>
     <RustBuildArgs Condition="'$(Configuration)'=='Release'">build -p game_injector_core --target $(RustTargetTriple) --release</RustBuildArgs>
     <RustLibDir>$(RustWorkspaceDir)target\$(RustTargetTriple)\$(RustProfile)\</RustLibDir>
-    <OutDir>$(RepoRoot)artifacts\bin\injector\</OutDir>
-    <IntDir>$(RepoRoot)artifacts\obj\injector\</IntDir>
+    <OutDir>$(RepoRoot)artifacts\bin\injector\$(Configuration)\</OutDir>
+    <IntDir>$(RepoRoot)artifacts\obj\injector\$(Configuration)\</IntDir>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
