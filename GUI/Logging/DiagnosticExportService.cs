@@ -89,7 +89,7 @@ internal sealed class DiagnosticExportService
             string sessionPath = Path.Combine(logsDir, "session.current");
             if (File.Exists(sessionPath))
             {
-                string text = File.ReadAllText(sessionPath).Trim();
+                string text = ReadAllTextShared(sessionPath).Trim();
                 if (!string.IsNullOrWhiteSpace(text))
                 {
                     return text;
@@ -159,7 +159,7 @@ internal sealed class DiagnosticExportService
             try
             {
                 builder.AppendLine("```text");
-                builder.AppendLine(File.ReadAllText(path));
+                builder.AppendLine(ReadAllTextShared(path));
                 builder.AppendLine("```");
             }
             catch (Exception ex)
@@ -287,7 +287,7 @@ internal sealed class DiagnosticExportService
             string[] lines;
             try
             {
-                lines = File.ReadAllLines(file);
+                lines = ReadAllLinesShared(file);
             }
             catch
             {
@@ -323,7 +323,7 @@ internal sealed class DiagnosticExportService
 
     private static string ReadLogFileForReport(string path, long fileLength)
     {
-        string text = File.ReadAllText(path);
+        string text = ReadAllTextShared(path);
         if (fileLength <= MaxInlineFileBytes)
         {
             return text;
@@ -340,5 +340,24 @@ internal sealed class DiagnosticExportService
         string head = text[..Math.Min(headLength, totalLength)];
         string tail = text[Math.Min(tailStart, totalLength)..];
         return head + Environment.NewLine + "... truncated ..." + Environment.NewLine + tail;
+    }
+
+    private static string ReadAllTextShared(string path)
+    {
+        using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete);
+        using var reader = new StreamReader(stream, detectEncodingFromByteOrderMarks: true);
+        return reader.ReadToEnd();
+    }
+
+    private static string[] ReadAllLinesShared(string path)
+    {
+        string text = ReadAllTextShared(path);
+        return text.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Split('\n');
     }
 }
