@@ -41,6 +41,37 @@ typedef struct PayloadKeyDecisionInterop {
     uint64_t last_tick;
 } PayloadKeyDecisionInterop;
 
+typedef struct PayloadLogicalKeyDecisionInterop {
+    uint32_t is_valid;
+    uint32_t is_alive;
+    uint32_t is_paused;
+    uint32_t should_clear;
+    uint32_t is_bypass_process;
+    uint32_t target_marked;
+    uint32_t block_marked;
+    uint32_t should_block;
+    uint32_t desired_down;
+    uint32_t pressed_edge;
+    uint32_t released_edge;
+    uint32_t is_direction;
+    uint32_t pair_conflict;
+    uint32_t repeat_allowed;
+    uint32_t active_pid;
+    uint32_t flags;
+    uint32_t profile_id;
+    uint32_t profile_mode;
+    uint64_t last_tick;
+} PayloadLogicalKeyDecisionInterop;
+
+typedef struct PayloadChannelEmitDecisionInterop {
+    uint32_t emit_action;
+    uint32_t desired_down;
+    uint32_t projected_down_before;
+    uint32_t projected_down_after;
+    uint32_t should_block;
+    uint32_t suppress_repeat;
+} PayloadChannelEmitDecisionInterop;
+
 typedef struct PayloadPathDecisionInterop {
     uint32_t is_valid;
     uint32_t is_alive;
@@ -90,6 +121,55 @@ GAME_PAYLOAD_CORE_API uint32_t payload_core_evaluate_key_state_header(
     uint32_t keyboard_down,
     uint32_t force_release,
     PayloadKeyDecisionInterop* out_decision);
+
+GAME_PAYLOAD_CORE_API uint32_t payload_core_evaluate_logical_key_header(
+    uint32_t flags,
+    uint32_t active_pid,
+    uint32_t profile_id,
+    uint32_t profile_mode,
+    uint64_t last_tick,
+    uint32_t current_pid,
+    uint64_t now_tick,
+    uint64_t heartbeat_timeout_ms,
+    uint32_t vkey,
+    uint32_t target_marked,
+    uint32_t block_marked,
+    uint32_t keyboard_down,
+    uint32_t edge_counter,
+    uint32_t pair_vkey,
+    uint32_t pair_target_marked,
+    uint32_t pair_keyboard_down,
+    uint32_t pair_edge_counter,
+    uint32_t force_release,
+    uint32_t previous_desired_down,
+    uint32_t repeat_allowed,
+    PayloadLogicalKeyDecisionInterop* out_decision);
+
+GAME_PAYLOAD_CORE_API uint32_t payload_core_decide_channel_emit(
+    uint32_t flags,
+    uint32_t active_pid,
+    uint32_t profile_id,
+    uint32_t profile_mode,
+    uint64_t last_tick,
+    uint32_t current_pid,
+    uint64_t now_tick,
+    uint64_t heartbeat_timeout_ms,
+    uint32_t vkey,
+    uint32_t target_marked,
+    uint32_t block_marked,
+    uint32_t keyboard_down,
+    uint32_t edge_counter,
+    uint32_t pair_vkey,
+    uint32_t pair_target_marked,
+    uint32_t pair_keyboard_down,
+    uint32_t pair_edge_counter,
+    uint32_t force_release,
+    uint32_t previous_desired_down,
+    uint32_t repeat_allowed,
+    uint32_t projected_down_before,
+    uint32_t observed_down,
+    PayloadLogicalKeyDecisionInterop* out_logical,
+    PayloadChannelEmitDecisionInterop* out_emit);
 
 GAME_PAYLOAD_CORE_API uint32_t payload_core_evaluate_path_decision_header(
     uint32_t flags,

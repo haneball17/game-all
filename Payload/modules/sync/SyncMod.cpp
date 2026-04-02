@@ -66,6 +66,7 @@ static DWORD g_keyWarnTick[256] = {};
 static BYTE g_keyLastChannel[256] = {};
 static BYTE g_lastWin32State[256] = {};
 static BYTE g_lastDIState[256] = {};
+static BYTE g_lastLogicalDesiredState[256] = {};
 
 static LONG g_createDeviceHooked = 0;
 static LONG g_deviceHooksHooked = 0;
@@ -235,17 +236,51 @@ static bool IsBypassProcessLite(const SharedSnapshotLite& snapshot);
 static bool ShouldBlockKey(const SharedSnapshot& snapshot, int vKey, bool alive, bool paused);
 static void LogKeyFix(const wchar_t* reason, int vKey, bool isDown);
 static bool IsDirectionVKey(int vKey);
+static int GetDirectionPairVKey(int vKey);
 static bool ShouldLogKeyEvent();
 static std::wstring BuildDebugConfigPath();
 static void LoadDebugConfig();
 static bool EvaluateRuntimeDecision(const SharedSnapshot& snapshot, PayloadRuntimeDecisionInterop& decision);
 static void LogDirectionDecision(const wchar_t* action, int vKey, bool snapshotDown, bool rawDownBefore, bool win32DownBefore, const wchar_t* reason);
+static void LogLogicalEdge(int vKey, bool desiredDown, bool pressedEdge, bool releasedEdge);
+static void LogAdapterEmit(const wchar_t* adapter, int vKey, int emitAction, bool beforeDown, bool afterDown, const wchar_t* reason);
+static void LogDirectionGroupDecision(const wchar_t* pairName, int winnerVKey, int loserVKey, const wchar_t* reason);
+static void LogRepeatSuppressed(const wchar_t* adapter, int vKey);
+static void LogPauseInterception(const wchar_t* adapter, int vKey, bool hadProjectedDown, const wchar_t* reason);
 static bool EvaluateRuntimeDecision(const SharedSnapshotLite& snapshot, PayloadRuntimeDecisionInterop& decision);
 static bool EvaluateKeyDecision(const SharedSnapshot& snapshot, int vKey, PayloadKeyDecisionInterop& decision);
+static bool EvaluateLogicalKeyDecision(const SharedSnapshot& snapshot, int vKey, PayloadLogicalKeyDecisionInterop& decision);
+static bool EvaluateChannelEmitDecision(
+    const SharedSnapshot& snapshot,
+    int vKey,
+    bool projectedDownBefore,
+    bool observedDown,
+    PayloadLogicalKeyDecisionInterop& logicalDecision,
+    PayloadChannelEmitDecisionInterop& emitDecision);
 static bool EvaluatePathDecision(const SharedSnapshot& snapshot, PayloadPathDecisionInterop& decision);
 static void SyncDirectionConvergenceState(void* convergenceState, BYTE lastDirectionState[256], const SharedSnapshot& snapshot);
 static void EnsureDirectionConvergenceState();
 static bool ShouldForceReleaseKey(int vKey);
+static bool TryPickLogicalRawTransition(
+    const SharedSnapshot& snapshot,
+    int preferredVKey,
+    int* vKeyOut,
+    bool* isDownOut,
+    const wchar_t** reasonOut);
+static bool TryPickMappingRawTransition(
+    const SharedSnapshot& snapshot,
+    bool alive,
+    bool paused,
+    int* vKeyOut,
+    bool* isDownOut,
+    const wchar_t** reasonOut);
+static bool TryPickSilentRawTransition(
+    const SharedSnapshot& snapshot,
+    int preferredVKey,
+    int* vKeyOut,
+    bool* isDownOut,
+    const wchar_t** reasonOut);
+static bool ShouldPromoteRawKeyboardMessage(HRAWINPUT hRawInput);
 
 static SIZE_T GetViewRegionSize(void* view)
 {
@@ -1252,6 +1287,7 @@ static void ApplyClearIfNeeded(const SharedSnapshot& snapshot)
     for (int i = 0; i < 256; i++)
     {
         g_lastEdgeCounter[i] = snapshot.edgeCounter[i];
+        g_lastLogicalDesiredState[i] = 0;
     }
 }
 
@@ -1270,6 +1306,8 @@ static void ApplyRawClearIfNeeded(const SharedSnapshot& snapshot)
     g_lastRawClearSeq = snapshot.seq;
     // 清键时重置 RawInput 伪造态，避免后台出现卡键或残留按下。
     memset(g_lastRawKeyboardState, 0, sizeof(g_lastRawKeyboardState));
+    memset(g_lastWin32State, 0, sizeof(g_lastWin32State));
+    memset(g_lastDIState, 0, sizeof(g_lastDIState));
 }
 
 static void BuildRawKeyboardEvent(int vKey, bool isDown, RAWKEYBOARD& keyboard)
@@ -1313,12 +1351,96 @@ static void BuildRawKeyboardEvent(int vKey, bool isDown, RAWKEYBOARD& keyboard)
     keyboard.ExtraInformation = 0;
 }
 
-static bool TryPickMappingRawKey(
+static bool TryPickSilentRawTransition(
+    const SharedSnapshot& snapshot,
+    int preferredVKey,
+    int* vKeyOut,
+    bool* isDownOut,
+    const wchar_t** reasonOut)
+{
+    (void)snapshot;
+    if (!vKeyOut || !isDownOut)
+    {
+        return false;
+    }
+
+    auto chooseRelease = [&](int vKey, const wchar_t* reason) -> bool {
+        if (vKey < 0 || vKey >= 256)
+        {
+            return false;
+        }
+
+        const bool rawDownBefore = (g_lastRawKeyboardState[vKey] & 0x80) != 0;
+        if (!rawDownBefore)
+        {
+            return false;
+        }
+
+        g_lastRawKeyboardState[vKey] = 0;
+        g_lastLogicalDesiredState[vKey] = 0;
+        *vKeyOut = vKey;
+        *isDownOut = false;
+        if (reasonOut)
+        {
+            *reasonOut = reason;
+        }
+        LogPauseInterception(L"RawInput", vKey, true, reason);
+        return true;
+    };
+
+    if (preferredVKey >= 0 && preferredVKey < 256 && chooseRelease(preferredVKey, L"paused_release_preferred"))
+    {
+        return true;
+    }
+
+    if (IsDirectionVKey(preferredVKey))
+    {
+        const int pair = GetDirectionPairVKey(preferredVKey);
+        if (pair >= 0 && chooseRelease(pair, L"paused_release_pair"))
+        {
+            return true;
+        }
+    }
+
+    for (int vKey : {VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN})
+    {
+        if (chooseRelease(vKey, L"paused_release_direction"))
+        {
+            return true;
+        }
+    }
+
+    for (int vKey = 0; vKey < 256; vKey++)
+    {
+        if (chooseRelease(vKey, L"paused_release_stale"))
+        {
+            return true;
+        }
+    }
+
+    if (preferredVKey >= 0 && preferredVKey < 256)
+    {
+        g_lastLogicalDesiredState[preferredVKey] = 0;
+        *vKeyOut = preferredVKey;
+        *isDownOut = false;
+        if (reasonOut)
+        {
+            *reasonOut = L"paused_neutralize";
+        }
+        LogPauseInterception(L"RawInput", preferredVKey, false, L"paused_neutralize");
+        return true;
+    }
+
+    return false;
+}
+
+static bool TryPickMappingRawTransition(
     const SharedSnapshot& snapshot,
     bool alive,
     bool paused,
     int* vKeyOut,
-    bool* isDownOut)
+    bool* isDownOut,
+    const wchar_t** reasonOut)
 {
     if (!vKeyOut || !isDownOut)
     {
@@ -1328,7 +1450,7 @@ static bool TryPickMappingRawKey(
     const bool allowDown = alive && !paused;
     int start = g_rawScanCursor & 0xFF;
 
-    // 优先发送目标键状态变化，确保抬起/按下不会丢失。
+    // 只在逻辑边沿变化时输出真实 transition，不再发送 neutral raw 或重复 down。
     for (int i = 0; i < 256; i++)
     {
         int idx = (start + i) & 0xFF;
@@ -1345,13 +1467,17 @@ static bool TryPickMappingRawKey(
             g_rawScanCursor = (idx + 1) & 0xFF;
             *vKeyOut = idx;
             *isDownOut = desiredDown;
+            if (reasonOut)
+            {
+                *reasonOut = desiredDown ? L"mapping_edge_down" : L"mapping_edge_up";
+            }
             return true;
         }
     }
 
-    // 如果没有变化，复用一个仍处于按下状态的键，保持连续输入。
     if (allowDown)
     {
+        bool hasActiveTarget = false;
         for (int i = 0; i < 256; i++)
         {
             int idx = (start + i) & 0xFF;
@@ -1362,27 +1488,20 @@ static bool TryPickMappingRawKey(
 
             if ((snapshot.keyboardState[idx] & 0x80) != 0)
             {
-                g_rawScanCursor = (idx + 1) & 0xFF;
-                *vKeyOut = idx;
-                *isDownOut = true;
-                return true;
+                hasActiveTarget = true;
+                break;
             }
         }
-    }
-
-    // 没有可按下键时仍选择一个目标键输出抬起，避免真实输入穿透。
-    for (int i = 0; i < 256; i++)
-    {
-        int idx = (start + i) & 0xFF;
-        if (snapshot.targetMask[idx] == 0)
+        if (hasActiveTarget && IsKeyLogEnabled() && GetKeyLogLevel() >= 2)
         {
-            continue;
+            wchar_t buffer[256] = {0};
+            StringCchPrintfW(
+                buffer,
+                ARRAYSIZE(buffer),
+                L"[EMIT] %s adapter=RawInputMapping emit=none reason=raw_neutral_suppressed",
+                GetTimestamp().c_str());
+            WriteLogLine(buffer);
         }
-
-        g_rawScanCursor = (idx + 1) & 0xFF;
-        *vKeyOut = idx;
-        *isDownOut = false;
-        return true;
     }
 
     return false;
@@ -1458,6 +1577,137 @@ static bool EvaluateKeyDecision(const SharedSnapshot& snapshot, int vKey, Payloa
            decision.is_valid != 0;
 }
 
+static bool EvaluateLogicalKeyDecision(const SharedSnapshot& snapshot, int vKey, PayloadLogicalKeyDecisionInterop& decision)
+{
+    if (vKey < 0 || vKey >= 256)
+    {
+        memset(&decision, 0, sizeof(decision));
+        return false;
+    }
+
+    const int pairVKey = GetDirectionPairVKey(vKey);
+    memset(&decision, 0, sizeof(decision));
+    const bool ok = payload_core_evaluate_logical_key_header(
+                        snapshot.flags,
+                        snapshot.activePid,
+                        snapshot.profileId,
+                        snapshot.profileMode,
+                        snapshot.lastTick,
+                        GetCurrentProcessId(),
+                        GetTickCount64(),
+                        GetSharedTimeoutMs(),
+                        static_cast<uint32_t>(vKey),
+                        snapshot.targetMask[vKey] != 0 ? 1u : 0u,
+                        snapshot.blockMask[vKey] != 0 ? 1u : 0u,
+                        (snapshot.keyboardState[vKey] & 0x80) != 0 ? 1u : 0u,
+                        snapshot.edgeCounter[vKey],
+                        pairVKey >= 0 ? static_cast<uint32_t>(pairVKey) : 0u,
+                        pairVKey >= 0 && snapshot.targetMask[pairVKey] != 0 ? 1u : 0u,
+                        pairVKey >= 0 && (snapshot.keyboardState[pairVKey] & 0x80) != 0 ? 1u : 0u,
+                        pairVKey >= 0 ? snapshot.edgeCounter[pairVKey] : 0u,
+                        ShouldForceReleaseKey(vKey) ? 1u : 0u,
+                        g_lastLogicalDesiredState[vKey] != 0 ? 1u : 0u,
+                        0u,
+                        &decision) != 0 &&
+                    decision.is_valid != 0;
+    if (!ok)
+    {
+        return false;
+    }
+
+    if (decision.pressed_edge != 0 || decision.released_edge != 0)
+    {
+        LogLogicalEdge(vKey, decision.desired_down != 0, decision.pressed_edge != 0, decision.released_edge != 0);
+    }
+
+    if (decision.pair_conflict != 0 && IsDirectionVKey(vKey))
+    {
+        const int pair = GetDirectionPairVKey(vKey);
+        if (pair >= 0)
+        {
+            const bool selfDown = decision.desired_down != 0;
+            const bool pairDown =
+                snapshot.targetMask[pair] != 0 &&
+                (snapshot.keyboardState[pair] & 0x80) != 0 &&
+                !ShouldForceReleaseKey(pair);
+            if (selfDown != pairDown)
+            {
+                LogDirectionGroupDecision(
+                    (vKey == VK_LEFT || vKey == VK_RIGHT) ? L"LR" : L"UD",
+                    selfDown ? vKey : pair,
+                    selfDown ? pair : vKey,
+                    L"edge_counter");
+            }
+            else
+            {
+                LogDirectionGroupDecision(
+                    (vKey == VK_LEFT || vKey == VK_RIGHT) ? L"LR" : L"UD",
+                    0,
+                    0,
+                    L"edge_tie_release");
+            }
+        }
+    }
+
+    g_lastLogicalDesiredState[vKey] = decision.desired_down != 0 ? 1 : 0;
+    return true;
+}
+
+static bool EvaluateChannelEmitDecision(
+    const SharedSnapshot& snapshot,
+    int vKey,
+    bool projectedDownBefore,
+    bool observedDown,
+    PayloadLogicalKeyDecisionInterop& logicalDecision,
+    PayloadChannelEmitDecisionInterop& emitDecision)
+{
+    memset(&logicalDecision, 0, sizeof(logicalDecision));
+    memset(&emitDecision, 0, sizeof(emitDecision));
+    if (vKey < 0 || vKey >= 256)
+    {
+        return false;
+    }
+
+    const int pairVKey = GetDirectionPairVKey(vKey);
+    const bool ok = payload_core_decide_channel_emit(
+                        snapshot.flags,
+                        snapshot.activePid,
+                        snapshot.profileId,
+                        snapshot.profileMode,
+                        snapshot.lastTick,
+                        GetCurrentProcessId(),
+                        GetTickCount64(),
+                        GetSharedTimeoutMs(),
+                        static_cast<uint32_t>(vKey),
+                        snapshot.targetMask[vKey] != 0 ? 1u : 0u,
+                        snapshot.blockMask[vKey] != 0 ? 1u : 0u,
+                        (snapshot.keyboardState[vKey] & 0x80) != 0 ? 1u : 0u,
+                        snapshot.edgeCounter[vKey],
+                        pairVKey >= 0 ? static_cast<uint32_t>(pairVKey) : 0u,
+                        pairVKey >= 0 && snapshot.targetMask[pairVKey] != 0 ? 1u : 0u,
+                        pairVKey >= 0 && (snapshot.keyboardState[pairVKey] & 0x80) != 0 ? 1u : 0u,
+                        pairVKey >= 0 ? snapshot.edgeCounter[pairVKey] : 0u,
+                        ShouldForceReleaseKey(vKey) ? 1u : 0u,
+                        g_lastLogicalDesiredState[vKey] != 0 ? 1u : 0u,
+                        0u,
+                        projectedDownBefore ? 1u : 0u,
+                        observedDown ? 1u : 0u,
+                        &logicalDecision,
+                        &emitDecision) != 0 &&
+                    logicalDecision.is_valid != 0;
+    if (!ok)
+    {
+        return false;
+    }
+
+    if (logicalDecision.pressed_edge != 0 || logicalDecision.released_edge != 0)
+    {
+        LogLogicalEdge(vKey, logicalDecision.desired_down != 0, logicalDecision.pressed_edge != 0, logicalDecision.released_edge != 0);
+    }
+    g_lastLogicalDesiredState[vKey] = logicalDecision.desired_down != 0 ? 1 : 0;
+    return true;
+}
+
 static bool EvaluatePathDecision(const SharedSnapshot& snapshot, PayloadPathDecisionInterop& decision)
 {
     memset(&decision, 0, sizeof(decision));
@@ -1489,6 +1739,23 @@ static bool IsDirectionVKey(int vKey)
     }
 }
 
+static int GetDirectionPairVKey(int vKey)
+{
+    switch (vKey)
+    {
+        case VK_LEFT:
+            return VK_RIGHT;
+        case VK_RIGHT:
+            return VK_LEFT;
+        case VK_UP:
+            return VK_DOWN;
+        case VK_DOWN:
+            return VK_UP;
+        default:
+            return -1;
+    }
+}
+
 static void SyncDirectionConvergenceState(void* convergenceState, BYTE lastDirectionState[256], const SharedSnapshot& snapshot)
 {
     if (!convergenceState || !lastDirectionState)
@@ -1496,8 +1763,8 @@ static void SyncDirectionConvergenceState(void* convergenceState, BYTE lastDirec
         return;
     }
 
-    PayloadRuntimeDecisionInterop decision = {};
-    if (!EvaluateRuntimeDecision(snapshot, decision))
+    PayloadRuntimeDecisionInterop unusedDecision = {};
+    if (!EvaluateRuntimeDecision(snapshot, unusedDecision))
     {
         return;
     }
@@ -1509,14 +1776,13 @@ static void SyncDirectionConvergenceState(void* convergenceState, BYTE lastDirec
             continue;
         }
 
-        const BYTE desiredDown =
-            (decision.is_alive != 0 &&
-             decision.is_paused == 0 &&
-             decision.should_clear == 0 &&
-             snapshot.targetMask[vKey] != 0 &&
-             (snapshot.keyboardState[vKey] & 0x80) != 0)
-                ? 1
-                : 0;
+        PayloadLogicalKeyDecisionInterop logicalDecision = {};
+        if (!EvaluateLogicalKeyDecision(snapshot, vKey, logicalDecision))
+        {
+            continue;
+        }
+
+        const BYTE desiredDown = logicalDecision.desired_down != 0 ? 1 : 0;
 
         if (lastDirectionState[vKey] == desiredDown)
         {
@@ -1724,6 +1990,128 @@ static bool TryPickDirectionTransition(
     }
 
     return false;
+}
+
+static bool HasMappingRawTransition(const SharedSnapshot& snapshot, bool alive, bool paused)
+{
+    const bool allowDown = alive && !paused;
+    for (int idx = 0; idx < 256; idx++)
+    {
+        if (snapshot.targetMask[idx] == 0)
+        {
+            continue;
+        }
+
+        const bool desiredDown = allowDown && (snapshot.keyboardState[idx] & 0x80) != 0;
+        const bool projectedDown = (g_lastRawKeyboardState[idx] & 0x80) != 0;
+        if (desiredDown != projectedDown)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool TryPickLogicalRawTransition(
+    const SharedSnapshot& snapshot,
+    int preferredVKey,
+    int* vKeyOut,
+    bool* isDownOut,
+    const wchar_t** reasonOut)
+{
+    if (!vKeyOut || !isDownOut || preferredVKey < 0 || preferredVKey >= 256)
+    {
+        return false;
+    }
+
+    const bool preferredObservedDown = (snapshot.keyboardState[preferredVKey] & 0x80) != 0;
+    auto tryEmit = [&](int vKey, bool observedDown, const wchar_t* adapter, const wchar_t* reason, int requiredAction) -> bool {
+        if (vKey < 0 || vKey >= 256)
+        {
+            return false;
+        }
+
+        PayloadLogicalKeyDecisionInterop logicalDecision = {};
+        PayloadChannelEmitDecisionInterop emitDecision = {};
+        if (!EvaluateChannelEmitDecision(
+                snapshot,
+                vKey,
+                (g_lastRawKeyboardState[vKey] & 0x80) != 0,
+                observedDown,
+                logicalDecision,
+                emitDecision))
+        {
+            return false;
+        }
+
+        if (emitDecision.suppress_repeat != 0)
+        {
+            LogRepeatSuppressed(adapter, vKey);
+        }
+
+        if (requiredAction >= 0 && static_cast<int>(emitDecision.emit_action) != requiredAction)
+        {
+            return false;
+        }
+
+        if (emitDecision.emit_action == 0)
+        {
+            return false;
+        }
+
+        const bool beforeDown = (g_lastRawKeyboardState[vKey] & 0x80) != 0;
+        const bool afterDown = emitDecision.projected_down_after != 0;
+        g_lastRawKeyboardState[vKey] = afterDown ? 0x80 : 0x00;
+        *vKeyOut = vKey;
+        *isDownOut = emitDecision.emit_action == 1;
+        if (reasonOut)
+        {
+            *reasonOut = reason;
+        }
+        LogAdapterEmit(adapter, vKey, static_cast<int>(emitDecision.emit_action), beforeDown, afterDown, reason);
+        return true;
+    };
+
+    if (IsDirectionVKey(preferredVKey))
+    {
+        const int pairVKey = GetDirectionPairVKey(preferredVKey);
+        const int order[] = {pairVKey, preferredVKey, VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN};
+
+        for (int vKey : order)
+        {
+            if (!IsDirectionVKey(vKey))
+            {
+                continue;
+            }
+            const bool observedDown = (vKey == preferredVKey) ? preferredObservedDown : false;
+            if (tryEmit(vKey, observedDown, L"RawInput", vKey == pairVKey ? L"direction_release_first" : L"logical_release", 2))
+            {
+                return true;
+            }
+        }
+
+        if (tryEmit(preferredVKey, preferredObservedDown, L"RawInput", L"logical_press", 1))
+        {
+            return true;
+        }
+
+        for (int vKey : {VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN})
+        {
+            if (vKey == preferredVKey)
+            {
+                continue;
+            }
+            if (tryEmit(vKey, false, L"RawInput", L"group_winner_press", 1))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    return tryEmit(preferredVKey, preferredObservedDown, L"RawInput", L"logical_emit", -1);
 }
 
 static bool IsSnapshotAlive(const SharedSnapshot& snapshot)
@@ -2412,6 +2800,116 @@ static void LogDirectionDecision(const wchar_t* action, int vKey, bool snapshotD
     WriteLogLine(buffer);
 }
 
+static void LogLogicalEdge(int vKey, bool desiredDown, bool pressedEdge, bool releasedEdge)
+{
+    if (!IsKeyLogEnabled() || GetKeyLogLevel() < 2)
+    {
+        return;
+    }
+
+    wchar_t buffer[320] = {0};
+    StringCchPrintfW(
+        buffer,
+        ARRAYSIZE(buffer),
+        L"[EDGE] %s vkey=0x%02X desired=%d pressed=%d released=%d",
+        GetTimestamp().c_str(),
+        vKey,
+        desiredDown ? 1 : 0,
+        pressedEdge ? 1 : 0,
+        releasedEdge ? 1 : 0);
+    WriteLogLine(buffer);
+}
+
+static void LogAdapterEmit(const wchar_t* adapter, int vKey, int emitAction, bool beforeDown, bool afterDown, const wchar_t* reason)
+{
+    if (!IsKeyLogEnabled() || GetKeyLogLevel() < 2)
+    {
+        return;
+    }
+
+    const wchar_t* emitText = L"none";
+    if (emitAction == 1)
+    {
+        emitText = L"down";
+    }
+    else if (emitAction == 2)
+    {
+        emitText = L"up";
+    }
+
+    wchar_t buffer[352] = {0};
+    StringCchPrintfW(
+        buffer,
+        ARRAYSIZE(buffer),
+        L"[EMIT] %s adapter=%s vkey=0x%02X emit=%s before=%d after=%d reason=%s",
+        GetTimestamp().c_str(),
+        adapter ? adapter : L"unknown",
+        vKey,
+        emitText,
+        beforeDown ? 1 : 0,
+        afterDown ? 1 : 0,
+        reason ? reason : L"none");
+    WriteLogLine(buffer);
+}
+
+static void LogDirectionGroupDecision(const wchar_t* pairName, int winnerVKey, int loserVKey, const wchar_t* reason)
+{
+    if (!IsKeyLogEnabled() || GetKeyLogLevel() < 2)
+    {
+        return;
+    }
+
+    wchar_t buffer[320] = {0};
+    StringCchPrintfW(
+        buffer,
+        ARRAYSIZE(buffer),
+        L"[GROUP] %s pair=%s winner=0x%02X loser=0x%02X reason=%s",
+        GetTimestamp().c_str(),
+        pairName ? pairName : L"unknown",
+        winnerVKey,
+        loserVKey,
+        reason ? reason : L"none");
+    WriteLogLine(buffer);
+}
+
+static void LogRepeatSuppressed(const wchar_t* adapter, int vKey)
+{
+    if (!IsKeyLogEnabled() || GetKeyLogLevel() < 2)
+    {
+        return;
+    }
+
+    wchar_t buffer[256] = {0};
+    StringCchPrintfW(
+        buffer,
+        ARRAYSIZE(buffer),
+        L"[REPEAT] %s adapter=%s vkey=0x%02X suppressed=1",
+        GetTimestamp().c_str(),
+        adapter ? adapter : L"unknown",
+        vKey);
+    WriteLogLine(buffer);
+}
+
+static void LogPauseInterception(const wchar_t* adapter, int vKey, bool hadProjectedDown, const wchar_t* reason)
+{
+    if (!IsKeyLogEnabled() || GetKeyLogLevel() < 2)
+    {
+        return;
+    }
+
+    wchar_t buffer[352] = {0};
+    StringCchPrintfW(
+        buffer,
+        ARRAYSIZE(buffer),
+        L"[PAUSE] %s adapter=%s vkey=0x%02X projected=%d reason=%s",
+        GetTimestamp().c_str(),
+        adapter ? adapter : L"unknown",
+        vKey,
+        hadProjectedDown ? 1 : 0,
+        reason ? reason : L"none");
+    WriteLogLine(buffer);
+}
+
 static void RecordWin32KeyEventIfNeeded(int vKey, SHORT result, bool spoofed, uint32_t profileMode)
 {
     if (!IsKeyLogEnabled())
@@ -2866,6 +3364,124 @@ static bool IsKeyboardRawInputHandle(HRAWINPUT hRawInput)
     return header.dwType == RIM_TYPEKEYBOARD;
 }
 
+static bool ShouldPromoteRawKeyboardMessage(HRAWINPUT hRawInput)
+{
+    if (!g_origGetRawInputData || !hRawInput)
+    {
+        return false;
+    }
+
+    RAWINPUT raw = {};
+    UINT size = sizeof(raw);
+    UINT result = g_origGetRawInputData(hRawInput, RID_INPUT, &raw, &size, sizeof(RAWINPUTHEADER));
+    if (result == static_cast<UINT>(-1) || size < sizeof(RAWINPUTHEADER) + sizeof(RAWKEYBOARD))
+    {
+        return false;
+    }
+    if (raw.header.dwType != RIM_TYPEKEYBOARD)
+    {
+        return false;
+    }
+
+    SharedSnapshot snapshot = {};
+    if (!ReadSharedSnapshotCached(snapshot))
+    {
+        return false;
+    }
+
+    ApplyClearIfNeeded(snapshot);
+    ApplyRawClearIfNeeded(snapshot);
+    if (IsBypassProcess(snapshot))
+    {
+        return false;
+    }
+
+    PayloadPathDecisionInterop pathDecision = {};
+    if (!EvaluatePathDecision(snapshot, pathDecision))
+    {
+        return false;
+    }
+
+    if (pathDecision.is_bypass_process != 0)
+    {
+        return false;
+    }
+
+    if (pathDecision.can_process_keys == 0)
+    {
+        return pathDecision.is_paused != 0 || pathDecision.should_clear != 0 || pathDecision.is_alive == 0;
+    }
+
+    if (pathDecision.should_use_mapping != 0)
+    {
+        return HasMappingRawTransition(snapshot, pathDecision.is_alive != 0, pathDecision.is_paused != 0);
+    }
+
+    int vKey = static_cast<int>(raw.data.keyboard.VKey);
+    if (vKey < 0 || vKey >= 256)
+    {
+        return false;
+    }
+
+    PayloadLogicalKeyDecisionInterop logicalDecision = {};
+    PayloadChannelEmitDecisionInterop emitDecision = {};
+    if (!EvaluateChannelEmitDecision(
+            snapshot,
+            vKey,
+            (g_lastRawKeyboardState[vKey] & 0x80) != 0,
+            (raw.data.keyboard.Flags & RI_KEY_BREAK) == 0,
+            logicalDecision,
+            emitDecision))
+    {
+        return false;
+    }
+
+    if (emitDecision.suppress_repeat != 0)
+    {
+        LogRepeatSuppressed(L"RawMessage", vKey);
+    }
+
+    if (emitDecision.emit_action != 0)
+    {
+        return true;
+    }
+
+    if (IsDirectionVKey(vKey))
+    {
+        for (int candidate : {GetDirectionPairVKey(vKey), vKey, VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN})
+        {
+            if (!IsDirectionVKey(candidate))
+            {
+                continue;
+            }
+
+            PayloadLogicalKeyDecisionInterop directionLogical = {};
+            PayloadChannelEmitDecisionInterop directionEmit = {};
+            if (!EvaluateChannelEmitDecision(
+                    snapshot,
+                    candidate,
+                    (g_lastRawKeyboardState[candidate] & 0x80) != 0,
+                    candidate == vKey ? ((raw.data.keyboard.Flags & RI_KEY_BREAK) == 0) : false,
+                    directionLogical,
+                    directionEmit))
+            {
+                continue;
+            }
+
+            if (directionEmit.suppress_repeat != 0)
+            {
+                LogRepeatSuppressed(L"RawMessage", candidate);
+            }
+            if (directionEmit.emit_action != 0)
+            {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 static void FixWmInputMessage(MSG* msg)
 {
     if (!msg)
@@ -2883,7 +3499,8 @@ static void FixWmInputMessage(MSG* msg)
         return;
     }
 
-    // 后台时将 RIM_INPUTSINK 改为 RIM_INPUT，避免客户端忽略后台 RawInput。
+    // 只有存在真实逻辑 transition 时才将后台 RawInput 提升为前台语义，
+    // 避免把系统自动重复的 down 流直接重放到从端。
     if (!ShouldSpoofFocus())
     {
         return;
@@ -2891,6 +3508,11 @@ static void FixWmInputMessage(MSG* msg)
 
     HRAWINPUT hRawInput = reinterpret_cast<HRAWINPUT>(msg->lParam);
     if (!IsKeyboardRawInputHandle(hRawInput))
+    {
+        return;
+    }
+
+    if (!ShouldPromoteRawKeyboardMessage(hRawInput))
     {
         return;
     }
@@ -2936,15 +3558,24 @@ static SHORT WINAPI Hook_GetAsyncKeyState(int vKey)
         return original;
     }
 
-    PayloadKeyDecisionInterop keyDecision = {};
-    if (!EvaluateKeyDecision(snapshot, vKey, keyDecision))
+    PayloadPathDecisionInterop pathDecision = {};
+    if (EvaluatePathDecision(snapshot, pathDecision) &&
+        pathDecision.is_bypass_process == 0 &&
+        pathDecision.can_process_keys == 0)
+    {
+        RecordWin32KeyEventIfNeeded(vKey, 0, true, snapshot.profileMode);
+        return 0;
+    }
+
+    PayloadLogicalKeyDecisionInterop logicalDecision = {};
+    if (!EvaluateLogicalKeyDecision(snapshot, vKey, logicalDecision))
     {
         return original;
     }
 
-    if (keyDecision.target_marked == 0)
+    if (logicalDecision.target_marked == 0)
     {
-        if (keyDecision.should_block != 0)
+        if (logicalDecision.should_block != 0)
         {
             RecordWin32KeyEventIfNeeded(vKey, 0, true, snapshot.profileMode);
             return 0;
@@ -2953,7 +3584,7 @@ static SHORT WINAPI Hook_GetAsyncKeyState(int vKey)
         return original;
     }
 
-    if (keyDecision.desired_down == 0)
+    if (logicalDecision.desired_down == 0)
     {
         RecordWin32KeyEventIfNeeded(vKey, 0, true, snapshot.profileMode);
         return 0;
@@ -3007,19 +3638,29 @@ static BOOL WINAPI Hook_GetKeyboardState(PBYTE lpKeyState)
         return ok;
     }
 
+    PayloadPathDecisionInterop pathDecision = {};
+    if (EvaluatePathDecision(snapshot, pathDecision) &&
+        pathDecision.is_bypass_process == 0 &&
+        pathDecision.can_process_keys == 0)
+    {
+        memset(lpKeyState, 0, 256);
+        CountStat(&g_countSpoofKeyboard);
+        return ok;
+    }
+
     bool spoofed = false;
 
     for (int i = 0; i < 256; i++)
     {
-        PayloadKeyDecisionInterop keyDecision = {};
-        if (!EvaluateKeyDecision(snapshot, i, keyDecision))
+        PayloadLogicalKeyDecisionInterop logicalDecision = {};
+        if (!EvaluateLogicalKeyDecision(snapshot, i, logicalDecision))
         {
             continue;
         }
 
-        if (keyDecision.target_marked != 0)
+        if (logicalDecision.target_marked != 0)
         {
-            if (keyDecision.desired_down == 0)
+            if (logicalDecision.desired_down == 0)
             {
                 lpKeyState[i] &= static_cast<BYTE>(~0x81);
                 spoofed = true;
@@ -3032,7 +3673,7 @@ static BOOL WINAPI Hook_GetKeyboardState(PBYTE lpKeyState)
             continue;
         }
 
-        if (keyDecision.should_block != 0)
+        if (logicalDecision.should_block != 0)
         {
             // 拦截键在同步生效时强制抬起，避免后台继续读到真实输入。
             lpKeyState[i] &= static_cast<BYTE>(~0x81);
@@ -3098,20 +3739,35 @@ static UINT WINAPI Hook_GetRawInputBuffer(PRAWINPUT data, PUINT size, UINT heade
                     continue;
                 }
 
-                if (pathDecision.should_use_mapping != 0)
+                if (pathDecision.can_process_keys == 0)
+                {
+                    int vKey = static_cast<int>(raw->data.keyboard.VKey);
+                    bool isDown = false;
+                    const wchar_t* reason = nullptr;
+                    if (TryPickSilentRawTransition(snapshot, vKey, &vKey, &isDown, &reason))
+                    {
+                        BuildRawKeyboardEvent(vKey, isDown, raw->data.keyboard);
+                        spoofed = true;
+                        LogAdapterEmit(L"RawInputBuffer", vKey, isDown ? 1 : 2, !isDown, isDown, reason);
+                    }
+                }
+                else if (pathDecision.should_use_mapping != 0)
                 {
                     // 映射模式下用目标键序列重写 RawInput，确保后台能收到映射后的按键事件。
                     int vKey = 0;
                     bool isDown = false;
-                    if (TryPickMappingRawKey(
+                    const wchar_t* reason = nullptr;
+                    if (TryPickMappingRawTransition(
                             snapshot,
                             pathDecision.is_alive != 0,
                             pathDecision.is_paused != 0,
                             &vKey,
-                            &isDown))
+                            &isDown,
+                            &reason))
                     {
                         BuildRawKeyboardEvent(vKey, isDown, raw->data.keyboard);
                         spoofed = true;
+                        LogAdapterEmit(L"RawInputBuffer", vKey, isDown ? 1 : 2, !isDown, isDown, reason);
                     }
                 }
                 else
@@ -3119,50 +3775,13 @@ static UINT WINAPI Hook_GetRawInputBuffer(PRAWINPUT data, PUINT size, UINT heade
                     int vKey = static_cast<int>(raw->data.keyboard.VKey);
                     if (vKey >= 0 && vKey < 256)
                     {
-                        PayloadRuntimeDecisionInterop runtimeDecision = {};
-                        if (!EvaluateRuntimeDecision(snapshot, runtimeDecision))
+                        int transitionVKey = 0;
+                        bool transitionDown = false;
+                        const wchar_t* reason = nullptr;
+                        if (TryPickLogicalRawTransition(snapshot, vKey, &transitionVKey, &transitionDown, &reason))
                         {
-                            continue;
-                        }
-
-                        if (IsDirectionVKey(vKey))
-                        {
-                            int transitionVKey = 0;
-                            bool transitionDown = false;
-                            if (TryPickDirectionTransition(
-                                    snapshot,
-                                    runtimeDecision,
-                                    vKey,
-                                    &transitionVKey,
-                                    &transitionDown,
-                                    nullptr))
-                            {
-                                BuildRawKeyboardEvent(transitionVKey, transitionDown, raw->data.keyboard);
-                                spoofed = true;
-                            }
-                        }
-
-                        if (!spoofed)
-                        {
-                            PayloadKeyDecisionInterop keyDecision = {};
-                            if (!EvaluateKeyDecision(snapshot, vKey, keyDecision))
-                            {
-                                continue;
-                            }
-
-                            if (keyDecision.should_block != 0)
-                            {
-                                g_lastRawKeyboardState[vKey] = 0;
-                                BuildRawKeyboardEvent(vKey, false, raw->data.keyboard);
-                                spoofed = true;
-                            }
-                            else if (keyDecision.target_marked != 0 && keyDecision.desired_down == 0)
-                            {
-                                // 目标键被 Rust 决策压成抬起时，立即在 RawInputBuffer 路径发抬起。
-                                g_lastRawKeyboardState[vKey] = 0;
-                                BuildRawKeyboardEvent(vKey, false, raw->data.keyboard);
-                                spoofed = true;
-                            }
+                            BuildRawKeyboardEvent(transitionVKey, transitionDown, raw->data.keyboard);
+                            spoofed = true;
                         }
                     }
                 }
@@ -3252,85 +3871,51 @@ static UINT WINAPI Hook_GetRawInputData(HRAWINPUT hRawInput, UINT command, LPVOI
                         goto SkipRawDataSpoof;
                     }
 
-                    if (allowDataSpoof && pathDecision.should_use_mapping != 0)
+                    if (pathDecision.can_process_keys == 0)
+                    {
+                        int vKey = static_cast<int>(raw->data.keyboard.VKey);
+                        bool isDown = false;
+                        const wchar_t* reason = nullptr;
+                        if (TryPickSilentRawTransition(snapshot, vKey, &vKey, &isDown, &reason))
+                        {
+                            BuildRawKeyboardEvent(vKey, isDown, raw->data.keyboard);
+                            spoofed = true;
+                            LogAdapterEmit(L"RawInputData", vKey, isDown ? 1 : 2, !isDown, isDown, reason);
+                        }
+                    }
+                    else if (allowDataSpoof && pathDecision.should_use_mapping != 0)
                     {
                         // 映射模式下用目标键序列重写 RawInput，确保后台能收到映射后的按键事件。
                         int vKey = 0;
                         bool isDown = false;
-                        if (TryPickMappingRawKey(
+                        const wchar_t* reason = nullptr;
+                        if (TryPickMappingRawTransition(
                                 snapshot,
                                 pathDecision.is_alive != 0,
                                 pathDecision.is_paused != 0,
                                 &vKey,
-                                &isDown))
+                                &isDown,
+                                &reason))
                         {
                             BuildRawKeyboardEvent(vKey, isDown, raw->data.keyboard);
                             spoofed = true;
+                            LogAdapterEmit(L"RawInputData", vKey, isDown ? 1 : 2, !isDown, isDown, reason);
                         }
                     }
                     else
                     {
-                        // 非映射模式：仅对目标键按“期望状态”修正 Make/Break，避免吞键。
+                        // 非映射模式：按 authoritative logical state 投影 transition，
+                        // 不再跟随宿主原始 RawInput 重复 down 流。
                         int vKey = static_cast<int>(raw->data.keyboard.VKey);
                         if (vKey >= 0 && vKey < 256)
                         {
-                            PayloadRuntimeDecisionInterop runtimeDecision = {};
-                            if (!EvaluateRuntimeDecision(snapshot, runtimeDecision))
+                            int transitionVKey = 0;
+                            bool transitionDown = false;
+                            const wchar_t* reason = nullptr;
+                            if (TryPickLogicalRawTransition(snapshot, vKey, &transitionVKey, &transitionDown, &reason))
                             {
-                                goto SkipRawDataSpoof;
-                            }
-
-                            if (IsDirectionVKey(vKey))
-                            {
-                                int transitionVKey = 0;
-                                bool transitionDown = false;
-                                if (TryPickDirectionTransition(
-                                        snapshot,
-                                        runtimeDecision,
-                                        vKey,
-                                        &transitionVKey,
-                                        &transitionDown,
-                                        nullptr))
-                                {
-                                    BuildRawKeyboardEvent(transitionVKey, transitionDown, raw->data.keyboard);
-                                    spoofed = true;
-                                }
-                            }
-
-                            if (!spoofed)
-                            {
-                                PayloadKeyDecisionInterop keyDecision = {};
-                                if (EvaluateKeyDecision(snapshot, vKey, keyDecision))
-                                {
-                                    if (keyDecision.should_block != 0)
-                                    {
-                                        BuildRawKeyboardEvent(vKey, false, raw->data.keyboard);
-                                        spoofed = true;
-                                        g_lastRawKeyboardState[vKey] = 0;
-                                    }
-                                    else if (keyDecision.target_marked != 0)
-                                    {
-                                        const bool desiredDown = keyDecision.desired_down != 0;
-                                        const bool rawDown = (raw->data.keyboard.Flags & RI_KEY_BREAK) == 0;
-
-                                        if (allowDataSpoof)
-                                        {
-                                            if (desiredDown != rawDown)
-                                            {
-                                                BuildRawKeyboardEvent(vKey, desiredDown, raw->data.keyboard);
-                                                spoofed = true;
-                                            }
-                                            g_lastRawKeyboardState[vKey] = desiredDown ? 0x80 : 0x00;
-                                        }
-                                        else if (!desiredDown && rawDown)
-                                        {
-                                            // 当 RawInputBuffer 已在使用时，只在暂停/失联时兜底抬起。
-                                            BuildRawKeyboardEvent(vKey, false, raw->data.keyboard);
-                                            spoofed = true;
-                                            g_lastRawKeyboardState[vKey] = 0;
-                                        }
-                                    }
-                                }
+                                BuildRawKeyboardEvent(transitionVKey, transitionDown, raw->data.keyboard);
+                                spoofed = true;
                             }
                         }
                     }
@@ -3550,6 +4135,7 @@ static HRESULT STDMETHODCALLTYPE Hook_GetDeviceState(IDirectInputDevice8W* devic
     {
         return hr;
     }
+    auto* state = static_cast<BYTE*>(data);
 
     if (IsSpoofDelayActive())
     {
@@ -3574,9 +4160,19 @@ static HRESULT STDMETHODCALLTYPE Hook_GetDeviceState(IDirectInputDevice8W* devic
         return hr;
     }
 
+    if (pathDecision.can_process_keys == 0)
+    {
+        memset(state, 0, 256);
+        CountStat(&g_countSpoofDeviceState);
+        if (forceOk || SUCCEEDED(hr))
+        {
+            return DI_OK;
+        }
+        return hr;
+    }
+
     // DNF 走 DirectInput 轮询时需要覆盖 GetDeviceState，否则后台状态无法被读取到。
     EnsureVkeyToDikMap();
-    auto* state = static_cast<BYTE*>(data);
     bool spoofed = false;
 
     for (int vKey = 0; vKey < 256; vKey++)
@@ -3587,15 +4183,15 @@ static HRESULT STDMETHODCALLTYPE Hook_GetDeviceState(IDirectInputDevice8W* devic
             continue;
         }
 
-        PayloadKeyDecisionInterop keyDecision = {};
-        if (!EvaluateKeyDecision(snapshot, vKey, keyDecision))
+        PayloadLogicalKeyDecisionInterop logicalDecision = {};
+        if (!EvaluateLogicalKeyDecision(snapshot, vKey, logicalDecision))
         {
             continue;
         }
 
-        if (keyDecision.target_marked != 0)
+        if (logicalDecision.target_marked != 0)
         {
-            if (keyDecision.desired_down == 0)
+            if (logicalDecision.desired_down == 0)
             {
                 state[dik] = 0;
                 spoofed = true;
@@ -3607,7 +4203,7 @@ static HRESULT STDMETHODCALLTYPE Hook_GetDeviceState(IDirectInputDevice8W* devic
             spoofed = true;
             RecordDirectInputKeyEventIfNeeded(vKey, (state[dik] & 0x80) != 0, true, snapshot.profileMode);
         }
-        else if (keyDecision.should_block != 0)
+        else if (logicalDecision.should_block != 0)
         {
             state[dik] = 0;
             spoofed = true;
@@ -4119,6 +4715,24 @@ static void LogCountersOnce()
             g_lastProfileMode);
 
         WriteLogLine(buffer);
+
+        wchar_t obs[512] = {0};
+        StringCchPrintfW(
+            obs,
+            ARRAYSIZE(obs),
+            L"[OBS] %s channel=%s raw_promoted=%ld raw_data=%ld raw_buffer=%ld di_state=%ld di_data=%ld win32_async=%ld win32_keyboard=%ld profile=%lu mode=%lu",
+            GetTimestamp().c_str(),
+            channel,
+            spoofWmInput,
+            rawData,
+            rawBuffer,
+            getState,
+            getData,
+            getAsync,
+            getKeyboard,
+            g_lastProfileId,
+            g_lastProfileMode);
+        WriteLogLine(obs);
     }
 }
 

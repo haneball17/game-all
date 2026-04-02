@@ -35,12 +35,19 @@ internal sealed class DiagnosticExportService
 
     private static readonly string[] SyncFocusKeywords =
     {
+        "[STATE]",
+        "[PAUSE]",
+        "[EDGE]",
+        "[EMIT]",
+        "[GROUP]",
+        "[REPEAT]",
         "[KEY]",
         "[KEYFIX]",
         "[KEYWARN]",
         "[STAT]",
         "[RAW]",
         "[RAWB]",
+        "[OBS]",
         "DirectInput",
         "Spoof",
         "protocol_mismatch"
@@ -240,9 +247,28 @@ internal sealed class DiagnosticExportService
             }
         }
 
+        string syncPayloadDir = Path.Combine(logsDir, "sync", "payload");
+        AddCurrentSessionPreferredLogs(result, syncPayloadDir, sessionId, "sync_payload_");
+
+        string syncGuiDir = Path.Combine(logsDir, "sync", "gui");
+        AddCurrentSessionPreferredLogs(result, syncGuiDir, sessionId, "sync_gui_");
+
         return result
             .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
             .ToArray();
+    }
+
+    private static void AddCurrentSessionPreferredLogs(HashSet<string> result, string fullDir, string sessionId, string prefix)
+    {
+        if (!Directory.Exists(fullDir))
+        {
+            return;
+        }
+
+        foreach (string file in Directory.EnumerateFiles(fullDir, $"{prefix}{sessionId}_*.log*", SearchOption.TopDirectoryOnly))
+        {
+            result.Add(file);
+        }
     }
 
     private static void AppendCollectedFiles(StringBuilder builder, IReadOnlyList<string> files)
@@ -344,13 +370,36 @@ internal sealed class DiagnosticExportService
 
     private static string ReadAllTextShared(string path)
     {
-        using var stream = new FileStream(
-            path,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.ReadWrite | FileShare.Delete);
-        using var reader = new StreamReader(stream, detectEncodingFromByteOrderMarks: true);
-        return reader.ReadToEnd();
+        try
+        {
+            using var stream = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream, detectEncodingFromByteOrderMarks: true);
+            return reader.ReadToEnd();
+        }
+        catch (IOException)
+        {
+            string tempPath = Path.Combine(Path.GetTempPath(), $"game-all-diag-{Guid.NewGuid():N}.tmp");
+            File.Copy(path, tempPath, overwrite: true);
+            try
+            {
+                return File.ReadAllText(tempPath, Encoding.UTF8);
+            }
+            finally
+            {
+                try
+                {
+                    File.Delete(tempPath);
+                }
+                catch
+                {
+                    // 忽略临时文件删除失败，不影响诊断导出。
+                }
+            }
+        }
     }
 
     private static string[] ReadAllLinesShared(string path)
