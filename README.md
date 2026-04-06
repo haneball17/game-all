@@ -92,6 +92,22 @@ Payload 依赖 MinHook，支持以下路径：
 2. 平台选择 `x86`
 3. 依次构建 Payload / Injector / MasterGUI
 
+当前机器若只有 VS2019 BuildTools，建议改用分离构建：
+
+```powershell
+dotnet build GUI/Modules/Helper/GameHelperGUI.csproj -c Debug -p:PlatformTarget=x86
+dotnet build GUI/Modules/Sync/DNFSyncBox.csproj -c Debug -p:PlatformTarget=x86
+dotnet build GUI/GameMasterGUI.csproj -c Debug -p:PlatformTarget=x86
+
+MSBuild.exe Injector/Injector.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142
+MSBuild.exe Payload/Payload.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142
+```
+
+说明：
+- `GameHelperGUI` / `GameMasterGUI` 现已不再通过 `ProjectReference` 直接拉起 `Injector.vcxproj`。
+- GUI 与 Injector 维持“半集成”关系：GUI 只展示状态并提供快捷入口，Injector 继续单独原生构建。
+- 顶层混合 solution 在缺少 VS2022 / MSBuild 17 C++ 构建链的机器上，不再作为首选构建入口。
+
 ### 输出目录
 - 原始输出：`artifacts/bin/...`
 - 统一运行目录：`artifacts/run/`

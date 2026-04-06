@@ -18,8 +18,4 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
-
-  <ItemGroup>
-    <ProjectReference Include="..\..\..\Injector\Injector.vcxproj" />
-  </ItemGroup>
 </Project>

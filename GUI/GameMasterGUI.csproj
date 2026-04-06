@@ -30,8 +30,8 @@
 
   <Target Name="PostBuildCopyToRun" AfterTargets="Build">
     <PropertyGroup>
-      <RepoRoot Condition="'$(SolutionDir)' != ''">$(SolutionDir)</RepoRoot>
-      <RepoRoot Condition="'$(SolutionDir)' == ''">$(MSBuildProjectDirectory)\..</RepoRoot>
+      <RepoRoot Condition="'$(SolutionDir)' != '' and '$(SolutionDir)' != '*Undefined*'">$(SolutionDir)</RepoRoot>
+      <RepoRoot Condition="'$(RepoRoot)' == ''">$([MSBuild]::EnsureTrailingSlash('$(MSBuildProjectDirectory)\..'))</RepoRoot>
       <RunDir>$(RepoRoot)artifacts\run\</RunDir>
       <RunConfigDir>$(RunDir)config\</RunConfigDir>
       <ConfigTemplatesDir>$(RepoRoot)config-templates\</ConfigTemplatesDir>
