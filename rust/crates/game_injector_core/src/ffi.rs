@@ -141,8 +141,11 @@ impl From<HelperHeartbeatDecision> for InjectorHelperHeartbeatDecisionInterop {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InjectorRetryDecisionInterop {
     pub attempt: u32,
+    pub backend_started: u32,
     pub success_by_file: u32,
     pub success_by_heartbeat: u32,
+    pub success_source: u32,
+    pub used_heartbeat_fallback: u32,
     pub succeeded: u32,
     pub should_retry: u32,
     pub retry_delay_ms: u32,
@@ -153,8 +156,11 @@ impl From<InjectionRetryDecision> for InjectorRetryDecisionInterop {
     fn from(value: InjectionRetryDecision) -> Self {
         Self {
             attempt: value.attempt,
+            backend_started: u32::from(value.backend_started),
             success_by_file: u32::from(value.success_by_file),
             success_by_heartbeat: u32::from(value.success_by_heartbeat),
+            success_source: value.success_source,
+            used_heartbeat_fallback: u32::from(value.used_heartbeat_fallback),
             succeeded: u32::from(value.succeeded),
             should_retry: u32::from(value.should_retry),
             retry_delay_ms: value.retry_delay_ms,

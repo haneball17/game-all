@@ -50,8 +50,11 @@ pub fn evaluate_helper_heartbeat(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InjectionRetryDecision {
     pub attempt: u32,
+    pub backend_started: bool,
     pub success_by_file: bool,
     pub success_by_heartbeat: bool,
+    pub success_source: u32,
+    pub used_heartbeat_fallback: bool,
     pub succeeded: bool,
     pub should_retry: bool,
     pub retry_delay_ms: u32,
@@ -102,8 +105,17 @@ impl InjectionRetryRuntime {
 
         InjectionRetryDecision {
             attempt,
+            backend_started: apc_queued,
             success_by_file,
             success_by_heartbeat,
+            success_source: if success_by_file {
+                1
+            } else if success_by_heartbeat {
+                2
+            } else {
+                0
+            },
+            used_heartbeat_fallback: apc_queued && !success_by_file,
             succeeded,
             should_retry,
             retry_delay_ms: if should_retry { self.retry_interval_ms } else { 0 },
@@ -375,13 +387,16 @@ mod tests {
 
         let first = runtime.finish_attempt(true, false, false);
         assert_eq!(first.attempt, 1);
+        assert!(first.backend_started);
         assert!(first.should_retry);
         assert_eq!(first.retry_delay_ms, 1000);
+        assert!(first.used_heartbeat_fallback);
         assert!(!first.finished);
         assert_eq!(runtime.current_attempt(), 2);
 
         let second = runtime.finish_attempt(true, true, false);
         assert!(second.succeeded);
+        assert_eq!(second.success_source, 1);
         assert!(!second.should_retry);
         assert!(second.finished);
         assert!(!runtime.can_attempt());
@@ -391,6 +406,7 @@ mod tests {
     fn retry_runtime_stops_when_apc_never_queued() {
         let mut runtime = InjectionRetryRuntime::new(3, 1000);
         let result = runtime.finish_attempt(false, false, false);
+        assert!(!result.backend_started);
         assert!(!result.succeeded);
         assert!(!result.should_retry);
         assert!(result.finished);
@@ -424,6 +440,8 @@ mod tests {
             },
         );
         assert!(decision.succeeded);
+        assert_eq!(decision.success_source, 2);
+        assert!(decision.used_heartbeat_fallback);
         assert!(!decision.should_retry);
     }
 }

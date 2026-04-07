@@ -1036,9 +1036,6 @@ static bool TryInjectProcess(DWORD pid, const InjectorConfig& config) {
             if (!success_path.empty()) {
                 Log(L"等待成功文件: " + success_path);
                 success = ObserveSuccessFileChange(success_path, config, baseline_valid, baseline);
-                if (success.observed != 0) {
-                    Log(L"成功文件已更新，注入成功");
-                }
             }
 
             if (success.observed == 0) {
@@ -1047,7 +1044,6 @@ static bool TryInjectProcess(DWORD pid, const InjectorConfig& config) {
                 while (GetTickCount64() - start <= config.heartbeat_timeout_ms) {
                     heartbeat = ObserveHelperHeartbeat(pid, config.heartbeat_timeout_ms);
                     if (heartbeat.observed != 0) {
-                        Log(L"共享内存心跳正常，注入成功");
                         break;
                     }
                     Sleep(config.heartbeat_interval_ms);
@@ -1068,6 +1064,15 @@ static bool TryInjectProcess(DWORD pid, const InjectorConfig& config) {
             &success,
             &heartbeat,
             &decision);
+        if (decision.succeeded != 0) {
+            if (decision.success_source == 1) {
+                Log(L"成功文件已更新，注入成功");
+            } else if (decision.success_source == 2) {
+                Log(L"共享内存心跳正常，注入成功");
+            }
+        } else if (decision.backend_started != 0 && decision.used_heartbeat_fallback != 0 && heartbeat.observed == 0) {
+            Log(L"successfile 与 heartbeat 均未确认成功");
+        }
         if (decision.succeeded != 0) {
             injected = true;
             break;

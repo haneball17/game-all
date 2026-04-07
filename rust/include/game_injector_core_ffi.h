@@ -48,8 +48,11 @@ typedef struct InjectorHelperHeartbeatDecisionInterop {
 
 typedef struct InjectorRetryDecisionInterop {
     uint32_t attempt;
+    uint32_t backend_started;
     uint32_t success_by_file;
     uint32_t success_by_heartbeat;
+    uint32_t success_source;
+    uint32_t used_heartbeat_fallback;
     uint32_t succeeded;
     uint32_t should_retry;
     uint32_t retry_delay_ms;
