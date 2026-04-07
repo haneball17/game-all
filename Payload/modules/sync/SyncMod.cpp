@@ -253,6 +253,10 @@ static void PushAdapterDiagnosticsEvent(
     bool projectedAfter,
     bool forcedRelease,
     uint32_t reasonCode);
+static size_t ReadLatestAdapterDiagnosticsEvents(
+    PayloadAdapterDiagnosticsEventInterop* outEvents,
+    size_t capacity);
+static const wchar_t* ResolveAdapterDiagnosticsEventKind(uint32_t eventKind);
 static void LogLogicalEdge(int vKey, bool desiredDown, bool pressedEdge, bool releasedEdge);
 static void LogAdapterEmit(const wchar_t* adapter, int vKey, int emitAction, bool beforeDown, bool afterDown, const wchar_t* reason);
 static void LogDirectionGroupDecision(const wchar_t* pairName, int winnerVKey, int loserVKey, const wchar_t* reason);
@@ -290,6 +294,7 @@ static bool GetLogicalDesiredStateValue(int vKey);
 static void SetLogicalDesiredStateValue(int vKey, bool down);
 static bool GetProjectedStateValue(uint32_t channelKind, int vKey);
 static void SetProjectedStateValue(uint32_t channelKind, int vKey, bool down);
+static void SyncStateMirrorsForKey(int vKey);
 static void ClearAllProjectedStateValues();
 static void ClearLogicalDesiredStateValues();
 static size_t ReadLatestAdapterDiagnosticsEvents(PayloadAdapterDiagnosticsEventInterop* outEvents, size_t capacity);
@@ -1694,7 +1699,7 @@ static bool EvaluateLogicalKeyDecision(const SharedSnapshot& snapshot, int vKey,
 static bool EvaluateChannelEmitDecision(
     const SharedSnapshot& snapshot,
     int vKey,
-    bool projectedDownBefore,
+    uint32_t channelKind,
     bool observedDown,
     PayloadLogicalKeyDecisionInterop& logicalDecision,
     PayloadChannelEmitDecisionInterop& emitDecision)
@@ -1707,7 +1712,15 @@ static bool EvaluateChannelEmitDecision(
     }
 
     const int pairVKey = GetDirectionPairVKey(vKey);
-    const bool ok = payload_core_decide_channel_emit(
+    EnsurePayloadStateStore();
+    if (!g_payloadStateStore)
+    {
+        return false;
+    }
+
+    const bool ok = payload_core_state_store_decide_channel_emit(
+                        g_payloadStateStore,
+                        channelKind,
                         snapshot.flags,
                         snapshot.activePid,
                         snapshot.profileId,
@@ -1726,9 +1739,7 @@ static bool EvaluateChannelEmitDecision(
                         pairVKey >= 0 && (snapshot.keyboardState[pairVKey] & 0x80) != 0 ? 1u : 0u,
                         pairVKey >= 0 ? snapshot.edgeCounter[pairVKey] : 0u,
                         ShouldForceReleaseKey(vKey) ? 1u : 0u,
-                        GetLogicalDesiredStateValue(vKey) ? 1u : 0u,
                         0u,
-                        projectedDownBefore ? 1u : 0u,
                         observedDown ? 1u : 0u,
                         &logicalDecision,
                         &emitDecision) != 0 &&
@@ -1743,6 +1754,7 @@ static bool EvaluateChannelEmitDecision(
         LogLogicalEdge(vKey, logicalDecision.desired_down != 0, logicalDecision.pressed_edge != 0, logicalDecision.released_edge != 0);
     }
     SetLogicalDesiredStateValue(vKey, logicalDecision.desired_down != 0);
+    SyncStateMirrorsForKey(vKey);
     return true;
 }
 
@@ -2075,7 +2087,7 @@ static bool TryPickLogicalRawTransition(
         if (!EvaluateChannelEmitDecision(
                 snapshot,
                 vKey,
-                GetProjectedStateValue(1, vKey),
+                1u,
                 observedDown,
                 logicalDecision,
                 emitDecision))
@@ -3511,7 +3523,7 @@ static bool ShouldPromoteRawKeyboardMessage(HRAWINPUT hRawInput)
     if (!EvaluateChannelEmitDecision(
             snapshot,
             vKey,
-            (g_lastRawKeyboardState[vKey] & 0x80) != 0,
+            1u,
             (raw.data.keyboard.Flags & RI_KEY_BREAK) == 0,
             logicalDecision,
             emitDecision))
@@ -3543,7 +3555,7 @@ static bool ShouldPromoteRawKeyboardMessage(HRAWINPUT hRawInput)
             if (!EvaluateChannelEmitDecision(
                     snapshot,
                     candidate,
-                    (g_lastRawKeyboardState[candidate] & 0x80) != 0,
+                    1u,
                     candidate == vKey ? ((raw.data.keyboard.Flags & RI_KEY_BREAK) == 0) : false,
                     directionLogical,
                     directionEmit))
@@ -4779,6 +4791,18 @@ static void SetProjectedStateValue(uint32_t channelKind, int vKey, bool down)
     }
 }
 
+static void SyncStateMirrorsForKey(int vKey)
+{
+    if (vKey < 0 || vKey >= 256)
+    {
+        return;
+    }
+    g_lastLogicalDesiredState[vKey] = GetLogicalDesiredStateValue(vKey) ? 1 : 0;
+    g_lastRawKeyboardState[vKey] = GetProjectedStateValue(1, vKey) ? 0x80 : 0x00;
+    g_lastWin32State[vKey] = GetProjectedStateValue(2, vKey) ? 1 : 0;
+    g_lastDIState[vKey] = GetProjectedStateValue(3, vKey) ? 1 : 0;
+}
+
 static void ClearAllProjectedStateValues()
 {
     EnsurePayloadStateStore();
@@ -4830,13 +4854,16 @@ static void PushAdapterDiagnosticsEvent(
     payload_core_diagnostics_buffer_push_event(g_payloadDiagnosticsBuffer, &event);
 }
 
-static size_t ReadLatestAdapterDiagnosticsEvents(PayloadAdapterDiagnosticsEventInterop* outEvents, size_t capacity)
+static size_t ReadLatestAdapterDiagnosticsEvents(
+    PayloadAdapterDiagnosticsEventInterop* outEvents,
+    size_t capacity)
 {
     EnsurePayloadDiagnosticsBuffer();
     if (!g_payloadDiagnosticsBuffer || !outEvents || capacity == 0)
     {
         return 0;
     }
+
     return payload_core_diagnostics_buffer_copy_latest_n(
         g_payloadDiagnosticsBuffer,
         capacity,

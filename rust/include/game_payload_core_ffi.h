@@ -297,6 +297,31 @@ GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_get_projected(
     const void* state,
     uint32_t channel_kind,
     uint32_t vkey);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_decide_channel_emit(
+    void* state,
+    uint32_t channel_kind,
+    uint32_t flags,
+    uint32_t active_pid,
+    uint32_t profile_id,
+    uint32_t profile_mode,
+    uint64_t last_tick,
+    uint32_t current_pid,
+    uint64_t now_tick,
+    uint64_t heartbeat_timeout_ms,
+    uint32_t vkey,
+    uint32_t target_marked,
+    uint32_t block_marked,
+    uint32_t keyboard_down,
+    uint32_t edge_counter,
+    uint32_t pair_vkey,
+    uint32_t pair_target_marked,
+    uint32_t pair_keyboard_down,
+    uint32_t pair_edge_counter,
+    uint32_t force_release,
+    uint32_t repeat_allowed,
+    uint32_t observed_down,
+    PayloadLogicalKeyDecisionInterop* out_logical,
+    PayloadChannelEmitDecisionInterop* out_emit);
 GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_clear_logical_desired(
     void* state);
 GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_clear_all_projected(

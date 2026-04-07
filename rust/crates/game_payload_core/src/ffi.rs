@@ -8,7 +8,7 @@ use crate::{
     runtime::{
         AdapterDriftSummary, AdapterProjectedState, ChannelEmitDecision, EmitAction,
         InputPathObservation, KeyDecision, LogicalKeyDecision, PathDecision, RuntimeDecision,
-        decide_channel_emit, evaluate_adapter_projected_state, evaluate_key_state_header,
+        decide_channel_emit, decide_channel_emit_with_store, evaluate_adapter_projected_state, evaluate_key_state_header,
         evaluate_logical_key_header, evaluate_path_decision_header, evaluate_runtime_header,
         evaluate_runtime_state, observe_input_path, summarize_adapter_drift,
     },
@@ -862,6 +862,75 @@ pub unsafe extern "C" fn payload_core_state_store_get_projected(
         _ => return 0,
     };
     u32::from(unsafe { (&*state).projected(channel, vkey as usize) })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_state_store_decide_channel_emit(
+    state: *mut SyncStateStore,
+    channel_kind: u32,
+    flags: u32,
+    active_pid: u32,
+    profile_id: u32,
+    profile_mode: u32,
+    last_tick: u64,
+    current_pid: u32,
+    now_tick: u64,
+    heartbeat_timeout_ms: u64,
+    vkey: u32,
+    target_marked: u32,
+    block_marked: u32,
+    keyboard_down: u32,
+    edge_counter: u32,
+    pair_vkey: u32,
+    pair_target_marked: u32,
+    pair_keyboard_down: u32,
+    pair_edge_counter: u32,
+    force_release: u32,
+    repeat_allowed: u32,
+    observed_down: u32,
+    out_logical: *mut PayloadLogicalKeyDecisionInterop,
+    out_emit: *mut PayloadChannelEmitDecisionInterop,
+) -> u32 {
+    if state.is_null() || out_emit.is_null() {
+        return 0;
+    }
+    let channel = match channel_kind {
+        1 => ProjectedChannelKind::Raw,
+        2 => ProjectedChannelKind::Win32,
+        3 => ProjectedChannelKind::DirectInput,
+        _ => return 0,
+    };
+    let (logical, emit) = unsafe {
+        decide_channel_emit_with_store(
+            &mut *state,
+            channel,
+            flags,
+            active_pid,
+            profile_id,
+            profile_mode,
+            last_tick,
+            current_pid,
+            now_tick,
+            heartbeat_timeout_ms,
+            vkey,
+            target_marked != 0,
+            block_marked != 0,
+            keyboard_down != 0,
+            edge_counter,
+            pair_vkey,
+            pair_target_marked != 0,
+            pair_keyboard_down != 0,
+            pair_edge_counter,
+            force_release != 0,
+            repeat_allowed != 0,
+            observed_down != 0,
+        )
+    };
+    if !out_logical.is_null() {
+        unsafe { out_logical.write(logical.into()) };
+    }
+    unsafe { out_emit.write(emit.into()) };
+    1
 }
 
 #[unsafe(no_mangle)]
