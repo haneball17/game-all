@@ -296,6 +296,56 @@ pub fn evaluate_logical_key_header(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_logical_key_with_store(
+    store: &mut SyncStateStore,
+    flags: u32,
+    active_pid: u32,
+    profile_id: u32,
+    profile_mode: u32,
+    last_tick: u64,
+    current_pid: u32,
+    now_tick: u64,
+    heartbeat_timeout_ms: u64,
+    vkey: u32,
+    target_marked: bool,
+    block_marked: bool,
+    keyboard_down: bool,
+    edge_counter: u32,
+    pair_vkey: u32,
+    pair_target_marked: bool,
+    pair_keyboard_down: bool,
+    pair_edge_counter: u32,
+    force_release: bool,
+    repeat_allowed: bool,
+) -> LogicalKeyDecision {
+    let previous_desired_down = store.logical_desired(vkey as usize);
+    let logical = evaluate_logical_key_header(
+        flags,
+        active_pid,
+        profile_id,
+        profile_mode,
+        last_tick,
+        current_pid,
+        now_tick,
+        heartbeat_timeout_ms,
+        vkey,
+        target_marked,
+        block_marked,
+        keyboard_down,
+        edge_counter,
+        pair_vkey,
+        pair_target_marked,
+        pair_keyboard_down,
+        pair_edge_counter,
+        force_release,
+        previous_desired_down,
+        repeat_allowed,
+    );
+    store.set_logical_desired(vkey as usize, logical.key.desired_down);
+    logical
+}
+
 pub fn decide_channel_emit(
     logical: LogicalKeyDecision,
     projected_down_before: bool,
@@ -803,5 +853,34 @@ mod tests {
         assert_eq!(emit.emit_action, EmitAction::Press);
         assert!(store.logical_desired(0x41));
         assert!(store.projected(ProjectedChannelKind::Raw, 0x41));
+    }
+
+    #[test]
+    fn evaluate_logical_key_with_store_updates_previous_desired() {
+        let mut store = SyncStateStore::default();
+        let logical = evaluate_logical_key_with_store(
+            &mut store,
+            0,
+            100,
+            1,
+            2,
+            1000,
+            200,
+            1100,
+            500,
+            0x41,
+            true,
+            false,
+            true,
+            3,
+            0,
+            false,
+            false,
+            0,
+            false,
+            false,
+        );
+        assert!(logical.key.desired_down);
+        assert!(store.logical_desired(0x41));
     }
 }
