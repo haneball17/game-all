@@ -630,3 +630,65 @@
 - `game_payload_core` 新增 1 个 drift summary 测试后全部通过
 - Rust clippy 通过
 - Windows `Payload` Debug / Release 构建通过
+
+---
+
+## 第十四批落地：Sync logical/projected state store 进入 Rust（2026-04-07）
+
+### 本次新增
+- `game_payload_core::sync` 新增：
+  - `ProjectedChannelKind`
+  - `SyncStateStore`
+- 新增能力：
+  - `set_logical_desired(...)`
+  - `logical_desired(...)`
+  - `set_projected(...)`
+  - `projected(...)`
+  - `clear_logical_desired()`
+  - `clear_all_projected()`
+  - `clear_projected_channel(...)`
+
+### 新增 FFI
+- `payload_core_state_store_create(...)`
+- `payload_core_state_store_destroy(...)`
+- `payload_core_state_store_set_logical_desired(...)`
+- `payload_core_state_store_get_logical_desired(...)`
+- `payload_core_state_store_set_projected(...)`
+- `payload_core_state_store_get_projected(...)`
+- `payload_core_state_store_clear_logical_desired(...)`
+- `payload_core_state_store_clear_all_projected(...)`
+- `payload_core_state_store_clear_projected_channel(...)`
+
+### 当前接入范围
+`SyncMod.cpp` 已开始改为“Rust store 为主、C++ 数组为镜像”：
+
+1. `g_payloadStateStore` 新增为全局 Rust state store 句柄
+2. `g_lastLogicalDesiredState / g_lastRawKeyboardState / g_lastWin32State / g_lastDIState`
+   已开始退化为镜像缓存
+3. 以下关键路径已优先改为读写 Rust store：
+   - `ApplyClearIfNeeded(...)`
+   - `ApplyRawClearIfNeeded(...)`
+   - `EvaluateLogicalKeyDecision(...)`
+   - `EvaluateChannelEmitDecision(...)`
+   - `TryPickSilentRawTransition(...)`
+   - `RecordWin32KeyEventIfNeeded(...)`
+   - `RecordDirectInputKeyEventIfNeeded(...)`
+   - 部分 RawInput projected state 推进点
+
+### 当前价值
+- `Sync` 的 logical desired state 和三个 adapter projected state，终于开始从 C++ 全局数组迁入 Rust 真值存储。
+- 这一步是从“观测与摘要 Rust 化”进入“状态真值 Rust 化”的关键切换点。
+- 后续继续做 pause/clear reset、projected state 收口、adapter drift 诊断时，已经不需要再以 C++ 数组作为唯一真值来源。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_payload_core`
+2. `cargo clippy -p game_payload_core --all-targets --all-features -- -D warnings`
+3. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+4. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+
+结果：
+- `game_payload_core` 新增 2 个 state store 测试后全部通过
+- Rust clippy 通过
+- Windows `Payload` Debug / Release 构建通过

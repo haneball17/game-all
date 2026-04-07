@@ -8,7 +8,7 @@ use crate::{
         evaluate_logical_key_header, evaluate_path_decision_header, evaluate_runtime_header,
         evaluate_runtime_state, observe_input_path, summarize_adapter_drift,
     },
-    sync::{DirectionConvergenceState, DirectionReleasePolicy, SnapshotCachePolicy},
+    sync::{DirectionConvergenceState, DirectionReleasePolicy, ProjectedChannelKind, SnapshotCachePolicy, SyncStateStore},
 };
 use game_core_protocols::{SHARED_KEYBOARD_KEY_COUNT, SharedKeyboardStateV2};
 
@@ -657,4 +657,121 @@ pub unsafe extern "C" fn payload_core_convergence_should_refresh(
         policy.decide(age_ms, state),
         crate::sync::CacheDecision::Refresh
     ))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn payload_core_state_store_create() -> *mut SyncStateStore {
+    Box::into_raw(Box::new(SyncStateStore::default()))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_state_store_destroy(state: *mut SyncStateStore) {
+    if state.is_null() {
+        return;
+    }
+    unsafe {
+        drop(Box::from_raw(state));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_state_store_set_logical_desired(
+    state: *mut SyncStateStore,
+    vkey: u32,
+    down: u32,
+) -> u32 {
+    if state.is_null() {
+        return 0;
+    }
+    unsafe { (&mut *state).set_logical_desired(vkey as usize, down != 0) };
+    1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_state_store_get_logical_desired(
+    state: *const SyncStateStore,
+    vkey: u32,
+) -> u32 {
+    if state.is_null() {
+        return 0;
+    }
+    u32::from(unsafe { (&*state).logical_desired(vkey as usize) })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_state_store_set_projected(
+    state: *mut SyncStateStore,
+    channel_kind: u32,
+    vkey: u32,
+    down: u32,
+) -> u32 {
+    if state.is_null() {
+        return 0;
+    }
+    let channel = match channel_kind {
+        1 => ProjectedChannelKind::Raw,
+        2 => ProjectedChannelKind::Win32,
+        3 => ProjectedChannelKind::DirectInput,
+        _ => return 0,
+    };
+    unsafe { (&mut *state).set_projected(channel, vkey as usize, down != 0) };
+    1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_state_store_get_projected(
+    state: *const SyncStateStore,
+    channel_kind: u32,
+    vkey: u32,
+) -> u32 {
+    if state.is_null() {
+        return 0;
+    }
+    let channel = match channel_kind {
+        1 => ProjectedChannelKind::Raw,
+        2 => ProjectedChannelKind::Win32,
+        3 => ProjectedChannelKind::DirectInput,
+        _ => return 0,
+    };
+    u32::from(unsafe { (&*state).projected(channel, vkey as usize) })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_state_store_clear_logical_desired(
+    state: *mut SyncStateStore,
+) -> u32 {
+    if state.is_null() {
+        return 0;
+    }
+    unsafe { (&mut *state).clear_logical_desired() };
+    1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_state_store_clear_all_projected(
+    state: *mut SyncStateStore,
+) -> u32 {
+    if state.is_null() {
+        return 0;
+    }
+    unsafe { (&mut *state).clear_all_projected() };
+    1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_state_store_clear_projected_channel(
+    state: *mut SyncStateStore,
+    channel_kind: u32,
+) -> u32 {
+    if state.is_null() {
+        return 0;
+    }
+    let channel = match channel_kind {
+        1 => ProjectedChannelKind::Raw,
+        2 => ProjectedChannelKind::Win32,
+        3 => ProjectedChannelKind::DirectInput,
+        _ => return 0,
+    };
+    unsafe { (&mut *state).clear_projected_channel(channel) };
+    1
 }

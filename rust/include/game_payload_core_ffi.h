@@ -234,6 +234,31 @@ GAME_PAYLOAD_CORE_API uint32_t payload_core_summarize_adapter_drift(
     const uint8_t* direct_input_projected_ptr,
     size_t len,
     PayloadAdapterDriftSummaryInterop* out_summary);
+GAME_PAYLOAD_CORE_API void* payload_core_state_store_create(void);
+GAME_PAYLOAD_CORE_API void payload_core_state_store_destroy(void* state);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_set_logical_desired(
+    void* state,
+    uint32_t vkey,
+    uint32_t down);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_get_logical_desired(
+    const void* state,
+    uint32_t vkey);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_set_projected(
+    void* state,
+    uint32_t channel_kind,
+    uint32_t vkey,
+    uint32_t down);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_get_projected(
+    const void* state,
+    uint32_t channel_kind,
+    uint32_t vkey);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_clear_logical_desired(
+    void* state);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_clear_all_projected(
+    void* state);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_clear_projected_channel(
+    void* state,
+    uint32_t channel_kind);
 
 GAME_PAYLOAD_CORE_API void* payload_core_convergence_create(uint8_t extra_release_pulses);
 GAME_PAYLOAD_CORE_API void payload_core_convergence_destroy(void* state);

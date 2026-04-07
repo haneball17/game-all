@@ -67,6 +67,7 @@ static BYTE g_keyLastChannel[256] = {};
 static BYTE g_lastWin32State[256] = {};
 static BYTE g_lastDIState[256] = {};
 static BYTE g_lastLogicalDesiredState[256] = {};
+static void* g_payloadStateStore = nullptr;
 
 static LONG g_createDeviceHooked = 0;
 static LONG g_deviceHooksHooked = 0;
@@ -273,6 +274,13 @@ static bool EvaluateAdapterProjectedState(
     bool win32Projected,
     bool directInputProjected,
     PayloadAdapterProjectedStateInterop& state);
+static void EnsurePayloadStateStore();
+static bool GetLogicalDesiredStateValue(int vKey);
+static void SetLogicalDesiredStateValue(int vKey, bool down);
+static bool GetProjectedStateValue(uint32_t channelKind, int vKey);
+static void SetProjectedStateValue(uint32_t channelKind, int vKey, bool down);
+static void ClearAllProjectedStateValues();
+static void ClearLogicalDesiredStateValues();
 static void SyncDirectionConvergenceState(void* convergenceState, BYTE lastDirectionState[256], const SharedSnapshot& snapshot);
 static void EnsureDirectionConvergenceState();
 static bool ShouldForceReleaseKey(int vKey);
@@ -1302,8 +1310,8 @@ static void ApplyClearIfNeeded(const SharedSnapshot& snapshot)
     for (int i = 0; i < 256; i++)
     {
         g_lastEdgeCounter[i] = snapshot.edgeCounter[i];
-        g_lastLogicalDesiredState[i] = 0;
     }
+    ClearLogicalDesiredStateValues();
 }
 
 static void ApplyRawClearIfNeeded(const SharedSnapshot& snapshot)
@@ -1320,9 +1328,7 @@ static void ApplyRawClearIfNeeded(const SharedSnapshot& snapshot)
 
     g_lastRawClearSeq = snapshot.seq;
     // 清键时重置 RawInput 伪造态，避免后台出现卡键或残留按下。
-    memset(g_lastRawKeyboardState, 0, sizeof(g_lastRawKeyboardState));
-    memset(g_lastWin32State, 0, sizeof(g_lastWin32State));
-    memset(g_lastDIState, 0, sizeof(g_lastDIState));
+    ClearAllProjectedStateValues();
 }
 
 static void BuildRawKeyboardEvent(int vKey, bool isDown, RAWKEYBOARD& keyboard)
@@ -1385,14 +1391,14 @@ static bool TryPickSilentRawTransition(
             return false;
         }
 
-        const bool rawDownBefore = (g_lastRawKeyboardState[vKey] & 0x80) != 0;
+        const bool rawDownBefore = GetProjectedStateValue(1, vKey);
         if (!rawDownBefore)
         {
             return false;
         }
 
-        g_lastRawKeyboardState[vKey] = 0;
-        g_lastLogicalDesiredState[vKey] = 0;
+        SetProjectedStateValue(1, vKey, false);
+        SetLogicalDesiredStateValue(vKey, false);
         *vKeyOut = vKey;
         *isDownOut = false;
         if (reasonOut)
@@ -1435,7 +1441,7 @@ static bool TryPickSilentRawTransition(
 
     if (preferredVKey >= 0 && preferredVKey < 256)
     {
-        g_lastLogicalDesiredState[preferredVKey] = 0;
+        SetLogicalDesiredStateValue(preferredVKey, false);
         *vKeyOut = preferredVKey;
         *isDownOut = false;
         if (reasonOut)
@@ -1475,10 +1481,10 @@ static bool TryPickMappingRawTransition(
         }
 
         bool desiredDown = allowDown && (snapshot.keyboardState[idx] & 0x80) != 0;
-        bool lastDown = (g_lastRawKeyboardState[idx] & 0x80) != 0;
+        bool lastDown = GetProjectedStateValue(1, idx);
         if (desiredDown != lastDown)
         {
-            g_lastRawKeyboardState[idx] = desiredDown ? 0x80 : 0x00;
+            SetProjectedStateValue(1, idx, desiredDown);
             g_rawScanCursor = (idx + 1) & 0xFF;
             *vKeyOut = idx;
             *isDownOut = desiredDown;
@@ -1621,7 +1627,7 @@ static bool EvaluateLogicalKeyDecision(const SharedSnapshot& snapshot, int vKey,
                         pairVKey >= 0 && (snapshot.keyboardState[pairVKey] & 0x80) != 0 ? 1u : 0u,
                         pairVKey >= 0 ? snapshot.edgeCounter[pairVKey] : 0u,
                         ShouldForceReleaseKey(vKey) ? 1u : 0u,
-                        g_lastLogicalDesiredState[vKey] != 0 ? 1u : 0u,
+                        GetLogicalDesiredStateValue(vKey) ? 1u : 0u,
                         0u,
                         &decision) != 0 &&
                     decision.is_valid != 0;
@@ -1664,7 +1670,7 @@ static bool EvaluateLogicalKeyDecision(const SharedSnapshot& snapshot, int vKey,
         }
     }
 
-    g_lastLogicalDesiredState[vKey] = decision.desired_down != 0 ? 1 : 0;
+    SetLogicalDesiredStateValue(vKey, decision.desired_down != 0);
     return true;
 }
 
@@ -1703,7 +1709,7 @@ static bool EvaluateChannelEmitDecision(
                         pairVKey >= 0 && (snapshot.keyboardState[pairVKey] & 0x80) != 0 ? 1u : 0u,
                         pairVKey >= 0 ? snapshot.edgeCounter[pairVKey] : 0u,
                         ShouldForceReleaseKey(vKey) ? 1u : 0u,
-                        g_lastLogicalDesiredState[vKey] != 0 ? 1u : 0u,
+                        GetLogicalDesiredStateValue(vKey) ? 1u : 0u,
                         0u,
                         projectedDownBefore ? 1u : 0u,
                         observedDown ? 1u : 0u,
@@ -1719,7 +1725,7 @@ static bool EvaluateChannelEmitDecision(
     {
         LogLogicalEdge(vKey, logicalDecision.desired_down != 0, logicalDecision.pressed_edge != 0, logicalDecision.released_edge != 0);
     }
-    g_lastLogicalDesiredState[vKey] = logicalDecision.desired_down != 0 ? 1 : 0;
+    SetLogicalDesiredStateValue(vKey, logicalDecision.desired_down != 0);
     return true;
 }
 
@@ -1912,7 +1918,7 @@ static bool TryPickDirectionTransition(
             return false;
         }
 
-        const bool rawDownBefore = (g_lastRawKeyboardState[vKey] & 0x80) != 0;
+        const bool rawDownBefore = GetProjectedStateValue(1, vKey);
         if (!rawDownBefore)
         {
             return false;
@@ -1923,7 +1929,7 @@ static bool TryPickDirectionTransition(
             return false;
         }
 
-        g_lastRawKeyboardState[vKey] = 0;
+        SetProjectedStateValue(1, vKey, false);
         *vKeyOut = vKey;
         *isDownOut = false;
         if (reasonOut)
@@ -1935,7 +1941,7 @@ static bool TryPickDirectionTransition(
             vKey,
             desiredState[vKey] != 0,
             rawDownBefore,
-            g_lastWin32State[vKey] != 0,
+            GetProjectedStateValue(2, vKey),
             reason);
         return true;
     };
@@ -1947,13 +1953,13 @@ static bool TryPickDirectionTransition(
         }
 
         const bool snapshotDown = desiredState[vKey] != 0;
-        const bool rawDownBefore = (g_lastRawKeyboardState[vKey] & 0x80) != 0;
+        const bool rawDownBefore = GetProjectedStateValue(1, vKey);
         if (!snapshotDown || rawDownBefore)
         {
             return false;
         }
 
-        g_lastRawKeyboardState[vKey] = 0x80;
+        SetProjectedStateValue(1, vKey, true);
         *vKeyOut = vKey;
         *isDownOut = true;
         if (reasonOut)
@@ -1965,7 +1971,7 @@ static bool TryPickDirectionTransition(
             vKey,
             true,
             rawDownBefore,
-            g_lastWin32State[vKey] != 0,
+            GetProjectedStateValue(2, vKey),
             reason);
         return true;
     };
@@ -2018,7 +2024,7 @@ static bool HasMappingRawTransition(const SharedSnapshot& snapshot, bool alive, 
         }
 
         const bool desiredDown = allowDown && (snapshot.keyboardState[idx] & 0x80) != 0;
-        const bool projectedDown = (g_lastRawKeyboardState[idx] & 0x80) != 0;
+        const bool projectedDown = GetProjectedStateValue(1, idx);
         if (desiredDown != projectedDown)
         {
             return true;
@@ -2052,7 +2058,7 @@ static bool TryPickLogicalRawTransition(
         if (!EvaluateChannelEmitDecision(
                 snapshot,
                 vKey,
-                (g_lastRawKeyboardState[vKey] & 0x80) != 0,
+                GetProjectedStateValue(1, vKey),
                 observedDown,
                 logicalDecision,
                 emitDecision))
@@ -2075,9 +2081,9 @@ static bool TryPickLogicalRawTransition(
             return false;
         }
 
-        const bool beforeDown = (g_lastRawKeyboardState[vKey] & 0x80) != 0;
+        const bool beforeDown = GetProjectedStateValue(1, vKey);
         const bool afterDown = emitDecision.projected_down_after != 0;
-        g_lastRawKeyboardState[vKey] = afterDown ? 0x80 : 0x00;
+        SetProjectedStateValue(1, vKey, afterDown);
         *vKeyOut = vKey;
         *isDownOut = emitDecision.emit_action == 1;
         if (reasonOut)
@@ -2938,12 +2944,12 @@ static void RecordWin32KeyEventIfNeeded(int vKey, SHORT result, bool spoofed, ui
 
     bool isDown = (result & 0x8000) != 0;
     BYTE downValue = isDown ? 1 : 0;
-    BYTE prev = g_lastWin32State[vKey];
+    BYTE prev = GetProjectedStateValue(2, vKey) ? 1 : 0;
     if (prev == downValue)
     {
         return;
     }
-    g_lastWin32State[vKey] = downValue;
+    SetProjectedStateValue(2, vKey, isDown);
     RecordKeyEvent(KeyChannel::Win32, vKey, isDown, spoofed, 0, 0, profileMode);
 }
 
@@ -2959,12 +2965,12 @@ static void RecordDirectInputKeyEventIfNeeded(int vKey, bool isDown, bool spoofe
     }
 
     BYTE downValue = isDown ? 1 : 0;
-    BYTE prev = g_lastDIState[vKey];
+    BYTE prev = GetProjectedStateValue(3, vKey) ? 1 : 0;
     if (prev == downValue)
     {
         return;
     }
-    g_lastDIState[vKey] = downValue;
+    SetProjectedStateValue(3, vKey, isDown);
     RecordKeyEvent(KeyChannel::DirectInput, vKey, isDown, spoofed, 0, 0, profileMode);
 }
 
@@ -4616,6 +4622,113 @@ static bool EvaluateAdapterProjectedState(
                win32Projected ? 1u : 0u,
                directInputProjected ? 1u : 0u,
                &state) != 0;
+}
+
+static void EnsurePayloadStateStore()
+{
+    if (!g_payloadStateStore)
+    {
+        g_payloadStateStore = payload_core_state_store_create();
+    }
+}
+
+static bool GetLogicalDesiredStateValue(int vKey)
+{
+    if (vKey < 0 || vKey >= 256)
+    {
+        return false;
+    }
+    EnsurePayloadStateStore();
+    if (!g_payloadStateStore)
+    {
+        return g_lastLogicalDesiredState[vKey] != 0;
+    }
+    return payload_core_state_store_get_logical_desired(g_payloadStateStore, static_cast<uint32_t>(vKey)) != 0;
+}
+
+static void SetLogicalDesiredStateValue(int vKey, bool down)
+{
+    if (vKey < 0 || vKey >= 256)
+    {
+        return;
+    }
+    EnsurePayloadStateStore();
+    if (g_payloadStateStore)
+    {
+        payload_core_state_store_set_logical_desired(g_payloadStateStore, static_cast<uint32_t>(vKey), down ? 1u : 0u);
+    }
+    g_lastLogicalDesiredState[vKey] = down ? 1 : 0;
+}
+
+static bool GetProjectedStateValue(uint32_t channelKind, int vKey)
+{
+    if (vKey < 0 || vKey >= 256)
+    {
+        return false;
+    }
+    EnsurePayloadStateStore();
+    if (!g_payloadStateStore)
+    {
+        switch (channelKind)
+        {
+            case 1:
+                return (g_lastRawKeyboardState[vKey] & 0x80) != 0;
+            case 2:
+                return g_lastWin32State[vKey] != 0;
+            case 3:
+                return g_lastDIState[vKey] != 0;
+            default:
+                return false;
+        }
+    }
+    return payload_core_state_store_get_projected(g_payloadStateStore, channelKind, static_cast<uint32_t>(vKey)) != 0;
+}
+
+static void SetProjectedStateValue(uint32_t channelKind, int vKey, bool down)
+{
+    if (vKey < 0 || vKey >= 256)
+    {
+        return;
+    }
+    EnsurePayloadStateStore();
+    if (g_payloadStateStore)
+    {
+        payload_core_state_store_set_projected(g_payloadStateStore, channelKind, static_cast<uint32_t>(vKey), down ? 1u : 0u);
+    }
+    switch (channelKind)
+    {
+        case 1:
+            g_lastRawKeyboardState[vKey] = down ? 0x80 : 0x00;
+            break;
+        case 2:
+            g_lastWin32State[vKey] = down ? 1 : 0;
+            break;
+        case 3:
+            g_lastDIState[vKey] = down ? 1 : 0;
+            break;
+    }
+}
+
+static void ClearAllProjectedStateValues()
+{
+    EnsurePayloadStateStore();
+    if (g_payloadStateStore)
+    {
+        payload_core_state_store_clear_all_projected(g_payloadStateStore);
+    }
+    memset(g_lastRawKeyboardState, 0, sizeof(g_lastRawKeyboardState));
+    memset(g_lastWin32State, 0, sizeof(g_lastWin32State));
+    memset(g_lastDIState, 0, sizeof(g_lastDIState));
+}
+
+static void ClearLogicalDesiredStateValues()
+{
+    EnsurePayloadStateStore();
+    if (g_payloadStateStore)
+    {
+        payload_core_state_store_clear_logical_desired(g_payloadStateStore);
+    }
+    memset(g_lastLogicalDesiredState, 0, sizeof(g_lastLogicalDesiredState));
 }
 
 static void LogCountersOnce()
