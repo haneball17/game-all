@@ -38,8 +38,8 @@
     <RustTargetTriple>i686-pc-windows-msvc</RustTargetTriple>
     <RustProfile Condition="'$(Configuration)'=='Debug'">debug</RustProfile>
     <RustProfile Condition="'$(Configuration)'=='Release'">release</RustProfile>
-    <RustBuildArgs Condition="'$(Configuration)'=='Debug'">build -p game_payload_core --target $(RustTargetTriple)</RustBuildArgs>
-    <RustBuildArgs Condition="'$(Configuration)'=='Release'">build -p game_payload_core --target $(RustTargetTriple) --release</RustBuildArgs>
+    <RustBuildArgs Condition="'$(Configuration)'=='Debug'">build -p game_payload_core -p game_helper_core --target $(RustTargetTriple)</RustBuildArgs>
+    <RustBuildArgs Condition="'$(Configuration)'=='Release'">build -p game_payload_core -p game_helper_core --target $(RustTargetTriple) --release</RustBuildArgs>
     <RustLibDir>$(RustWorkspaceDir)target\$(RustTargetTriple)\$(RustProfile)\</RustLibDir>
     <!-- VS2019/v142 环境下优先链接仓库内现成的 VC16 MinHook 产物，避免 VC17 静态库触发 C1047。 -->
     <MinHookLibDir Condition="'$(PlatformToolset)'=='v142'">$(ProjectDir)lib\minhook\build\VC16\lib\Release</MinHookLibDir>
@@ -57,7 +57,7 @@
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>$(RustLibDir);$(MinHookLibDir);$(MinHookFallbackLibDir);$(ProjectDir)lib\minhook\build\VC17\lib\Release;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>game_payload_core.lib;libMinHook.x86.lib;user32.lib;ole32.lib;Ws2_32.lib;Userenv.lib;Ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>game_payload_core.lib;game_helper_core.lib;libMinHook.x86.lib;user32.lib;ole32.lib;Ws2_32.lib;Userenv.lib;Ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -69,7 +69,7 @@
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>$(RustLibDir);$(MinHookLibDir);$(MinHookFallbackLibDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>game_payload_core.lib;libMinHook.x86.lib;user32.lib;ole32.lib;Ws2_32.lib;Userenv.lib;Ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>game_payload_core.lib;game_helper_core.lib;libMinHook.x86.lib;user32.lib;ole32.lib;Ws2_32.lib;Userenv.lib;Ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>

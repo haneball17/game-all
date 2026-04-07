@@ -1078,6 +1078,51 @@
 
 ---
 
+## 第三十批落地：game_helper_core 开始接回 HelperMod 控制路径（2026-04-08）
+
+### 本次新增
+- `game_helper_core` 已新增 C ABI：
+  - `game_helper_core_evaluate_status_contract(...)`
+  - `game_helper_core_evaluate_control_contract(...)`
+  - `game_helper_core_decode_control_apply_plan(...)`
+- `rust/include/` 已新增：
+  - `game_helper_core_ffi.h`
+
+### 本次接回
+- `Payload/Payload.vcxproj` 现在已同时构建并链接：
+  - `game_payload_core`
+  - `game_helper_core`
+- `HelperMod.cpp` 目前已开始用 Rust 承接：
+  - `HelperControlV4` 协议契约校验
+  - `ActionMask` -> 控制应用计划解码
+- `ControlReaderTick()` 不再自己直接判断 control 协议头是否匹配。
+- `ApplyControlActions(...)` 已开始消费 Rust 解码后的 `HelperControlApplyPlanInterop`，不再自己直接解 `action_mask` 位。
+
+### 当前价值
+- `Helper` 这条线第一次真正把 Rust 逻辑接回了被注入执行端。
+- 现在 `Helper` 已经不仅有“协议镜像”和“独立 crate”，而是开始实际替换 `HelperMod.cpp` 中的协议/控制解析层。
+- 这为后续继续收口：
+  - 状态快照写入
+  - 控制读写状态机
+  - 后台线程诊断
+  提供了可持续的接入路径。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_helper_core`
+2. `cargo clippy -p game_helper_core --all-targets --all-features -- -D warnings`
+3. `cargo test --workspace`
+4. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+5. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+6. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+
+结果：
+- Rust crate 与 workspace 全量验证通过
+- Windows `Payload` Debug / Release 构建通过
+
+---
+
 ## 第二十七批落地：Injector attempt 失败原因开始统一由 Rust 汇总（2026-04-08）
 
 ### 本次新增

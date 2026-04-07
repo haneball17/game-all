@@ -3,6 +3,8 @@ use game_core_protocols::{
     HELPER_STATUS_V5_VERSION, HelperControlV4, HelperStatusV5,
 };
 
+pub mod ffi;
+
 pub const ACTION_MASK_FULLSCREEN_ATTACK: u32 = 1 << 0;
 pub const ACTION_MASK_FULLSCREEN_SKILL: u32 = 1 << 1;
 pub const ACTION_MASK_AUTO_TRANSPARENT: u32 = 1 << 2;

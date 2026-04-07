@@ -18,6 +18,13 @@ name = "game_core_protocols"
 version = "0.1.0"
 
 [[package]]
+name = "game_helper_core"
+version = "0.1.0"
+dependencies = [
+ "game_core_protocols",
+]
+
+[[package]]
 name = "game_injector_core"
 version = "0.1.0"
 dependencies = [

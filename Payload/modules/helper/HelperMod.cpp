@@ -6,6 +6,7 @@
 #include <intrin.h>
 #include <wctype.h>
 #include "MinHook.h"
+#include "game_helper_core_ffi.h"
 
 
 // LDR 断链与抹头（可选）支持，使用私有结构以规避 SDK 结构差异。
@@ -1870,32 +1871,32 @@ static void SetDamageEnabled(BOOL enabled);
 static void SetDamageMultiplier(int value);
 static void SetInvincibleEnabled(BOOL enabled);
 
-static void ApplyControlActions(const HelperControlV4& snapshot) {
+static void ApplyControlActions(const HelperControlApplyPlanInterop& plan) {
 	if (g_control_fullscreen_attack == kControlFollow &&
-		(snapshot.action_mask & kActionMaskFullscreenAttack) != 0) {
-		SetFullscreenAttackTargetEnabled(snapshot.desired_fullscreen_attack != 0);
+		plan.apply_fullscreen_attack_target != 0) {
+		SetFullscreenAttackTargetEnabled(plan.fullscreen_attack_target != 0);
 	}
 
 	if (g_control_fullscreen_skill == kControlFollow &&
-		(snapshot.action_mask & kActionMaskFullscreenSkill) != 0) {
+		plan.apply_fullscreen_skill_enabled != 0) {
 		if (g_fullscreen_skill_enabled) {
-			g_fullscreen_skill_active = snapshot.desired_fullscreen_skill != 0;
+			g_fullscreen_skill_active = plan.fullscreen_skill_enabled != 0;
 		}
 	}
 
 	if (g_control_auto_transparent == kControlFollow &&
-		(snapshot.action_mask & kActionMaskAutoTransparent) != 0) {
-		SetAutoTransparentEnabled(snapshot.desired_auto_transparent != 0);
+		plan.apply_auto_transparent_enabled != 0) {
+		SetAutoTransparentEnabled(plan.auto_transparent_enabled != 0);
 	}
 
 	if (g_control_hotkey_enabled == kControlFollow &&
-		(snapshot.action_mask & kActionMaskHotkeyEnabled) != 0) {
-		g_hotkey_enabled = snapshot.desired_hotkey_enabled != 0;
+		plan.apply_hotkey_enabled != 0) {
+		g_hotkey_enabled = plan.hotkey_enabled != 0;
 	}
 
 	if (g_control_attract == kControlFollow) {
-		if ((snapshot.action_mask & kActionMaskAttractMode) != 0) {
-			int mode = static_cast<int>(snapshot.desired_attract_mode);
+		if (plan.apply_attract_mode != 0) {
+			int mode = static_cast<int>(plan.attract_mode);
 			if (mode < kAttractModeOff || mode > kAttractModeMax) {
 				mode = kAttractModeOff;
 			}
@@ -1906,29 +1907,29 @@ static void ApplyControlActions(const HelperControlV4& snapshot) {
 				g_attract_last_mode = mode;
 			}
 		}
-		if ((snapshot.action_mask & kActionMaskAttractEnabled) != 0) {
-			if (snapshot.desired_attract_enabled != 0) {
+		if (plan.apply_attract_enabled != 0) {
+			if (plan.attract_enabled != 0) {
 				SetAttractEnabled(TRUE);
 			} else {
 				SetAttractEnabled(FALSE);
 			}
 		}
-		if ((snapshot.action_mask & kActionMaskAttractPositive) != 0) {
-			g_attract_positive_enabled = snapshot.desired_attract_positive != 0;
+		if (plan.apply_attract_positive != 0) {
+			g_attract_positive_enabled = plan.attract_positive != 0;
 		}
-		if ((snapshot.action_mask & kActionMaskGatherItems) != 0) {
-			SetGatherItemsEnabled(snapshot.desired_gather_items_enabled != 0);
+		if (plan.apply_gather_items_enabled != 0) {
+			SetGatherItemsEnabled(plan.gather_items_enabled != 0);
 		}
 	}
 
-	if ((snapshot.action_mask & kActionMaskDamageMultiplier) != 0) {
-		SetDamageMultiplier(static_cast<int>(snapshot.desired_damage_multiplier));
+	if (plan.apply_damage_multiplier != 0) {
+		SetDamageMultiplier(static_cast<int>(plan.damage_multiplier));
 	}
-	if ((snapshot.action_mask & kActionMaskDamageEnabled) != 0) {
-		SetDamageEnabled(snapshot.desired_damage_enabled != 0);
+	if (plan.apply_damage_enabled != 0) {
+		SetDamageEnabled(plan.damage_enabled != 0);
 	}
-	if ((snapshot.action_mask & kActionMaskInvincibleEnabled) != 0) {
-		SetInvincibleEnabled(snapshot.desired_invincible_enabled != 0);
+	if (plan.apply_invincible_enabled != 0) {
+		SetInvincibleEnabled(plan.invincible_enabled != 0);
 	}
 }
 
@@ -1939,7 +1940,7 @@ static void ControlReaderTick() {
 	}
 	HelperControlV4 snapshot = {0};
 	memcpy(&snapshot, g_control_memory_view, sizeof(snapshot));
-	if (snapshot.version != kControlMemoryVersionV4 || snapshot.size != sizeof(HelperControlV4)) {
+	if (game_helper_core_evaluate_control_contract(&snapshot) == 0) {
 		if (InterlockedCompareExchange(&g_control_protocol_logged, 1, 0) == 0) {
 			char message[160] = {0};
 			sprintf_s(
@@ -1991,7 +1992,10 @@ static void ControlReaderTick() {
 	if (snapshot.action_sequence != 0 &&
 		snapshot.action_sequence != g_control_last_action_sequence) {
 		g_control_last_action_sequence = snapshot.action_sequence;
-		ApplyControlActions(snapshot);
+		HelperControlApplyPlanInterop plan = {};
+		if (game_helper_core_decode_control_apply_plan(&snapshot, &plan) != 0) {
+			ApplyControlActions(plan);
+		}
 	}
 }
 
