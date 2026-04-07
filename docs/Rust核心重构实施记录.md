@@ -824,3 +824,63 @@
 - `game_payload_core` 新增 1 个 observation snapshot 测试后全部通过
 - Rust clippy 通过
 - Windows `Payload` Debug / Release 构建通过
+
+---
+
+## 第十八批落地：Sync adapter diagnostics event/buffer 开始收口到 Rust（2026-04-07）
+
+### 本次新增
+- `game_payload_core::diagnostics` 新增：
+  - `AdapterDiagnosticsEventKind`
+  - `AdapterDiagnosticsEvent`
+  - `AdapterDiagnosticsBuffer`
+- `game_payload_core_ffi` 新增：
+  - `PayloadAdapterDiagnosticsEventInterop`
+  - `payload_core_diagnostics_buffer_create(...)`
+  - `payload_core_diagnostics_buffer_destroy(...)`
+  - `payload_core_diagnostics_buffer_push_event(...)`
+  - `payload_core_diagnostics_buffer_latest(...)`
+  - `payload_core_diagnostics_buffer_copy_latest_n(...)`
+
+### 当前接入范围
+`SyncMod.cpp` 已开始把以下高信号事件推入 Rust diagnostics buffer：
+
+1. `LogicalChanged`
+   - 来源：`LogLogicalEdge(...)`
+2. `AdapterEmitted`
+   - 来源：`LogAdapterEmit(...)`
+3. `PauseRelease`
+   - 来源：`LogPauseInterception(...)`
+4. `ClearApplied`
+   - 来源：`ApplyClearIfNeeded(...)` / `ApplyRawClearIfNeeded(...)`
+
+当前 `Sync` diagnostics 总线已形成：
+
+- snapshot：
+  - `SyncObservationSnapshot`
+- event：
+  - `AdapterDiagnosticsEvent`
+- buffer：
+  - `AdapterDiagnosticsBuffer`
+
+### 当前价值
+- `Sync` 不再只有单条 `[OBS]` 快照日志，已经开始形成“snapshot + event buffer”双轨诊断模型。
+- `logical desired / projected state / pause / clear / emit` 开始进入同一条 Rust diagnostics 通道。
+- 这为后续继续做：
+  - adapter diagnostics 导出
+  - GUI 读取最近事件
+  - minidump / 日志联合复盘
+  提供了统一基础。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_payload_core`
+2. `cargo clippy -p game_payload_core --all-targets --all-features -- -D warnings`
+3. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+4. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+
+结果：
+- `game_payload_core` 新增 1 个 diagnostics buffer 测试后全部通过
+- Rust clippy 通过
+- Windows `Payload` Debug / Release 构建通过

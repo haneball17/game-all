@@ -68,6 +68,7 @@ static BYTE g_lastWin32State[256] = {};
 static BYTE g_lastDIState[256] = {};
 static BYTE g_lastLogicalDesiredState[256] = {};
 static void* g_payloadStateStore = nullptr;
+static void* g_payloadDiagnosticsBuffer = nullptr;
 
 static LONG g_createDeviceHooked = 0;
 static LONG g_deviceHooksHooked = 0;
@@ -243,6 +244,15 @@ static std::wstring BuildDebugConfigPath();
 static void LoadDebugConfig();
 static bool EvaluateRuntimeDecision(const SharedSnapshot& snapshot, PayloadRuntimeDecisionInterop& decision);
 static void LogDirectionDecision(const wchar_t* action, int vKey, bool snapshotDown, bool rawDownBefore, bool win32DownBefore, const wchar_t* reason);
+static void PushAdapterDiagnosticsEvent(
+    uint32_t eventKind,
+    uint32_t channelKind,
+    int vKey,
+    bool desiredDown,
+    bool projectedBefore,
+    bool projectedAfter,
+    bool forcedRelease,
+    uint32_t reasonCode);
 static void LogLogicalEdge(int vKey, bool desiredDown, bool pressedEdge, bool releasedEdge);
 static void LogAdapterEmit(const wchar_t* adapter, int vKey, int emitAction, bool beforeDown, bool afterDown, const wchar_t* reason);
 static void LogDirectionGroupDecision(const wchar_t* pairName, int winnerVKey, int loserVKey, const wchar_t* reason);
@@ -275,6 +285,7 @@ static bool EvaluateAdapterProjectedState(
     bool directInputProjected,
     PayloadAdapterProjectedStateInterop& state);
 static void EnsurePayloadStateStore();
+static void EnsurePayloadDiagnosticsBuffer();
 static bool GetLogicalDesiredStateValue(int vKey);
 static void SetLogicalDesiredStateValue(int vKey, bool down);
 static bool GetProjectedStateValue(uint32_t channelKind, int vKey);
@@ -1319,10 +1330,12 @@ static void ApplyClearIfNeeded(const SharedSnapshot& snapshot)
             decision.should_clear_logical != 0)
         {
             ClearLogicalDesiredStateValues();
+            PushAdapterDiagnosticsEvent(4u, 0u, 0, false, false, false, false, 1u);
         }
         return;
     }
     ClearLogicalDesiredStateValues();
+    PushAdapterDiagnosticsEvent(4u, 0u, 0, false, false, false, false, 1u);
 }
 
 static void ApplyRawClearIfNeeded(const SharedSnapshot& snapshot)
@@ -1347,10 +1360,12 @@ static void ApplyRawClearIfNeeded(const SharedSnapshot& snapshot)
             decision.should_clear_projected != 0)
         {
             ClearAllProjectedStateValues();
+            PushAdapterDiagnosticsEvent(4u, 0u, 0, false, false, false, false, 2u);
         }
         return;
     }
     ClearAllProjectedStateValues();
+    PushAdapterDiagnosticsEvent(4u, 0u, 0, false, false, false, false, 2u);
 }
 
 static void BuildRawKeyboardEvent(int vKey, bool isDown, RAWKEYBOARD& keyboard)
@@ -2839,6 +2854,15 @@ static void LogLogicalEdge(int vKey, bool desiredDown, bool pressedEdge, bool re
         pressedEdge ? 1 : 0,
         releasedEdge ? 1 : 0);
     WriteLogLine(buffer);
+    PushAdapterDiagnosticsEvent(
+        1u,
+        0u,
+        vKey,
+        desiredDown,
+        false,
+        false,
+        false,
+        pressedEdge ? 1u : (releasedEdge ? 2u : 0u));
 }
 
 static void LogAdapterEmit(const wchar_t* adapter, int vKey, int emitAction, bool beforeDown, bool afterDown, const wchar_t* reason)
@@ -2871,6 +2895,28 @@ static void LogAdapterEmit(const wchar_t* adapter, int vKey, int emitAction, boo
         afterDown ? 1 : 0,
         reason ? reason : L"none");
     WriteLogLine(buffer);
+    uint32_t channelKind = 0;
+    if (adapter && wcsstr(adapter, L"RawInput"))
+    {
+        channelKind = 2;
+    }
+    else if (adapter && wcsstr(adapter, L"DirectInput"))
+    {
+        channelKind = 3;
+    }
+    else if (adapter && wcsstr(adapter, L"Win32"))
+    {
+        channelKind = 1;
+    }
+    PushAdapterDiagnosticsEvent(
+        2u,
+        channelKind,
+        vKey,
+        afterDown,
+        beforeDown,
+        afterDown,
+        emitAction == 2 && beforeDown && !afterDown,
+        static_cast<uint32_t>(emitAction));
 }
 
 static void LogDirectionGroupDecision(const wchar_t* pairName, int winnerVKey, int loserVKey, const wchar_t* reason)
@@ -2929,6 +2975,20 @@ static void LogPauseInterception(const wchar_t* adapter, int vKey, bool hadProje
         hadProjectedDown ? 1 : 0,
         reason ? reason : L"none");
     WriteLogLine(buffer);
+    uint32_t channelKind = 0;
+    if (adapter && wcsstr(adapter, L"RawInput"))
+    {
+        channelKind = 2;
+    }
+    PushAdapterDiagnosticsEvent(
+        3u,
+        channelKind,
+        vKey,
+        false,
+        hadProjectedDown,
+        false,
+        hadProjectedDown,
+        0u);
 }
 
 static void RecordWin32KeyEventIfNeeded(int vKey, SHORT result, bool spoofed, uint32_t profileMode)
@@ -4632,6 +4692,14 @@ static void EnsurePayloadStateStore()
     }
 }
 
+static void EnsurePayloadDiagnosticsBuffer()
+{
+    if (!g_payloadDiagnosticsBuffer)
+    {
+        g_payloadDiagnosticsBuffer = payload_core_diagnostics_buffer_create(512);
+    }
+}
+
 static bool GetLogicalDesiredStateValue(int vKey)
 {
     if (vKey < 0 || vKey >= 256)
@@ -4729,6 +4797,35 @@ static void ClearLogicalDesiredStateValues()
         payload_core_state_store_clear_logical_desired(g_payloadStateStore);
     }
     memset(g_lastLogicalDesiredState, 0, sizeof(g_lastLogicalDesiredState));
+}
+
+static void PushAdapterDiagnosticsEvent(
+    uint32_t eventKind,
+    uint32_t channelKind,
+    int vKey,
+    bool desiredDown,
+    bool projectedBefore,
+    bool projectedAfter,
+    bool forcedRelease,
+    uint32_t reasonCode)
+{
+    EnsurePayloadDiagnosticsBuffer();
+    if (!g_payloadDiagnosticsBuffer || vKey < 0)
+    {
+        return;
+    }
+
+    PayloadAdapterDiagnosticsEventInterop event = {};
+    event.tick_ms = GetTickCount64();
+    event.event_kind = eventKind;
+    event.channel_kind = channelKind;
+    event.vkey = static_cast<uint32_t>(vKey);
+    event.desired_down = desiredDown ? 1u : 0u;
+    event.projected_before = projectedBefore ? 1u : 0u;
+    event.projected_after = projectedAfter ? 1u : 0u;
+    event.forced_release = forcedRelease ? 1u : 0u;
+    event.reason_code = reasonCode;
+    payload_core_diagnostics_buffer_push_event(g_payloadDiagnosticsBuffer, &event);
 }
 
 static void LogCountersOnce()
@@ -4980,6 +5077,16 @@ static DWORD WINAPI WorkerThread(LPVOID)
     }
 
     LogInfo(L"工作线程退出");
+    if (g_payloadDiagnosticsBuffer)
+    {
+        payload_core_diagnostics_buffer_destroy(g_payloadDiagnosticsBuffer);
+        g_payloadDiagnosticsBuffer = nullptr;
+    }
+    if (g_payloadStateStore)
+    {
+        payload_core_state_store_destroy(g_payloadStateStore);
+        g_payloadStateStore = nullptr;
+    }
     if (g_logFile != INVALID_HANDLE_VALUE)
     {
         FlushFileBuffers(g_logFile);

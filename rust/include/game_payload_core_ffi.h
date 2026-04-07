@@ -149,6 +149,18 @@ typedef struct PayloadSyncObservationSnapshotInterop {
     uint32_t profile_mode;
 } PayloadSyncObservationSnapshotInterop;
 
+typedef struct PayloadAdapterDiagnosticsEventInterop {
+    uint64_t tick_ms;
+    uint32_t event_kind;
+    uint32_t channel_kind;
+    uint32_t vkey;
+    uint32_t desired_down;
+    uint32_t projected_before;
+    uint32_t projected_after;
+    uint32_t forced_release;
+    uint32_t reason_code;
+} PayloadAdapterDiagnosticsEventInterop;
+
 GAME_PAYLOAD_CORE_API uint32_t payload_core_evaluate_runtime_state(
     const void* snapshot_ptr,
     size_t mapping_size,
@@ -308,6 +320,19 @@ GAME_PAYLOAD_CORE_API uint32_t payload_core_build_sync_observation_snapshot(
     const PayloadInputPathObservationInterop* observation,
     const PayloadAdapterDriftSummaryInterop* drift,
     PayloadSyncObservationSnapshotInterop* out_snapshot);
+GAME_PAYLOAD_CORE_API void* payload_core_diagnostics_buffer_create(size_t capacity);
+GAME_PAYLOAD_CORE_API void payload_core_diagnostics_buffer_destroy(void* buffer);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_diagnostics_buffer_push_event(
+    void* buffer,
+    const PayloadAdapterDiagnosticsEventInterop* event);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_diagnostics_buffer_latest(
+    const void* buffer,
+    PayloadAdapterDiagnosticsEventInterop* out_event);
+GAME_PAYLOAD_CORE_API size_t payload_core_diagnostics_buffer_copy_latest_n(
+    const void* buffer,
+    size_t limit,
+    PayloadAdapterDiagnosticsEventInterop* out_events,
+    size_t out_capacity);
 
 GAME_PAYLOAD_CORE_API void* payload_core_convergence_create(uint8_t extra_release_pulses);
 GAME_PAYLOAD_CORE_API void payload_core_convergence_destroy(void* state);

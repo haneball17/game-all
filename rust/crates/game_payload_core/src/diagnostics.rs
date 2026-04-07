@@ -58,6 +58,70 @@ impl DiagnosticBuffer {
     }
 }
 
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdapterDiagnosticsEventKind {
+    LogicalChanged = 1,
+    AdapterEmitted = 2,
+    PauseRelease = 3,
+    ClearApplied = 4,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdapterDiagnosticsEvent {
+    pub tick_ms: u64,
+    pub event_kind: AdapterDiagnosticsEventKind,
+    pub channel_kind: InputChannelKind,
+    pub vkey: u32,
+    pub desired_down: bool,
+    pub projected_before: bool,
+    pub projected_after: bool,
+    pub forced_release: bool,
+    pub reason_code: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct AdapterDiagnosticsBuffer {
+    capacity: usize,
+    events: VecDeque<AdapterDiagnosticsEvent>,
+}
+
+impl AdapterDiagnosticsBuffer {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            events: VecDeque::with_capacity(capacity),
+        }
+    }
+
+    pub fn push(&mut self, event: AdapterDiagnosticsEvent) {
+        if self.capacity == 0 {
+            return;
+        }
+        while self.events.len() >= self.capacity {
+            self.events.pop_front();
+        }
+        self.events.push_back(event);
+    }
+
+    pub fn latest(&self) -> Option<AdapterDiagnosticsEvent> {
+        self.events.back().copied()
+    }
+
+    pub fn copy_latest_n(&self, limit: usize) -> Vec<AdapterDiagnosticsEvent> {
+        let count = limit.min(self.events.len());
+        self.events
+            .iter()
+            .rev()
+            .take(count)
+            .copied()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyncObservationSnapshot {
     pub channel: InputChannelKind,
@@ -169,5 +233,61 @@ mod tests {
         assert!(snapshot.mixed_inputs);
         assert_eq!(snapshot.raw_drift_count, 2);
         assert_eq!(snapshot.profile_mode, 3);
+    }
+
+    #[test]
+    fn adapter_diagnostics_buffer_keeps_latest_n_in_order() {
+        let mut buffer = AdapterDiagnosticsBuffer::new(3);
+        buffer.push(AdapterDiagnosticsEvent {
+            tick_ms: 1,
+            event_kind: AdapterDiagnosticsEventKind::LogicalChanged,
+            channel_kind: InputChannelKind::Unknown,
+            vkey: 0x25,
+            desired_down: true,
+            projected_before: false,
+            projected_after: false,
+            forced_release: false,
+            reason_code: 1,
+        });
+        buffer.push(AdapterDiagnosticsEvent {
+            tick_ms: 2,
+            event_kind: AdapterDiagnosticsEventKind::AdapterEmitted,
+            channel_kind: InputChannelKind::RawInput,
+            vkey: 0x25,
+            desired_down: true,
+            projected_before: false,
+            projected_after: true,
+            forced_release: false,
+            reason_code: 2,
+        });
+        buffer.push(AdapterDiagnosticsEvent {
+            tick_ms: 3,
+            event_kind: AdapterDiagnosticsEventKind::PauseRelease,
+            channel_kind: InputChannelKind::RawInput,
+            vkey: 0x25,
+            desired_down: false,
+            projected_before: true,
+            projected_after: false,
+            forced_release: true,
+            reason_code: 3,
+        });
+        buffer.push(AdapterDiagnosticsEvent {
+            tick_ms: 4,
+            event_kind: AdapterDiagnosticsEventKind::ClearApplied,
+            channel_kind: InputChannelKind::Unknown,
+            vkey: 0,
+            desired_down: false,
+            projected_before: false,
+            projected_after: false,
+            forced_release: false,
+            reason_code: 4,
+        });
+
+        let latest = buffer.latest().expect("latest");
+        assert_eq!(latest.tick_ms, 4);
+        let events = buffer.copy_latest_n(2);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].tick_ms, 3);
+        assert_eq!(events[1].tick_ms, 4);
     }
 }

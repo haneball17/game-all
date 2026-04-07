@@ -1,7 +1,10 @@
 #![allow(clippy::missing_safety_doc, clippy::undocumented_unsafe_blocks)]
 
 use crate::{
-    diagnostics::{SyncObservationSnapshot, build_sync_observation_snapshot},
+    diagnostics::{
+        AdapterDiagnosticsBuffer, AdapterDiagnosticsEvent, AdapterDiagnosticsEventKind,
+        SyncObservationSnapshot, build_sync_observation_snapshot,
+    },
     runtime::{
         AdapterDriftSummary, AdapterProjectedState, ChannelEmitDecision, EmitAction,
         InputPathObservation, KeyDecision, LogicalKeyDecision, PathDecision, RuntimeDecision,
@@ -174,6 +177,20 @@ pub struct PayloadSyncObservationSnapshotInterop {
     pub direct_input_drift_count: u32,
     pub profile_id: u32,
     pub profile_mode: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadAdapterDiagnosticsEventInterop {
+    pub tick_ms: u64,
+    pub event_kind: u32,
+    pub channel_kind: u32,
+    pub vkey: u32,
+    pub desired_down: u32,
+    pub projected_before: u32,
+    pub projected_after: u32,
+    pub forced_release: u32,
+    pub reason_code: u32,
 }
 
 impl From<RuntimeDecision> for PayloadRuntimeDecisionInterop {
@@ -365,6 +382,22 @@ impl From<SyncObservationSnapshot> for PayloadSyncObservationSnapshotInterop {
             direct_input_drift_count: value.direct_input_drift_count,
             profile_id: value.profile_id,
             profile_mode: value.profile_mode,
+        }
+    }
+}
+
+impl From<AdapterDiagnosticsEvent> for PayloadAdapterDiagnosticsEventInterop {
+    fn from(value: AdapterDiagnosticsEvent) -> Self {
+        Self {
+            tick_ms: value.tick_ms,
+            event_kind: value.event_kind as u32,
+            channel_kind: value.channel_kind as u32,
+            vkey: value.vkey,
+            desired_down: u32::from(value.desired_down),
+            projected_before: u32::from(value.projected_before),
+            projected_after: u32::from(value.projected_after),
+            forced_release: u32::from(value.forced_release),
+            reason_code: value.reason_code,
         }
     }
 }
@@ -942,4 +975,89 @@ pub unsafe extern "C" fn payload_core_build_sync_observation_snapshot(
     );
     unsafe { out_snapshot.write(snapshot.into()) };
     1
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn payload_core_diagnostics_buffer_create(capacity: usize) -> *mut AdapterDiagnosticsBuffer {
+    Box::into_raw(Box::new(AdapterDiagnosticsBuffer::new(capacity)))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_diagnostics_buffer_destroy(buffer: *mut AdapterDiagnosticsBuffer) {
+    if buffer.is_null() {
+        return;
+    }
+    unsafe {
+        drop(Box::from_raw(buffer));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_diagnostics_buffer_push_event(
+    buffer: *mut AdapterDiagnosticsBuffer,
+    event: *const PayloadAdapterDiagnosticsEventInterop,
+) -> u32 {
+    if buffer.is_null() || event.is_null() {
+        return 0;
+    }
+    let event = unsafe { &*event };
+    let channel = match event.channel_kind {
+        1 => crate::runtime::InputChannelKind::Win32,
+        2 => crate::runtime::InputChannelKind::RawInput,
+        3 => crate::runtime::InputChannelKind::DirectInput,
+        _ => crate::runtime::InputChannelKind::Unknown,
+    };
+    let event_kind = match event.event_kind {
+        1 => AdapterDiagnosticsEventKind::LogicalChanged,
+        2 => AdapterDiagnosticsEventKind::AdapterEmitted,
+        3 => AdapterDiagnosticsEventKind::PauseRelease,
+        4 => AdapterDiagnosticsEventKind::ClearApplied,
+        _ => AdapterDiagnosticsEventKind::LogicalChanged,
+    };
+    unsafe {
+        (&mut *buffer).push(AdapterDiagnosticsEvent {
+            tick_ms: event.tick_ms,
+            event_kind,
+            channel_kind: channel,
+            vkey: event.vkey,
+            desired_down: event.desired_down != 0,
+            projected_before: event.projected_before != 0,
+            projected_after: event.projected_after != 0,
+            forced_release: event.forced_release != 0,
+            reason_code: event.reason_code,
+        });
+    }
+    1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_diagnostics_buffer_latest(
+    buffer: *const AdapterDiagnosticsBuffer,
+    out_event: *mut PayloadAdapterDiagnosticsEventInterop,
+) -> u32 {
+    if buffer.is_null() || out_event.is_null() {
+        return 0;
+    }
+    let Some(event) = (unsafe { &*buffer }).latest() else {
+        return 0;
+    };
+    unsafe { out_event.write(event.into()) };
+    1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_diagnostics_buffer_copy_latest_n(
+    buffer: *const AdapterDiagnosticsBuffer,
+    limit: usize,
+    out_events: *mut PayloadAdapterDiagnosticsEventInterop,
+    out_capacity: usize,
+) -> usize {
+    if buffer.is_null() || out_events.is_null() || out_capacity == 0 {
+        return 0;
+    }
+    let events = (unsafe { &*buffer }).copy_latest_n(limit.min(out_capacity));
+    for (idx, event) in events.iter().enumerate() {
+        unsafe { out_events.add(idx).write((*event).into()) };
+    }
+    events.len()
 }
