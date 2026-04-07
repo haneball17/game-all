@@ -2,6 +2,7 @@ use game_core_protocols::{
     SHARED_KEYBOARD_STATE_V2_SIZE, SHARED_KEYBOARD_STATE_V2_VERSION, SYNC_FLAG_CLEAR,
     SYNC_FLAG_PAUSED, SharedKeyboardStateV2,
 };
+use crate::sync::{ProjectedChannelKind, SyncStateStore};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeDecision {
@@ -331,6 +332,61 @@ pub fn decide_channel_emit(
         should_block: logical.key.should_block,
         suppress_repeat,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn decide_channel_emit_with_store(
+    store: &mut SyncStateStore,
+    channel: ProjectedChannelKind,
+    flags: u32,
+    active_pid: u32,
+    profile_id: u32,
+    profile_mode: u32,
+    last_tick: u64,
+    current_pid: u32,
+    now_tick: u64,
+    heartbeat_timeout_ms: u64,
+    vkey: u32,
+    target_marked: bool,
+    block_marked: bool,
+    keyboard_down: bool,
+    edge_counter: u32,
+    pair_vkey: u32,
+    pair_target_marked: bool,
+    pair_keyboard_down: bool,
+    pair_edge_counter: u32,
+    force_release: bool,
+    repeat_allowed: bool,
+    observed_down: bool,
+) -> (LogicalKeyDecision, ChannelEmitDecision) {
+    let previous_desired_down = store.logical_desired(vkey as usize);
+    let projected_down_before = store.projected(channel, vkey as usize);
+    let logical = evaluate_logical_key_header(
+        flags,
+        active_pid,
+        profile_id,
+        profile_mode,
+        last_tick,
+        current_pid,
+        now_tick,
+        heartbeat_timeout_ms,
+        vkey,
+        target_marked,
+        block_marked,
+        keyboard_down,
+        edge_counter,
+        pair_vkey,
+        pair_target_marked,
+        pair_keyboard_down,
+        pair_edge_counter,
+        force_release,
+        previous_desired_down,
+        repeat_allowed,
+    );
+    let emit = decide_channel_emit(logical, projected_down_before, observed_down);
+    store.set_logical_desired(vkey as usize, logical.key.desired_down);
+    store.set_projected(channel, vkey as usize, emit.projected_down_after);
+    (logical, emit)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -714,5 +770,38 @@ mod tests {
         assert_eq!(summary.raw_drift_count, 1);
         assert_eq!(summary.win32_drift_count, 1);
         assert_eq!(summary.direct_input_drift_count, 2);
+    }
+
+    #[test]
+    fn decide_channel_emit_with_store_updates_logical_and_projected_state() {
+        let mut store = SyncStateStore::default();
+        let (logical, emit) = decide_channel_emit_with_store(
+            &mut store,
+            ProjectedChannelKind::Raw,
+            0,
+            100,
+            1,
+            2,
+            1000,
+            200,
+            1100,
+            500,
+            0x41,
+            true,
+            false,
+            true,
+            3,
+            0,
+            false,
+            false,
+            0,
+            false,
+            false,
+            true,
+        );
+        assert!(logical.key.desired_down);
+        assert_eq!(emit.emit_action, EmitAction::Press);
+        assert!(store.logical_desired(0x41));
+        assert!(store.projected(ProjectedChannelKind::Raw, 0x41));
     }
 }
