@@ -81,6 +81,24 @@ pub struct LogicalRawPlan {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogicalRawTransitionDecision {
+    pub should_emit: bool,
+    pub vkey: u32,
+    pub is_down: bool,
+    pub emit_action: EmitAction,
+    pub desired_down: bool,
+    pub projected_down_before: bool,
+    pub projected_down_after: bool,
+    pub suppress_repeat: bool,
+    pub selection_reason: LogicalRawSelectionReason,
+    pub transition_reason: ChannelTransitionReason,
+    pub pressed_edge: bool,
+    pub released_edge: bool,
+    pub repeat_vkey: u32,
+    pub repeat_selection_reason: LogicalRawSelectionReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PathDecision {
     pub runtime: RuntimeDecision,
     pub should_spoof_focus: bool,
@@ -493,6 +511,136 @@ pub fn build_logical_raw_plan(preferred_vkey: u32, preferred_observed_down: bool
 }
 
 #[allow(clippy::too_many_arguments)]
+pub fn decide_logical_raw_transition_with_store(
+    store: &mut SyncStateStore,
+    flags: u32,
+    active_pid: u32,
+    profile_id: u32,
+    profile_mode: u32,
+    last_tick: u64,
+    current_pid: u32,
+    now_tick: u64,
+    heartbeat_timeout_ms: u64,
+    target_mask: &[u8],
+    block_mask: &[u8],
+    keyboard_state: &[u8],
+    edge_counter: &[u32],
+    force_release_mask: &[u8],
+    preferred_vkey: u32,
+) -> LogicalRawTransitionDecision {
+    let len = target_mask
+        .len()
+        .min(block_mask.len())
+        .min(keyboard_state.len())
+        .min(edge_counter.len())
+        .min(force_release_mask.len());
+    let preferred_idx = preferred_vkey as usize;
+    if preferred_idx >= len {
+        return LogicalRawTransitionDecision {
+            should_emit: false,
+            vkey: 0,
+            is_down: false,
+            emit_action: EmitAction::None,
+            desired_down: false,
+            projected_down_before: false,
+            projected_down_after: false,
+            suppress_repeat: false,
+            selection_reason: LogicalRawSelectionReason::None,
+            transition_reason: ChannelTransitionReason::None,
+            pressed_edge: false,
+            released_edge: false,
+            repeat_vkey: 0,
+            repeat_selection_reason: LogicalRawSelectionReason::None,
+        };
+    }
+
+    let preferred_observed_down = (keyboard_state[preferred_idx] & 0x80) != 0;
+    let plan = build_logical_raw_plan(preferred_vkey, preferred_observed_down);
+    let mut first_repeat: Option<(u32, LogicalRawSelectionReason)> = None;
+
+    for candidate in plan.candidates {
+        let vkey = candidate.vkey as usize;
+        if vkey >= len {
+            continue;
+        }
+        let pair_vkey = direction_pair_vkey(candidate.vkey).unwrap_or(0);
+        let pair_idx = pair_vkey as usize;
+        let pair_in_range = pair_vkey != 0 && pair_idx < len;
+
+        let (logical, emit) = decide_channel_emit_with_store(
+            store,
+            ProjectedChannelKind::Raw,
+            flags,
+            active_pid,
+            profile_id,
+            profile_mode,
+            last_tick,
+            current_pid,
+            now_tick,
+            heartbeat_timeout_ms,
+            candidate.vkey,
+            target_mask[vkey] != 0,
+            block_mask[vkey] != 0,
+            (keyboard_state[vkey] & 0x80) != 0,
+            edge_counter[vkey],
+            pair_vkey,
+            pair_in_range && target_mask[pair_idx] != 0,
+            pair_in_range && (keyboard_state[pair_idx] & 0x80) != 0,
+            if pair_in_range { edge_counter[pair_idx] } else { 0 },
+            force_release_mask[vkey] != 0,
+            false,
+            candidate.observed_down,
+        );
+
+        if emit.suppress_repeat && first_repeat.is_none() {
+            first_repeat = Some((candidate.vkey, candidate.selection_reason));
+        }
+
+        let required_matches = match candidate.required_action {
+            EmitAction::None => true,
+            EmitAction::Press => emit.emit_action == EmitAction::Press,
+            EmitAction::Release => emit.emit_action == EmitAction::Release,
+        };
+
+        if required_matches && emit.emit_action != EmitAction::None {
+            return LogicalRawTransitionDecision {
+                should_emit: true,
+                vkey: candidate.vkey,
+                is_down: emit.emit_action == EmitAction::Press,
+                emit_action: emit.emit_action,
+                desired_down: emit.desired_down,
+                projected_down_before: emit.projected_down_before,
+                projected_down_after: emit.projected_down_after,
+                suppress_repeat: emit.suppress_repeat,
+                selection_reason: candidate.selection_reason,
+                transition_reason: emit.transition_reason,
+                pressed_edge: logical.pressed_edge,
+                released_edge: logical.released_edge,
+                repeat_vkey: first_repeat.map(|(v, _)| v).unwrap_or(0),
+                repeat_selection_reason: first_repeat.map(|(_, r)| r).unwrap_or(LogicalRawSelectionReason::None),
+            };
+        }
+    }
+
+    LogicalRawTransitionDecision {
+        should_emit: false,
+        vkey: 0,
+        is_down: false,
+        emit_action: EmitAction::None,
+        desired_down: false,
+        projected_down_before: false,
+        projected_down_after: false,
+        suppress_repeat: first_repeat.is_some(),
+        selection_reason: LogicalRawSelectionReason::None,
+        transition_reason: ChannelTransitionReason::None,
+        pressed_edge: false,
+        released_edge: false,
+        repeat_vkey: first_repeat.map(|(v, _)| v).unwrap_or(0),
+        repeat_selection_reason: first_repeat.map(|(_, r)| r).unwrap_or(LogicalRawSelectionReason::None),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn decide_channel_emit_with_store(
     store: &mut SyncStateStore,
     channel: ProjectedChannelKind,
@@ -893,6 +1041,43 @@ mod tests {
             plan.candidates[0].selection_reason,
             LogicalRawSelectionReason::LogicalEmit
         );
+    }
+
+    #[test]
+    fn logical_raw_transition_with_store_returns_selected_emit() {
+        let mut store = SyncStateStore::default();
+        let mut target_mask = [0u8; 256];
+        let block_mask = [0u8; 256];
+        let mut keyboard_state = [0u8; 256];
+        let edge_counter = [0u32; 256];
+        let force_release_mask = [0u8; 256];
+
+        target_mask[0x41] = 1;
+        keyboard_state[0x41] = 0x80;
+
+        let decision = decide_logical_raw_transition_with_store(
+            &mut store,
+            0,
+            100,
+            1,
+            2,
+            1000,
+            200,
+            1100,
+            500,
+            &target_mask,
+            &block_mask,
+            &keyboard_state,
+            &edge_counter,
+            &force_release_mask,
+            0x41,
+        );
+
+        assert!(decision.should_emit);
+        assert_eq!(decision.vkey, 0x41);
+        assert!(decision.is_down);
+        assert_eq!(decision.selection_reason, LogicalRawSelectionReason::LogicalEmit);
+        assert_eq!(decision.transition_reason, ChannelTransitionReason::DesiredPress);
     }
 
     #[test]

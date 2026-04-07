@@ -942,6 +942,55 @@
 
 ---
 
+## 第二十四批落地：logical raw emit 决策开始统一由 Rust 输出（2026-04-07）
+
+### 本次新增
+- `game_payload_core::runtime` 已新增：
+  - `LogicalRawTransitionDecision`
+  - `decide_logical_raw_transition_with_store(...)`
+- `game_payload_core_ffi` 已新增：
+  - `PayloadLogicalRawTransitionInterop`
+  - `payload_core_state_store_decide_logical_raw_transition(...)`
+
+### 本次收口
+- `TryPickLogicalRawTransition(...)` 不再在 C++ 中逐个 candidate 调 `EvaluateChannelEmitDecision(...)` 并自己筛选最终 emit。
+- Rust 现在直接返回：
+  - 是否应 emit
+  - `vkey`
+  - `emit_action`
+  - `projected_down_before / projected_down_after`
+  - `selection_reason`
+  - `transition_reason`
+  - `pressed_edge / released_edge`
+  - 首个 `repeat_suppressed` 诊断信息
+- C++ 只负责：
+  - 读取 Rust decision
+  - 写 RawInput 结构
+  - 记录 `[EDGE] / [EMIT] / [REPEAT]`
+
+### 当前价值
+- Raw 路径上“候选顺序 + emit 执行判断 + 诊断输出”这三层已经基本串成一条 Rust 真值链。
+- `SyncMod.cpp` 在 logical raw 路径上继续退化为边界执行壳。
+- 现在 Rust 已经能直接回答：
+  - 最终选中了哪个键
+  - 为什么选它
+  - 是 press 还是 release
+  - 为什么 suppress repeat
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_payload_core`
+2. `cargo clippy -p game_payload_core --all-targets --all-features -- -D warnings`
+3. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+4. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+
+结果：
+- Rust 测试与 clippy 通过
+- Windows `Payload` Debug / Release 构建通过
+
+---
+
 ## 第二十三批落地：logical raw 候选顺序与 selection reason 开始收口到 Rust（2026-04-07）
 
 ### 本次新增

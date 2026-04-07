@@ -1963,13 +1963,8 @@ static bool TryPickLogicalRawTransition(
     {
         return false;
     }
-
-    const bool preferredObservedDown = (snapshot.keyboardState[preferredVKey] & 0x80) != 0;
-    PayloadLogicalRawPlanInterop plan = {};
-    if (payload_core_build_logical_raw_plan(
-            static_cast<uint32_t>(preferredVKey),
-            preferredObservedDown ? 1u : 0u,
-            &plan) == 0)
+    EnsurePayloadStateStore();
+    if (!g_payloadStateStore)
     {
         return false;
     }
@@ -1991,77 +1986,65 @@ static bool TryPickLogicalRawTransition(
                 return L"logical_none";
         }
     };
-
-    auto tryEmit = [&](int vKey, bool observedDown, const wchar_t* adapter, uint32_t selectionReason, int requiredAction) -> bool {
-        if (vKey < 0 || vKey >= 256)
-        {
-            return false;
-        }
-
-        PayloadLogicalKeyDecisionInterop logicalDecision = {};
-        PayloadChannelEmitDecisionInterop emitDecision = {};
-        if (!EvaluateChannelEmitDecision(
-                snapshot,
-                vKey,
-                1u,
-                observedDown,
-                logicalDecision,
-                emitDecision))
-        {
-            return false;
-        }
-
-        if (emitDecision.suppress_repeat != 0)
-        {
-            LogRepeatSuppressed(adapter, vKey);
-        }
-
-        if (requiredAction >= 0 && static_cast<int>(emitDecision.emit_action) != requiredAction)
-        {
-            return false;
-        }
-
-        if (emitDecision.emit_action == 0)
-        {
-            return false;
-        }
-
-        const bool afterDown = emitDecision.projected_down_after != 0;
-        const bool beforeDown = emitDecision.projected_down_before != 0;
-        SyncStateMirrorsForKey(vKey);
-        *vKeyOut = vKey;
-        *isDownOut = emitDecision.emit_action == 1;
-        const wchar_t* reason = resolveSelectionReason(selectionReason);
-        if (reasonOut)
-        {
-            *reasonOut = reason;
-        }
-        LogAdapterEmit(
-            adapter,
-            vKey,
-            static_cast<int>(emitDecision.emit_action),
-            beforeDown,
-            afterDown,
-            reason,
-            emitDecision.transition_reason);
-        return true;
-    };
-
-    for (uint32_t i = 0; i < plan.candidate_count && i < ARRAYSIZE(plan.candidates); i++)
+    PayloadLogicalRawTransitionInterop decision = {};
+    if (payload_core_state_store_decide_logical_raw_transition(
+            g_payloadStateStore,
+            snapshot.flags,
+            snapshot.activePid,
+            snapshot.profileId,
+            snapshot.profileMode,
+            snapshot.lastTick,
+            GetCurrentProcessId(),
+            GetTickCount64(),
+            GetSharedTimeoutMs(),
+            snapshot.targetMask,
+            snapshot.blockMask,
+            snapshot.keyboardState,
+            snapshot.edgeCounter,
+            t_forceReleaseMask,
+            256,
+            static_cast<uint32_t>(preferredVKey),
+            &decision) == 0)
     {
-        const auto& candidate = plan.candidates[i];
-        if (tryEmit(
-                static_cast<int>(candidate.vkey),
-                candidate.observed_down != 0,
-                L"RawInput",
-                candidate.selection_reason,
-                static_cast<int>(candidate.required_action)))
-        {
-            return true;
-        }
+        return false;
     }
 
-    return false;
+    if (decision.suppress_repeat != 0 && decision.repeat_vkey < 256)
+    {
+        LogRepeatSuppressed(L"RawInput", static_cast<int>(decision.repeat_vkey));
+    }
+
+    if (decision.pressed_edge != 0 || decision.released_edge != 0)
+    {
+        LogLogicalEdge(
+            static_cast<int>(decision.vkey),
+            decision.desired_down != 0,
+            decision.pressed_edge != 0,
+            decision.released_edge != 0);
+    }
+
+    if (decision.should_emit == 0)
+    {
+        return false;
+    }
+
+    SyncStateMirrorsForKey(static_cast<int>(decision.vkey));
+    *vKeyOut = static_cast<int>(decision.vkey);
+    *isDownOut = decision.is_down != 0;
+    const wchar_t* reason = resolveSelectionReason(decision.selection_reason);
+    if (reasonOut)
+    {
+        *reasonOut = reason;
+    }
+    LogAdapterEmit(
+        L"RawInput",
+        static_cast<int>(decision.vkey),
+        static_cast<int>(decision.emit_action),
+        decision.projected_down_before != 0,
+        decision.projected_down_after != 0,
+        reason,
+        decision.transition_reason);
+    return true;
 }
 
 static bool IsSnapshotAlive(const SharedSnapshot& snapshot)

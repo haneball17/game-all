@@ -199,6 +199,23 @@ typedef struct PayloadLogicalRawPlanInterop {
     PayloadLogicalRawCandidateInterop candidates[12];
 } PayloadLogicalRawPlanInterop;
 
+typedef struct PayloadLogicalRawTransitionInterop {
+    uint32_t should_emit;
+    uint32_t vkey;
+    uint32_t is_down;
+    uint32_t emit_action;
+    uint32_t desired_down;
+    uint32_t projected_down_before;
+    uint32_t projected_down_after;
+    uint32_t suppress_repeat;
+    uint32_t selection_reason;
+    uint32_t transition_reason;
+    uint32_t pressed_edge;
+    uint32_t released_edge;
+    uint32_t repeat_vkey;
+    uint32_t repeat_selection_reason;
+} PayloadLogicalRawTransitionInterop;
+
 GAME_PAYLOAD_CORE_API uint32_t payload_core_evaluate_runtime_state(
     const void* snapshot_ptr,
     size_t mapping_size,
@@ -417,6 +434,24 @@ GAME_PAYLOAD_CORE_API uint32_t payload_core_build_logical_raw_plan(
     uint32_t preferred_vkey,
     uint32_t preferred_observed_down,
     PayloadLogicalRawPlanInterop* out_plan);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_decide_logical_raw_transition(
+    void* state,
+    uint32_t flags,
+    uint32_t active_pid,
+    uint32_t profile_id,
+    uint32_t profile_mode,
+    uint64_t last_tick,
+    uint32_t current_pid,
+    uint64_t now_tick,
+    uint64_t heartbeat_timeout_ms,
+    const uint8_t* target_mask_ptr,
+    const uint8_t* block_mask_ptr,
+    const uint8_t* keyboard_state_ptr,
+    const uint32_t* edge_counter_ptr,
+    const uint8_t* force_release_mask_ptr,
+    size_t len,
+    uint32_t preferred_vkey,
+    PayloadLogicalRawTransitionInterop* out_decision);
 GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_pick_pause_release(
     void* state,
     int32_t preferred_vkey,

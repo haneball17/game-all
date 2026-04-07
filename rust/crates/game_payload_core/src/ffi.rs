@@ -7,8 +7,9 @@ use crate::{
     },
     runtime::{
         AdapterDriftSummary, AdapterProjectedState, ChannelEmitDecision, EmitAction,
-        InputPathObservation, KeyDecision, LogicalKeyDecision, LogicalRawPlan, PathDecision,
-        RuntimeDecision, build_logical_raw_plan, decide_channel_emit,
+        InputPathObservation, KeyDecision, LogicalKeyDecision, LogicalRawPlan,
+        LogicalRawTransitionDecision, PathDecision, RuntimeDecision, build_logical_raw_plan,
+        decide_channel_emit, decide_logical_raw_transition_with_store,
         decide_channel_emit_with_store, evaluate_adapter_projected_state, evaluate_key_state_header,
         evaluate_logical_key_header, evaluate_logical_key_with_store, evaluate_path_decision_header,
         evaluate_runtime_header, evaluate_runtime_state, observe_input_path, summarize_adapter_drift,
@@ -242,6 +243,25 @@ pub struct PayloadLogicalRawCandidateInterop {
 pub struct PayloadLogicalRawPlanInterop {
     pub candidate_count: u32,
     pub candidates: [PayloadLogicalRawCandidateInterop; 12],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadLogicalRawTransitionInterop {
+    pub should_emit: u32,
+    pub vkey: u32,
+    pub is_down: u32,
+    pub emit_action: u32,
+    pub desired_down: u32,
+    pub projected_down_before: u32,
+    pub projected_down_after: u32,
+    pub suppress_repeat: u32,
+    pub selection_reason: u32,
+    pub transition_reason: u32,
+    pub pressed_edge: u32,
+    pub released_edge: u32,
+    pub repeat_vkey: u32,
+    pub repeat_selection_reason: u32,
 }
 
 impl From<RuntimeDecision> for PayloadRuntimeDecisionInterop {
@@ -515,6 +535,31 @@ impl From<LogicalRawPlan> for PayloadLogicalRawPlanInterop {
             };
         }
         out
+    }
+}
+
+impl From<LogicalRawTransitionDecision> for PayloadLogicalRawTransitionInterop {
+    fn from(value: LogicalRawTransitionDecision) -> Self {
+        Self {
+            should_emit: u32::from(value.should_emit),
+            vkey: value.vkey,
+            is_down: u32::from(value.is_down),
+            emit_action: match value.emit_action {
+                EmitAction::None => 0,
+                EmitAction::Press => 1,
+                EmitAction::Release => 2,
+            },
+            desired_down: u32::from(value.desired_down),
+            projected_down_before: u32::from(value.projected_down_before),
+            projected_down_after: u32::from(value.projected_down_after),
+            suppress_repeat: u32::from(value.suppress_repeat),
+            selection_reason: value.selection_reason as u32,
+            transition_reason: value.transition_reason as u32,
+            pressed_edge: u32::from(value.pressed_edge),
+            released_edge: u32::from(value.released_edge),
+            repeat_vkey: value.repeat_vkey,
+            repeat_selection_reason: value.repeat_selection_reason as u32,
+        }
     }
 }
 
@@ -1236,6 +1281,64 @@ pub unsafe extern "C" fn payload_core_build_logical_raw_plan(
     }
     let plan = build_logical_raw_plan(preferred_vkey, preferred_observed_down != 0);
     unsafe { out_plan.write(plan.into()) };
+    1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_state_store_decide_logical_raw_transition(
+    state: *mut SyncStateStore,
+    flags: u32,
+    active_pid: u32,
+    profile_id: u32,
+    profile_mode: u32,
+    last_tick: u64,
+    current_pid: u32,
+    now_tick: u64,
+    heartbeat_timeout_ms: u64,
+    target_mask_ptr: *const u8,
+    block_mask_ptr: *const u8,
+    keyboard_state_ptr: *const u8,
+    edge_counter_ptr: *const u32,
+    force_release_mask_ptr: *const u8,
+    len: usize,
+    preferred_vkey: u32,
+    out_decision: *mut PayloadLogicalRawTransitionInterop,
+) -> u32 {
+    if state.is_null()
+        || target_mask_ptr.is_null()
+        || block_mask_ptr.is_null()
+        || keyboard_state_ptr.is_null()
+        || edge_counter_ptr.is_null()
+        || force_release_mask_ptr.is_null()
+        || out_decision.is_null()
+    {
+        return 0;
+    }
+    let target_mask = unsafe { std::slice::from_raw_parts(target_mask_ptr, len) };
+    let block_mask = unsafe { std::slice::from_raw_parts(block_mask_ptr, len) };
+    let keyboard_state = unsafe { std::slice::from_raw_parts(keyboard_state_ptr, len) };
+    let edge_counter = unsafe { std::slice::from_raw_parts(edge_counter_ptr, len) };
+    let force_release_mask = unsafe { std::slice::from_raw_parts(force_release_mask_ptr, len) };
+    let decision = unsafe {
+        decide_logical_raw_transition_with_store(
+            &mut *state,
+            flags,
+            active_pid,
+            profile_id,
+            profile_mode,
+            last_tick,
+            current_pid,
+            now_tick,
+            heartbeat_timeout_ms,
+            target_mask,
+            block_mask,
+            keyboard_state,
+            edge_counter,
+            force_release_mask,
+            preferred_vkey,
+        )
+    };
+    unsafe { out_decision.write(decision.into()) };
     1
 }
 
