@@ -136,6 +136,26 @@ impl Default for SyncStateStore {
     }
 }
 
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseReleaseReason {
+    None = 0,
+    PreferredRelease = 1,
+    PairRelease = 2,
+    DirectionRelease = 3,
+    StaleRelease = 4,
+    Neutralize = 5,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PauseReleaseDecision {
+    pub should_emit: bool,
+    pub vkey: u32,
+    pub is_down: bool,
+    pub had_projected: bool,
+    pub reason: PauseReleaseReason,
+}
+
 impl SyncStateStore {
     pub fn set_logical_desired(&mut self, vkey: usize, down: bool) {
         if vkey < SHARED_KEYBOARD_KEY_COUNT {
@@ -186,6 +206,76 @@ impl SyncStateStore {
             ProjectedChannelKind::Win32 => self.win32_projected.fill(0),
             ProjectedChannelKind::DirectInput => self.direct_input_projected.fill(0),
         }
+    }
+
+    pub fn pick_pause_release(&mut self, preferred_vkey: i32) -> PauseReleaseDecision {
+        let choose_release = |vkey: usize, reason: PauseReleaseReason, store: &mut SyncStateStore| {
+            if !store.projected(ProjectedChannelKind::Raw, vkey) {
+                return None;
+            }
+            store.set_projected(ProjectedChannelKind::Raw, vkey, false);
+            store.set_logical_desired(vkey, false);
+            Some(PauseReleaseDecision {
+                should_emit: true,
+                vkey: vkey as u32,
+                is_down: false,
+                had_projected: true,
+                reason,
+            })
+        };
+
+        if (0..SHARED_KEYBOARD_KEY_COUNT as i32).contains(&preferred_vkey)
+            && let Some(decision) = choose_release(preferred_vkey as usize, PauseReleaseReason::PreferredRelease, self)
+        {
+            return decision;
+        }
+
+        if let Some(pair) = direction_pair(preferred_vkey)
+            && let Some(decision) = choose_release(pair, PauseReleaseReason::PairRelease, self)
+        {
+            return decision;
+        }
+
+        for &vkey in &DIRECTION_KEYS {
+            if let Some(decision) = choose_release(vkey, PauseReleaseReason::DirectionRelease, self) {
+                return decision;
+            }
+        }
+
+        for vkey in 0..SHARED_KEYBOARD_KEY_COUNT {
+            if let Some(decision) = choose_release(vkey, PauseReleaseReason::StaleRelease, self) {
+                return decision;
+            }
+        }
+
+        if (0..SHARED_KEYBOARD_KEY_COUNT as i32).contains(&preferred_vkey) {
+            self.set_logical_desired(preferred_vkey as usize, false);
+            return PauseReleaseDecision {
+                should_emit: true,
+                vkey: preferred_vkey as u32,
+                is_down: false,
+                had_projected: false,
+                reason: PauseReleaseReason::Neutralize,
+            };
+        }
+
+        PauseReleaseDecision {
+            should_emit: false,
+            vkey: 0,
+            is_down: false,
+            had_projected: false,
+            reason: PauseReleaseReason::None,
+        }
+    }
+}
+
+fn direction_pair(vkey: i32) -> Option<usize> {
+    match vkey {
+        0x25 => Some(0x27),
+        0x27 => Some(0x25),
+        0x26 => Some(0x28),
+        0x28 => Some(0x26),
+        _ => None,
     }
 }
 
@@ -257,5 +347,29 @@ mod tests {
         store.clear_all_projected();
         assert!(!store.projected(ProjectedChannelKind::Win32, 0x25));
         assert!(!store.projected(ProjectedChannelKind::DirectInput, 0x25));
+    }
+
+    #[test]
+    fn pause_release_prefers_preferred_then_pair_then_directions() {
+        let mut store = SyncStateStore::default();
+        store.set_projected(ProjectedChannelKind::Raw, 0x25, true);
+        let preferred = store.pick_pause_release(0x25);
+        assert_eq!(preferred.reason, PauseReleaseReason::PreferredRelease);
+        assert_eq!(preferred.vkey, 0x25);
+
+        store.set_projected(ProjectedChannelKind::Raw, 0x27, true);
+        let pair = store.pick_pause_release(0x25);
+        assert_eq!(pair.reason, PauseReleaseReason::PairRelease);
+        assert_eq!(pair.vkey, 0x27);
+    }
+
+    #[test]
+    fn pause_release_neutralizes_when_no_projected_key_exists() {
+        let mut store = SyncStateStore::default();
+        store.set_logical_desired(0x25, true);
+        let decision = store.pick_pause_release(0x25);
+        assert_eq!(decision.reason, PauseReleaseReason::Neutralize);
+        assert!(!decision.had_projected);
+        assert!(!store.logical_desired(0x25));
     }
 }

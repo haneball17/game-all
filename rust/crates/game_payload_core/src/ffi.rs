@@ -8,7 +8,10 @@ use crate::{
         evaluate_logical_key_header, evaluate_path_decision_header, evaluate_runtime_header,
         evaluate_runtime_state, observe_input_path, summarize_adapter_drift,
     },
-    sync::{DirectionConvergenceState, DirectionReleasePolicy, ProjectedChannelKind, SnapshotCachePolicy, SyncStateStore},
+    sync::{
+        DirectionConvergenceState, DirectionReleasePolicy, PauseReleaseDecision,
+        PauseReleaseReason, ProjectedChannelKind, SnapshotCachePolicy, SyncStateStore,
+    },
 };
 use game_core_protocols::{SHARED_KEYBOARD_KEY_COUNT, SharedKeyboardStateV2};
 
@@ -131,6 +134,16 @@ pub struct PayloadAdapterDriftSummaryInterop {
     pub raw_drift_count: u32,
     pub win32_drift_count: u32,
     pub direct_input_drift_count: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadPauseReleaseDecisionInterop {
+    pub should_emit: u32,
+    pub vkey: u32,
+    pub is_down: u32,
+    pub had_projected: u32,
+    pub reason: u32,
 }
 
 impl From<RuntimeDecision> for PayloadRuntimeDecisionInterop {
@@ -270,6 +283,25 @@ impl From<AdapterDriftSummary> for PayloadAdapterDriftSummaryInterop {
             raw_drift_count: value.raw_drift_count,
             win32_drift_count: value.win32_drift_count,
             direct_input_drift_count: value.direct_input_drift_count,
+        }
+    }
+}
+
+impl From<PauseReleaseDecision> for PayloadPauseReleaseDecisionInterop {
+    fn from(value: PauseReleaseDecision) -> Self {
+        Self {
+            should_emit: u32::from(value.should_emit),
+            vkey: value.vkey,
+            is_down: u32::from(value.is_down),
+            had_projected: u32::from(value.had_projected),
+            reason: match value.reason {
+                PauseReleaseReason::None => 0,
+                PauseReleaseReason::PreferredRelease => 1,
+                PauseReleaseReason::PairRelease => 2,
+                PauseReleaseReason::DirectionRelease => 3,
+                PauseReleaseReason::StaleRelease => 4,
+                PauseReleaseReason::Neutralize => 5,
+            },
         }
     }
 }
@@ -773,5 +805,19 @@ pub unsafe extern "C" fn payload_core_state_store_clear_projected_channel(
         _ => return 0,
     };
     unsafe { (&mut *state).clear_projected_channel(channel) };
+    1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_state_store_pick_pause_release(
+    state: *mut SyncStateStore,
+    preferred_vkey: i32,
+    out_decision: *mut PayloadPauseReleaseDecisionInterop,
+) -> u32 {
+    if state.is_null() || out_decision.is_null() {
+        return 0;
+    }
+    let decision = unsafe { (&mut *state).pick_pause_release(preferred_vkey) };
+    unsafe { out_decision.write(decision.into()) };
     1
 }

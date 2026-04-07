@@ -116,6 +116,14 @@ typedef struct PayloadAdapterDriftSummaryInterop {
     uint32_t direct_input_drift_count;
 } PayloadAdapterDriftSummaryInterop;
 
+typedef struct PayloadPauseReleaseDecisionInterop {
+    uint32_t should_emit;
+    uint32_t vkey;
+    uint32_t is_down;
+    uint32_t had_projected;
+    uint32_t reason;
+} PayloadPauseReleaseDecisionInterop;
+
 GAME_PAYLOAD_CORE_API uint32_t payload_core_evaluate_runtime_state(
     const void* snapshot_ptr,
     size_t mapping_size,
@@ -259,6 +267,10 @@ GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_clear_all_projected(
 GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_clear_projected_channel(
     void* state,
     uint32_t channel_kind);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_pick_pause_release(
+    void* state,
+    int32_t preferred_vkey,
+    PayloadPauseReleaseDecisionInterop* out_decision);
 
 GAME_PAYLOAD_CORE_API void* payload_core_convergence_create(uint8_t extra_release_pulses);
 GAME_PAYLOAD_CORE_API void payload_core_convergence_destroy(void* state);

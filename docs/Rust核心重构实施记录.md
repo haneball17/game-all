@@ -692,3 +692,49 @@
 - `game_payload_core` 新增 2 个 state store 测试后全部通过
 - Rust clippy 通过
 - Windows `Payload` Debug / Release 构建通过
+
+---
+
+## 第十五批落地：Sync pause release plan 开始收口到 Rust（2026-04-07）
+
+### 本次新增
+- `game_payload_core::sync` 新增：
+  - `PauseReleaseReason`
+  - `PauseReleaseDecision`
+  - `SyncStateStore::pick_pause_release(...)`
+- `game_payload_core_ffi` 新增：
+  - `PayloadPauseReleaseDecisionInterop`
+  - `payload_core_state_store_pick_pause_release(...)`
+
+### 当前接入范围
+`SyncMod.cpp` 的 `TryPickSilentRawTransition(...)` 已开始改为：
+
+1. 由 Rust state store 决定 pause/静默态应该优先释放哪个键
+2. C++ 只负责：
+   - 把 Rust 返回的 `vkey / reason / had_projected` 投影到真实 RawInput 路径
+   - 输出现有 `[PAUSE]` 日志
+
+当前 Rust 已接管的释放顺序语义：
+
+1. preferred key
+2. direction pair
+3. any direction key
+4. stale projected key
+5. neutralize preferred key
+
+### 当前价值
+- `pause` 期间的释放顺序不再散落在 C++ lambda 中，而是开始由 Rust state store 决策。
+- 这一步把 `clear/pause reset` 收口工作的第一块关键逻辑迁入了 Rust。
+- 后续继续做 `ApplyClearIfNeeded(...)` / `ApplyRawClearIfNeeded(...)` 的 Rust 收口时，已经有可复用的状态机接口。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_payload_core`
+2. `cargo clippy -p game_payload_core --all-targets --all-features -- -D warnings`
+3. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+
+结果：
+- `game_payload_core` 新增 2 个 pause release 测试后全部通过
+- Rust clippy 通过
+- Windows `Payload` Debug 构建通过

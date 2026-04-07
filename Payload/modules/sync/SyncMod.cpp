@@ -1384,75 +1384,53 @@ static bool TryPickSilentRawTransition(
     {
         return false;
     }
-
-    auto chooseRelease = [&](int vKey, const wchar_t* reason) -> bool {
-        if (vKey < 0 || vKey >= 256)
-        {
-            return false;
-        }
-
-        const bool rawDownBefore = GetProjectedStateValue(1, vKey);
-        if (!rawDownBefore)
-        {
-            return false;
-        }
-
-        SetProjectedStateValue(1, vKey, false);
-        SetLogicalDesiredStateValue(vKey, false);
-        *vKeyOut = vKey;
-        *isDownOut = false;
-        if (reasonOut)
-        {
-            *reasonOut = reason;
-        }
-        LogPauseInterception(L"RawInput", vKey, true, reason);
-        return true;
-    };
-
-    if (preferredVKey >= 0 && preferredVKey < 256 && chooseRelease(preferredVKey, L"paused_release_preferred"))
+    EnsurePayloadStateStore();
+    if (!g_payloadStateStore)
     {
-        return true;
+        return false;
     }
 
-    if (IsDirectionVKey(preferredVKey))
+    PayloadPauseReleaseDecisionInterop decision = {};
+    if (payload_core_state_store_pick_pause_release(g_payloadStateStore, preferredVKey, &decision) == 0 ||
+        decision.should_emit == 0)
     {
-        const int pair = GetDirectionPairVKey(preferredVKey);
-        if (pair >= 0 && chooseRelease(pair, L"paused_release_pair"))
-        {
-            return true;
-        }
+        return false;
     }
 
-    for (int vKey : {VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN})
+    *vKeyOut = static_cast<int>(decision.vkey);
+    *isDownOut = decision.is_down != 0;
+
+    const wchar_t* reason = L"paused_release_unknown";
+    switch (decision.reason)
     {
-        if (chooseRelease(vKey, L"paused_release_direction"))
-        {
-            return true;
-        }
+        case 1:
+            reason = L"paused_release_preferred";
+            break;
+        case 2:
+            reason = L"paused_release_pair";
+            break;
+        case 3:
+            reason = L"paused_release_direction";
+            break;
+        case 4:
+            reason = L"paused_release_stale";
+            break;
+        case 5:
+            reason = L"paused_neutralize";
+            break;
+    }
+    if (reasonOut)
+    {
+        *reasonOut = reason;
     }
 
-    for (int vKey = 0; vKey < 256; vKey++)
+    if (decision.vkey < 256)
     {
-        if (chooseRelease(vKey, L"paused_release_stale"))
-        {
-            return true;
-        }
+        SetProjectedStateValue(1, static_cast<int>(decision.vkey), decision.had_projected == 0 ? false : false);
+        SetLogicalDesiredStateValue(static_cast<int>(decision.vkey), false);
     }
-
-    if (preferredVKey >= 0 && preferredVKey < 256)
-    {
-        SetLogicalDesiredStateValue(preferredVKey, false);
-        *vKeyOut = preferredVKey;
-        *isDownOut = false;
-        if (reasonOut)
-        {
-            *reasonOut = L"paused_neutralize";
-        }
-        LogPauseInterception(L"RawInput", preferredVKey, false, L"paused_neutralize");
-        return true;
-    }
-
-    return false;
+    LogPauseInterception(L"RawInput", static_cast<int>(decision.vkey), decision.had_projected != 0, reason);
+    return true;
 }
 
 static bool TryPickMappingRawTransition(
