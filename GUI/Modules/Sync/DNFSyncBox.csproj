@@ -10,4 +10,24 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
+
+  <PropertyGroup>
+    <RepoRoot>$([MSBuild]::EnsureTrailingSlash('$(MSBuildProjectDirectory)\..\..\..'))</RepoRoot>
+    <RustWorkspaceDir>$(RepoRoot)rust\</RustWorkspaceDir>
+    <RustTargetTriple>i686-pc-windows-msvc</RustTargetTriple>
+    <RustProfile Condition="'$(Configuration)'=='Debug'">debug</RustProfile>
+    <RustProfile Condition="'$(Configuration)'=='Release'">release</RustProfile>
+    <RustBuildArgs Condition="'$(Configuration)'=='Debug'">build -p game_control_core --target $(RustTargetTriple)</RustBuildArgs>
+    <RustBuildArgs Condition="'$(Configuration)'=='Release'">build -p game_control_core --target $(RustTargetTriple) --release</RustBuildArgs>
+    <RustControlDll>$(RustWorkspaceDir)target\$(RustTargetTriple)\$(RustProfile)\game_control_core.dll</RustControlDll>
+  </PropertyGroup>
+
+  <Target Name="BuildRustControlCore" BeforeTargets="BeforeBuild">
+    <Message Text="构建 Rust control core: cargo $(RustBuildArgs)" Importance="high" />
+    <Exec Command="cargo $(RustBuildArgs)" WorkingDirectory="$(RustWorkspaceDir)" />
+  </Target>
+
+  <Target Name="CopyRustControlCore" AfterTargets="Build">
+    <Copy SourceFiles="$(RustControlDll)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition="Exists('$(RustControlDll)')" />
+  </Target>
 </Project>

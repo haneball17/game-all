@@ -1178,6 +1178,46 @@
 
 ---
 
+## 第三十二批落地：game_control_core 开始接回 SyncController（2026-04-08）
+
+### 本次接回
+- `DNFSyncBox.csproj` 现在会在构建前自动编译 `game_control_core`，并把生成的 `game_control_core.dll` 复制到输出目录。
+- `SyncController.cs` 当前已开始直接消费 Rust 控制内核：
+  - `RefreshWindows()` 的 foreground / grace / auto pause 判定
+  - `PublishSnapshot()` 的共享快照头部构建
+- `NativeMethods.cs` 已新增 `game_control_core` 的 P/Invoke 边界与互操作结构。
+
+### 当前覆盖范围
+- 已迁出的控制端逻辑包括：
+  - disable auto pause 行为
+  - foreground grace
+  - effective foreground pid
+  - `auto_paused` 计算
+  - `flags / active_pid / profile_id / profile_mode / last_tick` 头部生成
+
+### 当前价值
+- `game_control_core` 已从“独立 Rust crate”升级为“真实接回 GUI 的控制内核”。
+- `SyncController.cs` 中最适合纯逻辑抽离的前台/暂停/发布头部逻辑已开始减少。
+- 上层 GUI 构建产物中已能看到 `game_control_core.dll`，说明后续继续迁移剩余控制逻辑具备实际接入路径。
+
+### 本轮验证
+已完成：
+
+1. `cargo test --workspace`
+2. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+3. `dotnet build E:\\code\\game-all\\GUI\\Modules\\Sync\\DNFSyncBox.csproj -c Debug -p:PlatformTarget=x86`
+4. `dotnet build E:\\code\\game-all\\GUI\\Modules\\Sync\\DNFSyncBox.csproj -c Release -p:PlatformTarget=x86`
+5. `dotnet build E:\\code\\game-all\\GUI\\GameMasterGUI.csproj -c Debug -p:PlatformTarget=x86`
+6. `dotnet build E:\\code\\game-all\\GUI\\GameMasterGUI.csproj -c Release -p:PlatformTarget=x86`
+
+结果：
+- Rust workspace 全量测试与 clippy 通过
+- `DNFSyncBox` Debug / Release 构建通过
+- `GameMasterGUI` Debug / Release 构建通过
+- 输出目录已包含 `game_control_core.dll`
+
+---
+
 ## 第二十七批落地：Injector attempt 失败原因开始统一由 Rust 汇总（2026-04-08）
 
 ### 本次新增

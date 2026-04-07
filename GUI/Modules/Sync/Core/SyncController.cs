@@ -118,21 +118,18 @@ public sealed class SyncController : IDisposable
         ReloadProfileIfNeeded(force: false);
 
         var snapshot = _windowManager.Refresh();
-        var now = Environment.TickCount64;
+        var now = (ulong)Environment.TickCount64;
         if (_disableAutoPause)
         {
-            var hasDnf = snapshot.TotalCount > 0;
-            var effectivePidLocal = snapshot.ForegroundProcessId;
-            if (effectivePidLocal == 0 && snapshot.MasterHandle != IntPtr.Zero)
-            {
-                effectivePidLocal = GetProcessId(snapshot.MasterHandle);
-            }
+            var effectivePidLocal = snapshot.ForegroundProcessId != 0
+                ? snapshot.ForegroundProcessId
+                : (snapshot.MasterHandle != IntPtr.Zero ? GetProcessId(snapshot.MasterHandle) : 0u);
 
             lock (_stateLock)
             {
                 _snapshot = snapshot;
                 _effectiveForegroundPid = effectivePidLocal;
-                _effectiveForegroundIsDnf = hasDnf;
+                _effectiveForegroundIsDnf = snapshot.TotalCount > 0;
                 _autoPaused = false;
             }
 
@@ -140,17 +137,29 @@ public sealed class SyncController : IDisposable
             LogSnapshotIfNeeded(snapshot);
             return;
         }
-        if (snapshot.ForegroundIsDnf && snapshot.ForegroundProcessId != 0)
-        {
-            Interlocked.Exchange(ref _lastForegroundPid, unchecked((int)snapshot.ForegroundProcessId));
-            Interlocked.Exchange(ref _lastForegroundTickMs, now);
-        }
 
-        var lastPid = (uint)Interlocked.CompareExchange(ref _lastForegroundPid, 0, 0);
-        var lastTick = Interlocked.Read(ref _lastForegroundTickMs);
-        var graceActive = lastPid != 0 && now - lastTick <= ForegroundGraceMs;
-        var effectiveForegroundIsDnf = snapshot.ForegroundIsDnf || graceActive;
-        var effectivePid = snapshot.ForegroundIsDnf ? snapshot.ForegroundProcessId : (graceActive ? lastPid : 0u);
+        var foregroundDecision = NativeMethods.game_control_core_evaluate_foreground(
+            new NativeMethods.ControlWindowSnapshotInterop
+            {
+                ForegroundIsDnf = snapshot.ForegroundIsDnf ? 1u : 0u,
+                ForegroundProcessId = snapshot.ForegroundProcessId,
+                MasterProcessId = snapshot.MasterHandle != IntPtr.Zero ? GetProcessId(snapshot.MasterHandle) : 0u,
+                TotalCount = (uint)Math.Max(snapshot.TotalCount, 0)
+            },
+            new NativeMethods.ControlForegroundTrackerInterop
+            {
+                LastForegroundPid = (uint)Interlocked.CompareExchange(ref _lastForegroundPid, 0, 0),
+                LastForegroundTickMs = (ulong)Math.Max(Interlocked.Read(ref _lastForegroundTickMs), 0L)
+            },
+            now,
+            ForegroundGraceMs,
+            0u);
+
+        Interlocked.Exchange(ref _lastForegroundPid, unchecked((int)foregroundDecision.LastForegroundPid));
+        Interlocked.Exchange(ref _lastForegroundTickMs, unchecked((long)foregroundDecision.LastForegroundTickMs));
+
+        var effectiveForegroundIsDnf = foregroundDecision.EffectiveForegroundIsDnf != 0;
+        var effectivePid = foregroundDecision.EffectiveForegroundPid;
         var autoPausedChanged = false;
         bool autoPaused;
 
@@ -160,7 +169,7 @@ public sealed class SyncController : IDisposable
             _effectiveForegroundPid = effectivePid;
             _effectiveForegroundIsDnf = effectiveForegroundIsDnf;
             // 前台不是 DNF 时进入自动暂停，防止误同步。
-            var newAutoPaused = !effectiveForegroundIsDnf;
+            var newAutoPaused = foregroundDecision.AutoPaused != 0;
             if (newAutoPaused != _autoPaused)
             {
                 _autoPaused = newAutoPaused;
@@ -392,17 +401,17 @@ public sealed class SyncController : IDisposable
             return;
         }
 
-        WindowSnapshot snapshot;
         KeyboardProfile profile;
         bool paused;
-        uint activePid;
+        bool effectiveForegroundIsDnf;
+        uint effectiveForegroundPid;
 
         lock (_stateLock)
         {
-            snapshot = _snapshot;
             profile = _activeProfile;
             paused = IsPausedLocked();
-            activePid = _effectiveForegroundIsDnf ? _effectiveForegroundPid : 0u;
+            effectiveForegroundIsDnf = _effectiveForegroundIsDnf;
+            effectiveForegroundPid = _effectiveForegroundPid;
 
             UpdateToggleState();
 
@@ -418,12 +427,6 @@ public sealed class SyncController : IDisposable
                 _keyState.ApplyProfile(profile, _toggleState, _keyboardState, _edgeCounter, _targetMask, Environment.TickCount64);
                 profile.BuildBlockMask(_blockMask);
             }
-        }
-
-        var flags = paused ? SharedMemoryConstants.FlagPaused : 0u;
-        if (forceClear)
-        {
-            flags |= SharedMemoryConstants.FlagClear;
         }
 
         var tick = (ulong)Environment.TickCount64;
@@ -449,12 +452,22 @@ public sealed class SyncController : IDisposable
             }
         }
 
-        _sharedMemory.PublishSnapshot(
-            flags,
-            activePid,
+        var header = NativeMethods.game_control_core_build_publish_header(
+            _userPaused ? 1u : 0u,
+            _autoPaused ? 1u : 0u,
+            forceClear ? 1u : 0u,
+            effectiveForegroundIsDnf ? 1u : 0u,
+            effectiveForegroundPid,
             profile.ProfileId,
             (uint)reportedMode,
-            tick,
+            tick);
+
+        _sharedMemory.PublishSnapshot(
+            header.Flags,
+            header.ActivePid,
+            header.ProfileId,
+            header.ProfileMode,
+            header.LastTick,
             _keyboardState,
             _edgeCounter,
             _targetMask,

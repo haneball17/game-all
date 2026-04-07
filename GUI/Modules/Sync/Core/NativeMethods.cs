@@ -6,6 +6,8 @@ namespace DNFSyncBox;
 
 internal static class NativeMethods
 {
+    private const string ControlCoreDll = "game_control_core.dll";
+
     // 键盘消息常量
     public const uint WM_KEYDOWN = 0x0100;
     public const uint WM_KEYUP = 0x0101;
@@ -129,4 +131,59 @@ public const uint WM_SYSKEYUP = 0x0105;
     // 兼容接口：保留 FindWindowEx 用于特殊定位
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     public static extern IntPtr FindWindowEx(IntPtr parentHandle, IntPtr childAfter, string? className, string? windowTitle);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct ControlWindowSnapshotInterop
+    {
+        public uint ForegroundIsDnf;
+        public uint ForegroundProcessId;
+        public uint MasterProcessId;
+        public uint TotalCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct ControlForegroundTrackerInterop
+    {
+        public uint LastForegroundPid;
+        public ulong LastForegroundTickMs;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct ControlForegroundDecisionInterop
+    {
+        public uint LastForegroundPid;
+        public ulong LastForegroundTickMs;
+        public uint EffectiveForegroundPid;
+        public uint EffectiveForegroundIsDnf;
+        public uint AutoPaused;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct ControlPublishHeaderInterop
+    {
+        public uint Flags;
+        public uint ActivePid;
+        public uint ProfileId;
+        public uint ProfileMode;
+        public ulong LastTick;
+    }
+
+    [DllImport(ControlCoreDll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern ControlForegroundDecisionInterop game_control_core_evaluate_foreground(
+        ControlWindowSnapshotInterop snapshot,
+        ControlForegroundTrackerInterop tracker,
+        ulong nowMs,
+        ulong foregroundGraceMs,
+        uint disableAutoPause);
+
+    [DllImport(ControlCoreDll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern ControlPublishHeaderInterop game_control_core_build_publish_header(
+        uint userPaused,
+        uint autoPaused,
+        uint forceClear,
+        uint effectiveForegroundIsDnf,
+        uint effectiveForegroundPid,
+        uint profileId,
+        uint profileMode,
+        ulong lastTick);
 }
