@@ -994,6 +994,52 @@
 
 ---
 
+## 第二十八批落地：新增 game_control_core 最小内核与 C ABI（2026-04-08）
+
+### 本次新增
+- 新增 crate：
+  - `rust/crates/game_control_core`
+- 新增控制端纯逻辑模型：
+  - `WindowSnapshotInput`
+  - `ForegroundTracker`
+  - `ForegroundDecision`
+  - `PublishHeader`
+  - `PublishHeaderInput`
+- 新增控制端纯逻辑函数：
+  - `evaluate_foreground_state(...)`
+  - `build_publish_header(...)`
+- 新增 C ABI：
+  - `game_control_core_evaluate_foreground(...)`
+  - `game_control_core_build_publish_header(...)`
+- 新增头文件：
+  - `rust/include/game_control_core_ffi.h`
+
+### 当前覆盖的逻辑
+- 从 `SyncController.cs` 中抽出了最适合纯逻辑 Rust 化的第一批内容：
+  - 前台 DNF 判定
+  - foreground grace
+  - disable auto pause 行为
+  - 共享快照头部 flags / active_pid / profile 元数据计算
+
+### 当前价值
+- `game_control_core` 不再只是计划中的名字，已经有可测试、可复用、可接 FFI 的最小内核。
+- 这一步为后续把 `SyncController.cs` 的控制内核逐步迁出 GUI 打下了第一块稳定地基。
+- 目前还没有接到 C#，但它已经具备被 GUI 调用的边界形状。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_control_core`
+2. `cargo clippy -p game_control_core --all-targets --all-features -- -D warnings`
+3. `cargo test --workspace`
+4. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+
+结果：
+- `game_control_core` 自测通过
+- Rust workspace 全量测试与 clippy 通过
+
+---
+
 ## 第二十七批落地：Injector attempt 失败原因开始统一由 Rust 汇总（2026-04-08）
 
 ### 本次新增

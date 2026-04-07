@@ -4,6 +4,7 @@ members = [
     "crates/game_core_common",
     "crates/game_injector_core",
     "crates/game_payload_core",
+    "crates/game_control_core",
 ]
 resolver = "2"
 
