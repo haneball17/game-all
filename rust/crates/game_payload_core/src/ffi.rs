@@ -14,7 +14,8 @@ use crate::{
     },
     sync::{
         ClearResetDecision, DirectionConvergenceState, DirectionReleasePolicy, PauseReleaseDecision,
-        PauseReleaseReason, ProjectedChannelKind, SnapshotCachePolicy, SyncStateStore,
+        PauseReleaseReason, ProjectedChannelKind, ProjectedStateUpdate, SnapshotCachePolicy,
+        SyncStateStore,
     },
 };
 use game_core_protocols::{SHARED_KEYBOARD_KEY_COUNT, SharedKeyboardStateV2};
@@ -158,6 +159,14 @@ pub struct PayloadClearResetDecisionInterop {
     pub raw_projected_cleared: u32,
     pub win32_projected_cleared: u32,
     pub direct_input_projected_cleared: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadProjectedStateUpdateInterop {
+    pub changed: u32,
+    pub projected_before: u32,
+    pub projected_after: u32,
 }
 
 #[repr(C)]
@@ -382,6 +391,16 @@ impl From<SyncObservationSnapshot> for PayloadSyncObservationSnapshotInterop {
             direct_input_drift_count: value.direct_input_drift_count,
             profile_id: value.profile_id,
             profile_mode: value.profile_mode,
+        }
+    }
+}
+
+impl From<ProjectedStateUpdate> for PayloadProjectedStateUpdateInterop {
+    fn from(value: ProjectedStateUpdate) -> Self {
+        Self {
+            changed: u32::from(value.changed),
+            projected_before: u32::from(value.projected_before),
+            projected_after: u32::from(value.projected_after),
         }
     }
 }
@@ -1025,6 +1044,28 @@ pub unsafe extern "C" fn payload_core_state_store_clear_projected_channel(
         _ => return 0,
     };
     unsafe { (&mut *state).clear_projected_channel(channel) };
+    1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_state_store_update_projected(
+    state: *mut SyncStateStore,
+    channel_kind: u32,
+    vkey: u32,
+    down: u32,
+    out_update: *mut PayloadProjectedStateUpdateInterop,
+) -> u32 {
+    if state.is_null() || out_update.is_null() {
+        return 0;
+    }
+    let channel = match channel_kind {
+        1 => ProjectedChannelKind::Raw,
+        2 => ProjectedChannelKind::Win32,
+        3 => ProjectedChannelKind::DirectInput,
+        _ => return 0,
+    };
+    let update = unsafe { (&mut *state).update_projected(channel, vkey as usize, down != 0) };
+    unsafe { out_update.write(update.into()) };
     1
 }
 

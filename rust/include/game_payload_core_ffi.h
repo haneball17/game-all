@@ -132,6 +132,12 @@ typedef struct PayloadClearResetDecisionInterop {
     uint32_t direct_input_projected_cleared;
 } PayloadClearResetDecisionInterop;
 
+typedef struct PayloadProjectedStateUpdateInterop {
+    uint32_t changed;
+    uint32_t projected_before;
+    uint32_t projected_after;
+} PayloadProjectedStateUpdateInterop;
+
 typedef struct PayloadSyncObservationSnapshotInterop {
     uint32_t channel_kind;
     uint32_t active_pid;
@@ -351,6 +357,12 @@ GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_clear_all_projected(
 GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_clear_projected_channel(
     void* state,
     uint32_t channel_kind);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_update_projected(
+    void* state,
+    uint32_t channel_kind,
+    uint32_t vkey,
+    uint32_t down,
+    PayloadProjectedStateUpdateInterop* out_update);
 GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_pick_pause_release(
     void* state,
     int32_t preferred_vkey,

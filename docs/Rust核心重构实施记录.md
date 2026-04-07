@@ -940,3 +940,49 @@
 - Rust 测试与 clippy 通过
 - Windows `Payload` Debug / Release 构建通过
 - `GameMasterGUI` Debug / Release 构建通过
+
+---
+
+## 第二十批落地：projected state 更新入口继续收口到 Rust（2026-04-07）
+
+### 本次新增
+- `game_payload_core::sync` 已新增：
+  - `ProjectedStateUpdate`
+  - `SyncStateStore::update_projected(...)`
+- `game_payload_core_ffi` 已新增：
+  - `PayloadProjectedStateUpdateInterop`
+  - `payload_core_state_store_update_projected(...)`
+
+### 本次收口
+- `SyncMod.cpp` 内剩余的 projected state 更新入口开始统一走 Rust store：
+  - `TryPickMappingRawTransition(...)`
+  - `TryPickDirectionTransition(...)`
+  - `RecordWin32KeyEventIfNeeded(...)`
+  - `RecordDirectInputKeyEventIfNeeded(...)`
+- `TryPickLogicalRawTransition(...)` 不再在 `decide_channel_emit_with_store(...)` 之后重复写一次 projected state。
+- `emit before/after` 现在直接使用 Rust 返回的：
+  - `projected_down_before`
+  - `projected_down_after`
+  避免 C++ 在状态已推进后再回读 store，把 `before` 记成错误值。
+
+### 本轮修正的结构问题
+- `Win32` / `DirectInput` projected state 的推进不再依赖 `key log` 开关。
+- 现在即使关闭按键日志，Rust state store 仍会持续更新这两个通道的 projected 状态。
+- 这样 `[OBS]` / `[RUSTDIAG]` 中的 drift 和 snapshot 才不会因为日志级别不同而失真。
+
+### 当前价值
+- `projected_before / projected_after` 的真值开始进一步从 C++ 热路径收走。
+- Win32 / DirectInput 生命周期与 RawInput 一样，开始统一走 Rust store。
+- `SyncMod.cpp` 继续从“自己推进状态 + 调 Rust”收缩为“调用 Rust 推进状态 + 镜像日志壳”。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_payload_core`
+2. `cargo clippy -p game_payload_core --all-targets --all-features -- -D warnings`
+3. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+4. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+
+结果：
+- Rust 测试与 clippy 通过
+- Windows `Payload` Debug / Release 构建通过

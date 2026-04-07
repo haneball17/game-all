@@ -166,6 +166,13 @@ pub struct ClearResetDecision {
     pub direct_input_projected_cleared: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectedStateUpdate {
+    pub changed: bool,
+    pub projected_before: bool,
+    pub projected_after: bool,
+}
+
 impl SyncStateStore {
     pub fn set_logical_desired(&mut self, vkey: usize, down: bool) {
         if vkey < SHARED_KEYBOARD_KEY_COUNT {
@@ -197,6 +204,21 @@ impl SyncStateStore {
             ProjectedChannelKind::Raw => self.raw_projected[vkey] != 0,
             ProjectedChannelKind::Win32 => self.win32_projected[vkey] != 0,
             ProjectedChannelKind::DirectInput => self.direct_input_projected[vkey] != 0,
+        }
+    }
+
+    pub fn update_projected(
+        &mut self,
+        channel: ProjectedChannelKind,
+        vkey: usize,
+        down: bool,
+    ) -> ProjectedStateUpdate {
+        let projected_before = self.projected(channel, vkey);
+        self.set_projected(channel, vkey, down);
+        ProjectedStateUpdate {
+            changed: projected_before != down,
+            projected_before,
+            projected_after: down,
         }
     }
 
@@ -443,5 +465,23 @@ mod tests {
         assert_eq!(summary.raw_drift_count, 1);
         assert_eq!(summary.win32_drift_count, 0);
         assert_eq!(summary.direct_input_drift_count, 1);
+    }
+
+    #[test]
+    fn projected_update_reports_before_and_after() {
+        let mut store = SyncStateStore::default();
+        let first = store.update_projected(ProjectedChannelKind::Win32, 0x41, true);
+        let second = store.update_projected(ProjectedChannelKind::Win32, 0x41, true);
+        let third = store.update_projected(ProjectedChannelKind::Win32, 0x41, false);
+
+        assert!(first.changed);
+        assert!(!first.projected_before);
+        assert!(first.projected_after);
+        assert!(!second.changed);
+        assert!(second.projected_before);
+        assert!(second.projected_after);
+        assert!(third.changed);
+        assert!(third.projected_before);
+        assert!(!third.projected_after);
     }
 }
