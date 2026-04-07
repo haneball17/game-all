@@ -88,6 +88,28 @@ typedef struct PayloadPathDecisionInterop {
     uint64_t last_tick;
 } PayloadPathDecisionInterop;
 
+typedef struct PayloadInputPathObservationInterop {
+    uint32_t channel_kind;
+    uint32_t raw_promoted;
+    uint32_t raw_active;
+    uint32_t direct_input_active;
+    uint32_t win32_active;
+    uint32_t mixed_inputs;
+    uint32_t profile_id;
+    uint32_t profile_mode;
+} PayloadInputPathObservationInterop;
+
+typedef struct PayloadAdapterProjectedStateInterop {
+    uint32_t desired_down;
+    uint32_t raw_projected;
+    uint32_t win32_projected;
+    uint32_t direct_input_projected;
+    uint32_t raw_drift;
+    uint32_t win32_drift;
+    uint32_t direct_input_drift;
+    uint32_t any_drift;
+} PayloadAdapterProjectedStateInterop;
+
 GAME_PAYLOAD_CORE_API uint32_t payload_core_evaluate_runtime_state(
     const void* snapshot_ptr,
     size_t mapping_size,
@@ -182,6 +204,23 @@ GAME_PAYLOAD_CORE_API uint32_t payload_core_evaluate_path_decision_header(
     uint64_t heartbeat_timeout_ms,
     uint32_t mapping_mode_value,
     PayloadPathDecisionInterop* out_decision);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_observe_input_path(
+    uint32_t raw_promoted,
+    uint32_t raw_data_count,
+    uint32_t raw_buffer_count,
+    uint32_t di_state_count,
+    uint32_t di_data_count,
+    uint32_t win32_async_count,
+    uint32_t win32_keyboard_count,
+    uint32_t profile_id,
+    uint32_t profile_mode,
+    PayloadInputPathObservationInterop* out_observation);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_evaluate_adapter_projected_state(
+    uint32_t desired_down,
+    uint32_t raw_projected,
+    uint32_t win32_projected,
+    uint32_t direct_input_projected,
+    PayloadAdapterProjectedStateInterop* out_state);
 
 GAME_PAYLOAD_CORE_API void* payload_core_convergence_create(uint8_t extra_release_pulses);
 GAME_PAYLOAD_CORE_API void payload_core_convergence_destroy(void* state);

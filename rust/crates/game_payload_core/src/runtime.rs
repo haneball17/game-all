@@ -62,6 +62,39 @@ pub struct PathDecision {
     pub should_use_mapping: bool,
 }
 
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputChannelKind {
+    Unknown = 0,
+    Win32 = 1,
+    RawInput = 2,
+    DirectInput = 3,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputPathObservation {
+    pub channel: InputChannelKind,
+    pub raw_promoted: bool,
+    pub raw_active: bool,
+    pub direct_input_active: bool,
+    pub win32_active: bool,
+    pub mixed_inputs: bool,
+    pub profile_id: u32,
+    pub profile_mode: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdapterProjectedState {
+    pub desired_down: bool,
+    pub raw_projected: bool,
+    pub win32_projected: bool,
+    pub direct_input_projected: bool,
+    pub raw_drift: bool,
+    pub win32_drift: bool,
+    pub direct_input_drift: bool,
+    pub any_drift: bool,
+}
+
 fn is_direction_vkey(vkey: u32) -> bool {
     matches!(vkey, 0x25..=0x28)
 }
@@ -327,6 +360,66 @@ pub fn evaluate_path_decision_header(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn observe_input_path(
+    raw_promoted: bool,
+    raw_data_count: u32,
+    raw_buffer_count: u32,
+    di_state_count: u32,
+    di_data_count: u32,
+    win32_async_count: u32,
+    win32_keyboard_count: u32,
+    profile_id: u32,
+    profile_mode: u32,
+) -> InputPathObservation {
+    let raw_active = raw_data_count.saturating_add(raw_buffer_count) > 0;
+    let direct_input_active = di_state_count.saturating_add(di_data_count) > 0;
+    let win32_active = win32_async_count.saturating_add(win32_keyboard_count) > 0;
+    let active_count = u32::from(raw_active) + u32::from(direct_input_active) + u32::from(win32_active);
+
+    let channel = if raw_active {
+        InputChannelKind::RawInput
+    } else if direct_input_active {
+        InputChannelKind::DirectInput
+    } else if win32_active {
+        InputChannelKind::Win32
+    } else {
+        InputChannelKind::Unknown
+    };
+
+    InputPathObservation {
+        channel,
+        raw_promoted,
+        raw_active,
+        direct_input_active,
+        win32_active,
+        mixed_inputs: active_count > 1,
+        profile_id,
+        profile_mode,
+    }
+}
+
+pub fn evaluate_adapter_projected_state(
+    desired_down: bool,
+    raw_projected: bool,
+    win32_projected: bool,
+    direct_input_projected: bool,
+) -> AdapterProjectedState {
+    let raw_drift = raw_projected != desired_down;
+    let win32_drift = win32_projected != desired_down;
+    let direct_input_drift = direct_input_projected != desired_down;
+    AdapterProjectedState {
+        desired_down,
+        raw_projected,
+        win32_projected,
+        direct_input_projected,
+        raw_drift,
+        win32_drift,
+        direct_input_drift,
+        any_drift: raw_drift || win32_drift || direct_input_drift,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -546,5 +639,30 @@ mod tests {
         assert_eq!(emit.emit_action, EmitAction::None);
         assert!(!emit.projected_down_after);
         assert!(!emit.desired_down);
+    }
+
+    #[test]
+    fn input_path_observation_preserves_existing_priority_and_marks_mixed() {
+        let raw = observe_input_path(true, 3, 1, 2, 0, 1, 0, 7, 3);
+        assert_eq!(raw.channel, InputChannelKind::RawInput);
+        assert!(raw.mixed_inputs);
+        assert!(raw.raw_promoted);
+
+        let di = observe_input_path(false, 0, 0, 2, 1, 0, 0, 7, 3);
+        assert_eq!(di.channel, InputChannelKind::DirectInput);
+        assert!(!di.mixed_inputs);
+
+        let win = observe_input_path(false, 0, 0, 0, 0, 4, 1, 7, 3);
+        assert_eq!(win.channel, InputChannelKind::Win32);
+        assert!(!win.mixed_inputs);
+    }
+
+    #[test]
+    fn adapter_projected_state_reports_drift() {
+        let state = evaluate_adapter_projected_state(true, false, true, false);
+        assert!(state.raw_drift);
+        assert!(!state.win32_drift);
+        assert!(state.direct_input_drift);
+        assert!(state.any_drift);
     }
 }

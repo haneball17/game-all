@@ -2,10 +2,11 @@
 
 use crate::{
     runtime::{
-        ChannelEmitDecision, EmitAction, KeyDecision, LogicalKeyDecision, PathDecision,
-        RuntimeDecision, decide_channel_emit, evaluate_key_state_header,
+        AdapterProjectedState, ChannelEmitDecision, EmitAction, InputPathObservation,
+        KeyDecision, LogicalKeyDecision, PathDecision, RuntimeDecision, decide_channel_emit,
+        evaluate_adapter_projected_state, evaluate_key_state_header,
         evaluate_logical_key_header, evaluate_path_decision_header, evaluate_runtime_header,
-        evaluate_runtime_state,
+        evaluate_runtime_state, observe_input_path,
     },
     sync::{DirectionConvergenceState, DirectionReleasePolicy, SnapshotCachePolicy},
 };
@@ -96,6 +97,32 @@ pub struct PayloadPathDecisionInterop {
     pub profile_id: u32,
     pub profile_mode: u32,
     pub last_tick: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadInputPathObservationInterop {
+    pub channel_kind: u32,
+    pub raw_promoted: u32,
+    pub raw_active: u32,
+    pub direct_input_active: u32,
+    pub win32_active: u32,
+    pub mixed_inputs: u32,
+    pub profile_id: u32,
+    pub profile_mode: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadAdapterProjectedStateInterop {
+    pub desired_down: u32,
+    pub raw_projected: u32,
+    pub win32_projected: u32,
+    pub direct_input_projected: u32,
+    pub raw_drift: u32,
+    pub win32_drift: u32,
+    pub direct_input_drift: u32,
+    pub any_drift: u32,
 }
 
 impl From<RuntimeDecision> for PayloadRuntimeDecisionInterop {
@@ -195,6 +222,36 @@ impl From<PathDecision> for PayloadPathDecisionInterop {
             profile_id: value.runtime.profile_id,
             profile_mode: value.runtime.profile_mode,
             last_tick: value.runtime.last_tick,
+        }
+    }
+}
+
+impl From<InputPathObservation> for PayloadInputPathObservationInterop {
+    fn from(value: InputPathObservation) -> Self {
+        Self {
+            channel_kind: value.channel as u32,
+            raw_promoted: u32::from(value.raw_promoted),
+            raw_active: u32::from(value.raw_active),
+            direct_input_active: u32::from(value.direct_input_active),
+            win32_active: u32::from(value.win32_active),
+            mixed_inputs: u32::from(value.mixed_inputs),
+            profile_id: value.profile_id,
+            profile_mode: value.profile_mode,
+        }
+    }
+}
+
+impl From<AdapterProjectedState> for PayloadAdapterProjectedStateInterop {
+    fn from(value: AdapterProjectedState) -> Self {
+        Self {
+            desired_down: u32::from(value.desired_down),
+            raw_projected: u32::from(value.raw_projected),
+            win32_projected: u32::from(value.win32_projected),
+            direct_input_projected: u32::from(value.direct_input_projected),
+            raw_drift: u32::from(value.raw_drift),
+            win32_drift: u32::from(value.win32_drift),
+            direct_input_drift: u32::from(value.direct_input_drift),
+            any_drift: u32::from(value.any_drift),
         }
     }
 }
@@ -430,6 +487,58 @@ pub unsafe extern "C" fn payload_core_evaluate_path_decision_header(
         mapping_mode_value,
     );
     unsafe { out_decision.write(decision.into()) };
+    1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_observe_input_path(
+    raw_promoted: u32,
+    raw_data_count: u32,
+    raw_buffer_count: u32,
+    di_state_count: u32,
+    di_data_count: u32,
+    win32_async_count: u32,
+    win32_keyboard_count: u32,
+    profile_id: u32,
+    profile_mode: u32,
+    out_observation: *mut PayloadInputPathObservationInterop,
+) -> u32 {
+    if out_observation.is_null() {
+        return 0;
+    }
+    let observation = observe_input_path(
+        raw_promoted != 0,
+        raw_data_count,
+        raw_buffer_count,
+        di_state_count,
+        di_data_count,
+        win32_async_count,
+        win32_keyboard_count,
+        profile_id,
+        profile_mode,
+    );
+    unsafe { out_observation.write(observation.into()) };
+    1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_evaluate_adapter_projected_state(
+    desired_down: u32,
+    raw_projected: u32,
+    win32_projected: u32,
+    direct_input_projected: u32,
+    out_state: *mut PayloadAdapterProjectedStateInterop,
+) -> u32 {
+    if out_state.is_null() {
+        return 0;
+    }
+    let state = evaluate_adapter_projected_state(
+        desired_down != 0,
+        raw_projected != 0,
+        win32_projected != 0,
+        direct_input_projected != 0,
+    );
+    unsafe { out_state.write(state.into()) };
     1
 }
 

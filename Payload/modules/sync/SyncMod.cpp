@@ -258,6 +258,21 @@ static bool EvaluateChannelEmitDecision(
     PayloadLogicalKeyDecisionInterop& logicalDecision,
     PayloadChannelEmitDecisionInterop& emitDecision);
 static bool EvaluatePathDecision(const SharedSnapshot& snapshot, PayloadPathDecisionInterop& decision);
+static bool EvaluateInputPathObservation(
+    LONG rawPromoted,
+    LONG rawData,
+    LONG rawBuffer,
+    LONG diState,
+    LONG diData,
+    LONG win32Async,
+    LONG win32Keyboard,
+    PayloadInputPathObservationInterop& observation);
+static bool EvaluateAdapterProjectedState(
+    bool desiredDown,
+    bool rawProjected,
+    bool win32Projected,
+    bool directInputProjected,
+    PayloadAdapterProjectedStateInterop& state);
 static void SyncDirectionConvergenceState(void* convergenceState, BYTE lastDirectionState[256], const SharedSnapshot& snapshot);
 static void EnsureDirectionConvergenceState();
 static bool ShouldForceReleaseKey(int vKey);
@@ -4548,24 +4563,59 @@ static void InstallDirectInputHook()
     }
 }
 
-static const wchar_t* ResolveInputChannel(LONG rawData, LONG rawBuffer, LONG getState, LONG getData, LONG getAsync, LONG getKeyboard)
+static const wchar_t* ResolveObservedInputChannel(uint32_t channelKind)
 {
-    LONG rawTotal = rawData + rawBuffer;
-    LONG diTotal = getState + getData;
-    LONG winTotal = getAsync + getKeyboard;
-    if (rawTotal > 0)
+    switch (channelKind)
     {
-        return L"RawInput";
+        case 1:
+            return L"Win32";
+        case 2:
+            return L"RawInput";
+        case 3:
+            return L"DirectInput";
+        default:
+            return L"Unknown";
     }
-    if (diTotal > 0)
-    {
-        return L"DirectInput";
-    }
-    if (winTotal > 0)
-    {
-        return L"Win32";
-    }
-    return L"Unknown";
+}
+
+static bool EvaluateInputPathObservation(
+    LONG rawPromoted,
+    LONG rawData,
+    LONG rawBuffer,
+    LONG diState,
+    LONG diData,
+    LONG win32Async,
+    LONG win32Keyboard,
+    PayloadInputPathObservationInterop& observation)
+{
+    memset(&observation, 0, sizeof(observation));
+    return payload_core_observe_input_path(
+               rawPromoted > 0 ? 1u : 0u,
+               rawData > 0 ? static_cast<uint32_t>(rawData) : 0u,
+               rawBuffer > 0 ? static_cast<uint32_t>(rawBuffer) : 0u,
+               diState > 0 ? static_cast<uint32_t>(diState) : 0u,
+               diData > 0 ? static_cast<uint32_t>(diData) : 0u,
+               win32Async > 0 ? static_cast<uint32_t>(win32Async) : 0u,
+               win32Keyboard > 0 ? static_cast<uint32_t>(win32Keyboard) : 0u,
+               g_lastProfileId,
+               g_lastProfileMode,
+               &observation) != 0;
+}
+
+static bool EvaluateAdapterProjectedState(
+    bool desiredDown,
+    bool rawProjected,
+    bool win32Projected,
+    bool directInputProjected,
+    PayloadAdapterProjectedStateInterop& state)
+{
+    memset(&state, 0, sizeof(state));
+    return payload_core_evaluate_adapter_projected_state(
+               desiredDown ? 1u : 0u,
+               rawProjected ? 1u : 0u,
+               win32Projected ? 1u : 0u,
+               directInputProjected ? 1u : 0u,
+               &state) != 0;
 }
 
 static void LogCountersOnce()
@@ -4687,7 +4737,17 @@ static void LogCountersOnce()
         {
             role = (activePid == selfPid) ? L"Master" : L"Slave";
         }
-        const wchar_t* channel = ResolveInputChannel(rawData, rawBuffer, getState, getData, getAsync, getKeyboard);
+        PayloadInputPathObservationInterop observation = {};
+        EvaluateInputPathObservation(
+            spoofWmInput,
+            rawData,
+            rawBuffer,
+            getState,
+            getData,
+            getAsync,
+            getKeyboard,
+            observation);
+        const wchar_t* channel = ResolveObservedInputChannel(observation.channel_kind);
 
         wchar_t buffer[640] = {0};
         StringCchPrintfW(
@@ -4716,14 +4776,42 @@ static void LogCountersOnce()
 
         WriteLogLine(buffer);
 
+        UINT rawDrift = 0;
+        UINT win32Drift = 0;
+        UINT directInputDrift = 0;
+        for (int vKey = 0; vKey < 256; ++vKey)
+        {
+            PayloadAdapterProjectedStateInterop projectedState = {};
+            if (!EvaluateAdapterProjectedState(
+                    g_lastLogicalDesiredState[vKey] != 0,
+                    (g_lastRawKeyboardState[vKey] & 0x80) != 0,
+                    g_lastWin32State[vKey] != 0,
+                    g_lastDIState[vKey] != 0,
+                    projectedState))
+            {
+                continue;
+            }
+
+            rawDrift += projectedState.raw_drift != 0 ? 1u : 0u;
+            win32Drift += projectedState.win32_drift != 0 ? 1u : 0u;
+            directInputDrift += projectedState.direct_input_drift != 0 ? 1u : 0u;
+        }
+
         wchar_t obs[512] = {0};
         StringCchPrintfW(
             obs,
             ARRAYSIZE(obs),
-            L"[OBS] %s channel=%s raw_promoted=%ld raw_data=%ld raw_buffer=%ld di_state=%ld di_data=%ld win32_async=%ld win32_keyboard=%ld profile=%lu mode=%lu",
+            L"[OBS] %s channel=%s mixed=%u raw_promoted=%u raw_active=%u di_active=%u win32_active=%u drift_raw=%u drift_win32=%u drift_di=%u raw_data=%ld raw_buffer=%ld di_state=%ld di_data=%ld win32_async=%ld win32_keyboard=%ld profile=%lu mode=%lu",
             GetTimestamp().c_str(),
             channel,
-            spoofWmInput,
+            observation.mixed_inputs,
+            observation.raw_promoted,
+            observation.raw_active,
+            observation.direct_input_active,
+            observation.win32_active,
+            rawDrift,
+            win32Drift,
+            directInputDrift,
             rawData,
             rawBuffer,
             getState,

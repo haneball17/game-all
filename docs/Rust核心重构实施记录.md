@@ -533,3 +533,58 @@
 - Rust clippy 通过
 - Windows `Injector` Debug / Release 构建通过
 - 当前变更未破坏既有 `Payload` / GUI 构建链
+
+---
+
+## 第十二批落地：Sync 路径观测与适配器投影状态模型进入 Rust（2026-04-07）
+
+### 本次新增
+- `game_payload_core::runtime` 新增：
+  - `InputChannelKind`
+  - `InputPathObservation`
+  - `AdapterProjectedState`
+- 新增能力：
+  - `observe_input_path(...)`
+  - `evaluate_adapter_projected_state(...)`
+
+### 新增 FFI
+- `payload_core_observe_input_path(...)`
+- `payload_core_evaluate_adapter_projected_state(...)`
+- `PayloadInputPathObservationInterop`
+- `PayloadAdapterProjectedStateInterop`
+
+### 当前接入范围
+`SyncMod.cpp` 已开始改为由 Rust 输出路径观测摘要：
+
+1. `[OBS]` 日志不再由 C++ 手写 `ResolveInputChannel(...)` 直接决定
+2. 现在改为：
+   - 由 Rust 根据 `RawInput / DirectInput / Win32` 计数输出 `channel_kind`
+   - 同时输出 `mixed_inputs / raw_active / direct_input_active / win32_active`
+
+当前仍保留在 C++：
+
+1. 实际 Hook 计数器采集
+2. `[OBS]` 日志格式化输出
+3. projected state 的真实数组存储
+
+### 当前价值
+- 路径观测开始从“C++ 零散日志拼接”转为“Rust 统一模型 + C++ 输出壳”。
+- 现有 `ResolveInputChannel` 的优先级语义（RawInput > DirectInput > Win32）已在 Rust 测试中固化。
+- 后续继续做 drift 检测、projected state 收口时，已具备统一的状态结构，不需要再在 C++ 里临时拼新字段。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_payload_core`
+2. `cargo clippy -p game_payload_core --all-targets --all-features -- -D warnings`
+3. `cargo test --workspace`
+4. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+5. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+6. `dotnet build E:\\code\\game-all\\GUI\\GameMasterGUI.csproj -c Debug -p:PlatformTarget=x86`
+7. `dotnet build E:\\code\\game-all\\GUI\\GameMasterGUI.csproj -c Release -p:PlatformTarget=x86`
+
+结果：
+- `game_payload_core` 新增 2 个测试后全部通过
+- Rust workspace 测试通过
+- Windows `Payload` Debug / Release 构建通过
+- `GameMasterGUI` Debug / Release 构建通过
