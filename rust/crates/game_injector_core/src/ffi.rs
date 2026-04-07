@@ -1,10 +1,10 @@
 use crate::{
     InjectorConfig, InjectorConfigInterop, InjectorConfigView,
     runtime::{
-        BackendExecutionResult, HeartbeatObservationResult, HelperHeartbeatDecision,
-        InjectionRetryDecision, InjectionRetryRuntime, InjectorWatchRuntime,
+        AttemptOutcomeSummary, BackendExecutionResult, HeartbeatObservationResult,
+        HelperHeartbeatDecision, InjectionRetryDecision, InjectionRetryRuntime, InjectorWatchRuntime,
         SuccessObservationResult, WindowProbeResult, build_runtime_plan_from_text,
-        evaluate_helper_heartbeat, finish_attempt_with_observation,
+        evaluate_helper_heartbeat, finish_attempt_with_observation, summarize_attempt_outcome,
     },
 };
 use game_core_protocols::{HELPER_STATUS_V5_SIZE, HELPER_STATUS_V5_VERSION};
@@ -253,6 +253,24 @@ impl From<BackendExecutionResult> for InjectorBackendExecutionResultInterop {
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InjectorAttemptOutcomeSummaryInterop {
+    pub succeeded: u32,
+    pub should_retry: u32,
+    pub outcome_code: u32,
+}
+
+impl From<AttemptOutcomeSummary> for InjectorAttemptOutcomeSummaryInterop {
+    fn from(value: AttemptOutcomeSummary) -> Self {
+        Self {
+            succeeded: u32::from(value.succeeded),
+            should_retry: u32::from(value.should_retry),
+            outcome_code: value.outcome_code as u32,
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn injector_core_evaluate_helper_heartbeat(
     status_version: u32,
@@ -331,6 +349,76 @@ pub unsafe extern "C" fn injector_core_retry_runtime_finish_attempt_with_results
     unsafe {
         out_decision.write(decision.into());
     }
+    1
+}
+
+#[unsafe(no_mangle)]
+/// 汇总一次注入尝试的最终结果来源与失败原因。
+///
+/// # Safety
+/// - `backend`、`success`、`heartbeat`、`retry` 必须指向有效只读结构体；
+/// - `out_summary` 必须指向可写的 `InjectorAttemptOutcomeSummaryInterop`；
+/// - 所有指针在本函数返回前必须保持有效。
+pub unsafe extern "C" fn injector_core_summarize_attempt_outcome(
+    backend: *const InjectorBackendExecutionResultInterop,
+    success: *const InjectorSuccessObservationResultInterop,
+    heartbeat: *const InjectorHeartbeatObservationResultInterop,
+    retry: *const InjectorRetryDecisionInterop,
+    out_summary: *mut InjectorAttemptOutcomeSummaryInterop,
+) -> u32 {
+    if backend.is_null()
+        || success.is_null()
+        || heartbeat.is_null()
+        || retry.is_null()
+        || out_summary.is_null()
+    {
+        return 0;
+    }
+
+    // SAFETY: 调用方承诺 `backend` 指向有效只读后端执行结果。
+    let backend = unsafe { &*backend };
+    // SAFETY: 调用方承诺 `success` 指向有效只读成功文件观测结果。
+    let success = unsafe { &*success };
+    // SAFETY: 调用方承诺 `heartbeat` 指向有效只读 heartbeat 观测结果。
+    let heartbeat = unsafe { &*heartbeat };
+    // SAFETY: 调用方承诺 `retry` 指向有效只读 retry 决策结构。
+    let retry = unsafe { &*retry };
+    let summary = summarize_attempt_outcome(
+        BackendExecutionResult {
+            started: backend.started != 0,
+            configured_backend: backend.configured_backend,
+            effective_backend: backend.effective_backend,
+            downgraded: backend.downgraded != 0,
+            error_code: backend.error_code,
+        },
+        SuccessObservationResult {
+            observed: success.observed != 0,
+            timed_out: success.timed_out != 0,
+            used_fallback: success.used_fallback != 0,
+            error_code: success.error_code,
+        },
+        HeartbeatObservationResult {
+            observed: heartbeat.observed != 0,
+            contract_ok: heartbeat.contract_ok != 0,
+            mapping_found: heartbeat.mapping_found != 0,
+            timed_out: heartbeat.timed_out != 0,
+            error_code: heartbeat.error_code,
+        },
+        InjectionRetryDecision {
+            attempt: retry.attempt,
+            backend_started: retry.backend_started != 0,
+            success_by_file: retry.success_by_file != 0,
+            success_by_heartbeat: retry.success_by_heartbeat != 0,
+            success_source: retry.success_source,
+            used_heartbeat_fallback: retry.used_heartbeat_fallback != 0,
+            succeeded: retry.succeeded != 0,
+            should_retry: retry.should_retry != 0,
+            retry_delay_ms: retry.retry_delay_ms,
+            finished: retry.finished != 0,
+        },
+    );
+    // SAFETY: 调用方承诺 `out_summary` 指向可写输出结构。
+    unsafe { out_summary.write(summary.into()) };
     1
 }
 

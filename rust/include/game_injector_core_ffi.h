@@ -89,6 +89,12 @@ typedef struct InjectorBackendExecutionResultInterop {
     uint32_t error_code;
 } InjectorBackendExecutionResultInterop;
 
+typedef struct InjectorAttemptOutcomeSummaryInterop {
+    uint32_t succeeded;
+    uint32_t should_retry;
+    uint32_t outcome_code;
+} InjectorAttemptOutcomeSummaryInterop;
+
 GAME_INJECTOR_CORE_API InjectorConfigView injector_core_default_view(void);
 GAME_INJECTOR_CORE_API uint32_t injector_core_load_config_utf8(
     const uint8_t* text_ptr,
@@ -132,6 +138,12 @@ GAME_INJECTOR_CORE_API uint32_t injector_core_retry_runtime_finish_attempt_with_
     const InjectorSuccessObservationResultInterop* success,
     const InjectorHeartbeatObservationResultInterop* heartbeat,
     InjectorRetryDecisionInterop* out_decision);
+GAME_INJECTOR_CORE_API uint32_t injector_core_summarize_attempt_outcome(
+    const InjectorBackendExecutionResultInterop* backend,
+    const InjectorSuccessObservationResultInterop* success,
+    const InjectorHeartbeatObservationResultInterop* heartbeat,
+    const InjectorRetryDecisionInterop* retry,
+    InjectorAttemptOutcomeSummaryInterop* out_summary);
 GAME_INJECTOR_CORE_API InjectorWatchRuntime* injector_core_watch_runtime_create(
     const InjectorConfigInterop* config,
     uint64_t now_tick);

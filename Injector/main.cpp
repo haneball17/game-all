@@ -1064,14 +1064,31 @@ static bool TryInjectProcess(DWORD pid, const InjectorConfig& config) {
             &success,
             &heartbeat,
             &decision);
-        if (decision.succeeded != 0) {
-            if (decision.success_source == 1) {
+        InjectorAttemptOutcomeSummaryInterop summary = {};
+        injector_core_summarize_attempt_outcome(&backend, &success, &heartbeat, &decision, &summary);
+        if (summary.succeeded != 0) {
+            if (summary.outcome_code == 1) {
                 Log(L"成功文件已更新，注入成功");
-            } else if (decision.success_source == 2) {
+            } else if (summary.outcome_code == 2) {
                 Log(L"共享内存心跳正常，注入成功");
             }
-        } else if (decision.backend_started != 0 && decision.used_heartbeat_fallback != 0 && heartbeat.observed == 0) {
-            Log(L"successfile 与 heartbeat 均未确认成功");
+        } else {
+            switch (summary.outcome_code) {
+            case 3:
+                Log(L"注入后端未成功启动");
+                break;
+            case 4:
+                Log(L"未找到 Helper 共享内存映射");
+                break;
+            case 5:
+                Log(L"Helper 共享内存协议不匹配");
+                break;
+            case 6:
+                Log(L"successfile 与 heartbeat 均未确认成功");
+                break;
+            default:
+                break;
+            }
         }
         if (decision.succeeded != 0) {
             injected = true;

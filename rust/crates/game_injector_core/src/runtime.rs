@@ -158,6 +158,25 @@ pub struct BackendExecutionResult {
     pub error_code: u32,
 }
 
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttemptOutcomeCode {
+    None = 0,
+    SuccessByFile = 1,
+    SuccessByHeartbeat = 2,
+    BackendFailed = 3,
+    HeartbeatMappingMissing = 4,
+    HeartbeatContractMismatch = 5,
+    HeartbeatTimedOut = 6,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttemptOutcomeSummary {
+    pub succeeded: bool,
+    pub should_retry: bool,
+    pub outcome_code: AttemptOutcomeCode,
+}
+
 pub fn finish_attempt_with_observation(
     runtime: &mut InjectionRetryRuntime,
     backend: BackendExecutionResult,
@@ -165,6 +184,37 @@ pub fn finish_attempt_with_observation(
     heartbeat: HeartbeatObservationResult,
 ) -> InjectionRetryDecision {
     runtime.finish_attempt(backend.started, success.observed, heartbeat.observed)
+}
+
+pub fn summarize_attempt_outcome(
+    backend: BackendExecutionResult,
+    success: SuccessObservationResult,
+    heartbeat: HeartbeatObservationResult,
+    retry: InjectionRetryDecision,
+) -> AttemptOutcomeSummary {
+    let outcome_code = if retry.succeeded {
+        if retry.success_by_file {
+            AttemptOutcomeCode::SuccessByFile
+        } else {
+            AttemptOutcomeCode::SuccessByHeartbeat
+        }
+    } else if !backend.started {
+        AttemptOutcomeCode::BackendFailed
+    } else if !heartbeat.mapping_found {
+        AttemptOutcomeCode::HeartbeatMappingMissing
+    } else if !heartbeat.contract_ok {
+        AttemptOutcomeCode::HeartbeatContractMismatch
+    } else if success.timed_out || heartbeat.timed_out {
+        AttemptOutcomeCode::HeartbeatTimedOut
+    } else {
+        AttemptOutcomeCode::None
+    };
+
+    AttemptOutcomeSummary {
+        succeeded: retry.succeeded,
+        should_retry: retry.should_retry,
+        outcome_code,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -416,13 +466,60 @@ mod tests {
     #[test]
     fn finish_attempt_with_structured_results_uses_success_sources() {
         let mut runtime = InjectionRetryRuntime::new(3, 1000);
+        let backend = BackendExecutionResult {
+            started: true,
+            configured_backend: 2,
+            effective_backend: 1,
+            downgraded: true,
+            error_code: 0,
+        };
+        let success = SuccessObservationResult {
+            observed: false,
+            timed_out: true,
+            used_fallback: false,
+            error_code: 0,
+        };
+        let heartbeat = HeartbeatObservationResult {
+            observed: true,
+            contract_ok: true,
+            mapping_found: true,
+            timed_out: false,
+            error_code: 0,
+        };
         let decision = finish_attempt_with_observation(
             &mut runtime,
+            backend,
+            success,
+            heartbeat,
+        );
+        assert!(decision.succeeded);
+        assert_eq!(decision.success_source, 2);
+        assert!(decision.used_heartbeat_fallback);
+        assert!(!decision.should_retry);
+        let summary = summarize_attempt_outcome(backend, success, heartbeat, decision);
+        assert_eq!(summary.outcome_code, AttemptOutcomeCode::SuccessByHeartbeat);
+    }
+
+    #[test]
+    fn summarize_attempt_outcome_reports_mapping_missing() {
+        let retry = InjectionRetryDecision {
+            attempt: 1,
+            backend_started: true,
+            success_by_file: false,
+            success_by_heartbeat: false,
+            success_source: 0,
+            used_heartbeat_fallback: true,
+            succeeded: false,
+            should_retry: true,
+            retry_delay_ms: 1000,
+            finished: false,
+        };
+        let summary = summarize_attempt_outcome(
             BackendExecutionResult {
                 started: true,
-                configured_backend: 2,
+                configured_backend: 1,
                 effective_backend: 1,
-                downgraded: true,
+                downgraded: false,
                 error_code: 0,
             },
             SuccessObservationResult {
@@ -432,16 +529,15 @@ mod tests {
                 error_code: 0,
             },
             HeartbeatObservationResult {
-                observed: true,
-                contract_ok: true,
-                mapping_found: true,
-                timed_out: false,
-                error_code: 0,
+                observed: false,
+                contract_ok: false,
+                mapping_found: false,
+                timed_out: true,
+                error_code: 2,
             },
+            retry,
         );
-        assert!(decision.succeeded);
-        assert_eq!(decision.success_source, 2);
-        assert!(decision.used_heartbeat_fallback);
-        assert!(!decision.should_retry);
+        assert_eq!(summary.outcome_code, AttemptOutcomeCode::HeartbeatMappingMissing);
+        assert!(summary.should_retry);
     }
 }
