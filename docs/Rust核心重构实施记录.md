@@ -942,6 +942,54 @@
 
 ---
 
+## 第二十二批落地：mapping / direction selection 开始收口到 Rust（2026-04-07）
+
+### 本次新增
+- `game_payload_core::sync` 已新增：
+  - `MappingTransitionReason`
+  - `DirectionSelectionReason`
+  - `MappingTransitionDecision`
+  - `DirectionTransitionDecision`
+  - `SyncStateStore::select_mapping_transition(...)`
+  - `SyncStateStore::select_direction_transition(...)`
+- `game_payload_core_ffi` 已新增：
+  - `PayloadMappingTransitionDecisionInterop`
+  - `PayloadDirectionTransitionDecisionInterop`
+  - `payload_core_state_store_select_mapping_transition(...)`
+  - `payload_core_state_store_select_direction_transition(...)`
+
+### 本次收口
+- `TryPickMappingRawTransition(...)` 不再在 C++ 里扫描 `targetMask/keyboardState` 并自己决定：
+  - `mapping_edge_down`
+  - `mapping_edge_up`
+  - `raw_neutral_suppressed`
+- `TryPickDirectionTransition(...)` 不再在 C++ 里构造方向键期望态并自己决定：
+  - `preferred_release`
+  - `force_release_mask`
+  - `stale_raw_down`
+  - `preferred_press`
+  - `group_winner_press`
+- 上述选择顺序、方向键对冲、scan cursor 推进与 Raw projected 更新现在都由 Rust store 驱动。
+
+### 当前价值
+- `SyncMod.cpp` 又减少了一批“自己算选择策略、自己改状态”的逻辑。
+- `mapping` 与 `direction` 这两类 transition 的 selection reason 开始有统一 Rust 真值。
+- 方向键期望态构造与对冲裁决不再散落在 C++ 层。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_payload_core`
+2. `cargo clippy -p game_payload_core --all-targets --all-features -- -D warnings`
+3. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+4. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+
+结果：
+- Rust 测试与 clippy 通过
+- Windows `Payload` Debug / Release 构建通过
+
+---
+
 ## 第二十一批落地：adapter transition reason 收口到 Rust（2026-04-07）
 
 ### 本次新增

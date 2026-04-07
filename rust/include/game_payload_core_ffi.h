@@ -140,6 +140,24 @@ typedef struct PayloadProjectedStateUpdateInterop {
     uint32_t transition_reason;
 } PayloadProjectedStateUpdateInterop;
 
+typedef struct PayloadMappingTransitionDecisionInterop {
+    uint32_t should_emit;
+    uint32_t vkey;
+    uint32_t is_down;
+    uint32_t next_scan_cursor;
+    uint32_t reason;
+} PayloadMappingTransitionDecisionInterop;
+
+typedef struct PayloadDirectionTransitionDecisionInterop {
+    uint32_t should_emit;
+    uint32_t vkey;
+    uint32_t is_down;
+    uint32_t desired_down;
+    uint32_t projected_before;
+    uint32_t projected_after;
+    uint32_t reason;
+} PayloadDirectionTransitionDecisionInterop;
+
 typedef struct PayloadSyncObservationSnapshotInterop {
     uint32_t channel_kind;
     uint32_t active_pid;
@@ -365,6 +383,24 @@ GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_update_projected(
     uint32_t vkey,
     uint32_t down,
     PayloadProjectedStateUpdateInterop* out_update);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_select_mapping_transition(
+    void* state,
+    const uint8_t* target_mask_ptr,
+    const uint8_t* keyboard_state_ptr,
+    size_t len,
+    uint32_t allow_down,
+    size_t start,
+    PayloadMappingTransitionDecisionInterop* out_decision);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_select_direction_transition(
+    void* state,
+    const uint8_t* target_mask_ptr,
+    const uint8_t* keyboard_state_ptr,
+    const uint32_t* edge_counter_ptr,
+    const uint8_t* force_release_mask_ptr,
+    size_t len,
+    uint32_t can_process_keys,
+    int32_t preferred_vkey,
+    PayloadDirectionTransitionDecisionInterop* out_decision);
 GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_pick_pause_release(
     void* state,
     int32_t preferred_vkey,

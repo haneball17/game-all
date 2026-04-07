@@ -1500,51 +1500,28 @@ static bool TryPickMappingRawTransition(
         return false;
     }
 
-    const bool allowDown = alive && !paused;
-    int start = g_rawScanCursor & 0xFF;
-
-    // 只在逻辑边沿变化时输出真实 transition，不再发送 neutral raw 或重复 down。
-    for (int i = 0; i < 256; i++)
+    EnsurePayloadStateStore();
+    if (!g_payloadStateStore)
     {
-        int idx = (start + i) & 0xFF;
-        if (snapshot.targetMask[idx] == 0)
-        {
-            continue;
-        }
-
-        bool desiredDown = allowDown && (snapshot.keyboardState[idx] & 0x80) != 0;
-        PayloadProjectedStateUpdateInterop update = {};
-        if (UpdateProjectedStateValue(1, idx, desiredDown, &update) && update.changed != 0)
-        {
-            g_rawScanCursor = (idx + 1) & 0xFF;
-            *vKeyOut = idx;
-            *isDownOut = desiredDown;
-            if (reasonOut)
-            {
-                *reasonOut = desiredDown ? L"mapping_edge_down" : L"mapping_edge_up";
-            }
-            return true;
-        }
+        return false;
     }
 
-    if (allowDown)
+    PayloadMappingTransitionDecisionInterop decision = {};
+    if (payload_core_state_store_select_mapping_transition(
+            g_payloadStateStore,
+            snapshot.targetMask,
+            snapshot.keyboardState,
+            256,
+            (alive && !paused) ? 1u : 0u,
+            static_cast<size_t>(g_rawScanCursor & 0xFF),
+            &decision) == 0)
     {
-        bool hasActiveTarget = false;
-        for (int i = 0; i < 256; i++)
-        {
-            int idx = (start + i) & 0xFF;
-            if (snapshot.targetMask[idx] == 0)
-            {
-                continue;
-            }
+        return false;
+    }
 
-            if ((snapshot.keyboardState[idx] & 0x80) != 0)
-            {
-                hasActiveTarget = true;
-                break;
-            }
-        }
-        if (hasActiveTarget && IsKeyLogEnabled() && GetKeyLogLevel() >= 2)
+    if (decision.should_emit == 0)
+    {
+        if (decision.reason == 3 && IsKeyLogEnabled() && GetKeyLogLevel() >= 2)
         {
             wchar_t buffer[256] = {0};
             StringCchPrintfW(
@@ -1554,9 +1531,18 @@ static bool TryPickMappingRawTransition(
                 GetTimestamp().c_str());
             WriteLogLine(buffer);
         }
+        return false;
     }
 
-    return false;
+    g_rawScanCursor = static_cast<int>(decision.next_scan_cursor & 0xFF);
+    *vKeyOut = static_cast<int>(decision.vkey);
+    *isDownOut = decision.is_down != 0;
+    if (reasonOut)
+    {
+        *reasonOut = decision.reason == 1 ? L"mapping_edge_down" : L"mapping_edge_up";
+    }
+    SyncStateMirrorsForKey(static_cast<int>(decision.vkey));
+    return true;
 }
 
 static bool EvaluateRuntimeDecision(
@@ -1875,66 +1861,6 @@ static bool ShouldForceReleaseKey(int vKey)
            t_forceReleaseMask[vKey] != 0;
 }
 
-static void ResolveDirectionPair(BYTE desiredState[256], const uint32_t edgeCounter[256], int firstVKey, int secondVKey)
-{
-    if (!desiredState || !edgeCounter)
-    {
-        return;
-    }
-
-    if (desiredState[firstVKey] == 0 || desiredState[secondVKey] == 0)
-    {
-        return;
-    }
-
-    if (edgeCounter[firstVKey] > edgeCounter[secondVKey])
-    {
-        desiredState[secondVKey] = 0;
-        return;
-    }
-
-    if (edgeCounter[secondVKey] > edgeCounter[firstVKey])
-    {
-        desiredState[firstVKey] = 0;
-        return;
-    }
-
-    desiredState[firstVKey] = 0;
-    desiredState[secondVKey] = 0;
-}
-
-static bool BuildDirectionDesiredState(
-    const SharedSnapshot& snapshot,
-    const PayloadRuntimeDecisionInterop& runtimeDecision,
-    BYTE desiredState[256])
-{
-    if (!desiredState)
-    {
-        return false;
-    }
-
-    memset(desiredState, 0, 256);
-    if (runtimeDecision.is_alive == 0 || runtimeDecision.is_paused != 0 || runtimeDecision.should_clear != 0)
-    {
-        return true;
-    }
-
-    for (int vKey = 0; vKey < 256; vKey++)
-    {
-        if (!IsDirectionVKey(vKey))
-        {
-            continue;
-        }
-
-        desiredState[vKey] =
-            (snapshot.targetMask[vKey] != 0 && (snapshot.keyboardState[vKey] & 0x80) != 0) ? 1 : 0;
-    }
-
-    ResolveDirectionPair(desiredState, snapshot.edgeCounter, VK_LEFT, VK_RIGHT);
-    ResolveDirectionPair(desiredState, snapshot.edgeCounter, VK_UP, VK_DOWN);
-    return true;
-}
-
 static bool TryPickDirectionTransition(
     const SharedSnapshot& snapshot,
     const PayloadRuntimeDecisionInterop& runtimeDecision,
@@ -1947,114 +1873,62 @@ static bool TryPickDirectionTransition(
     {
         return false;
     }
-
-    BYTE desiredState[256] = {};
-    if (!BuildDirectionDesiredState(snapshot, runtimeDecision, desiredState))
+    EnsurePayloadStateStore();
+    if (!g_payloadStateStore)
+    {
+        return false;
+    }
+    PayloadDirectionTransitionDecisionInterop decision = {};
+    if (payload_core_state_store_select_direction_transition(
+            g_payloadStateStore,
+            snapshot.targetMask,
+            snapshot.keyboardState,
+            snapshot.edgeCounter,
+            t_forceReleaseMask,
+            256,
+            (runtimeDecision.is_alive != 0 && runtimeDecision.is_paused == 0 && runtimeDecision.should_clear == 0) ? 1u : 0u,
+            preferredVKey,
+            &decision) == 0 ||
+        decision.should_emit == 0)
     {
         return false;
     }
 
-    auto chooseRelease = [&](int vKey, const wchar_t* reason) -> bool {
-        if (!IsDirectionVKey(vKey))
-        {
-            return false;
-        }
-
-        if (desiredState[vKey] != 0 && !ShouldForceReleaseKey(vKey))
-        {
-            return false;
-        }
-
-        PayloadProjectedStateUpdateInterop update = {};
-        if (!UpdateProjectedStateValue(1, vKey, false, &update) || update.projected_before == 0)
-        {
-            return false;
-        }
-
-        *vKeyOut = vKey;
-        *isDownOut = false;
-        if (reasonOut)
-        {
-            *reasonOut = reason;
-        }
-        LogDirectionDecision(
-            L"force_up_raw",
-            vKey,
-            desiredState[vKey] != 0,
-            update.projected_before != 0,
-            GetProjectedStateValue(2, vKey),
-            reason);
-        return true;
-    };
-
-    auto choosePress = [&](int vKey, const wchar_t* reason) -> bool {
-        if (!IsDirectionVKey(vKey))
-        {
-            return false;
-        }
-
-        const bool snapshotDown = desiredState[vKey] != 0;
-        if (!snapshotDown || GetProjectedStateValue(1, vKey))
-        {
-            return false;
-        }
-
-        PayloadProjectedStateUpdateInterop update = {};
-        if (!UpdateProjectedStateValue(1, vKey, true, &update))
-        {
-            return false;
-        }
-        *vKeyOut = vKey;
-        *isDownOut = true;
-        if (reasonOut)
-        {
-            *reasonOut = reason;
-        }
-        LogDirectionDecision(
-            L"press_raw",
-            vKey,
-            true,
-            update.projected_before != 0,
-            GetProjectedStateValue(2, vKey),
-            reason);
-        return true;
-    };
-
-    if (chooseRelease(preferredVKey, L"preferred_release"))
+    *vKeyOut = static_cast<int>(decision.vkey);
+    *isDownOut = decision.is_down != 0;
+    const wchar_t* reason = L"direction_none";
+    switch (decision.reason)
     {
-        return true;
+        case 1:
+            reason = L"preferred_release";
+            break;
+        case 2:
+            reason = L"force_release_mask";
+            break;
+        case 3:
+            reason = L"stale_raw_down";
+            break;
+        case 4:
+            reason = L"preferred_press";
+            break;
+        case 5:
+            reason = L"group_winner_press";
+            break;
+    }
+    if (reasonOut)
+    {
+        *reasonOut = reason;
     }
 
-    for (int vKey : {VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN})
-    {
-        if (vKey == preferredVKey)
-        {
-            continue;
-        }
-        if (chooseRelease(vKey, ShouldForceReleaseKey(vKey) ? L"force_release_mask" : L"stale_raw_down"))
-        {
-            return true;
-        }
-    }
-
-    if (choosePress(preferredVKey, L"preferred_press"))
-    {
-        return true;
-    }
-
-    for (int vKey : {VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN})
-    {
-        if (vKey == preferredVKey)
-        {
-            continue;
-        }
-        if (choosePress(vKey, L"group_winner_press"))
-        {
-            return true;
-        }
-    }
-
-    return false;
+    SyncStateMirrorsForKey(static_cast<int>(decision.vkey));
+    LogDirectionDecision(
+        decision.is_down != 0 ? L"press_raw" : L"force_up_raw",
+        static_cast<int>(decision.vkey),
+        decision.desired_down != 0,
+        decision.projected_before != 0,
+        GetProjectedStateValue(2, static_cast<int>(decision.vkey)),
+        reason);
+    return true;
 }
 
 static bool HasMappingRawTransition(const SharedSnapshot& snapshot, bool alive, bool paused)

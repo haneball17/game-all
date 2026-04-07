@@ -13,7 +13,8 @@ use crate::{
         evaluate_runtime_state, observe_input_path, summarize_adapter_drift,
     },
     sync::{
-        ClearResetDecision, DirectionConvergenceState, DirectionReleasePolicy, PauseReleaseDecision,
+        ClearResetDecision, DirectionConvergenceState, DirectionReleasePolicy,
+        DirectionTransitionDecision, MappingTransitionDecision, PauseReleaseDecision,
         PauseReleaseReason, ProjectedChannelKind, ProjectedStateUpdate, SnapshotCachePolicy,
         SyncStateStore,
     },
@@ -169,6 +170,28 @@ pub struct PayloadProjectedStateUpdateInterop {
     pub projected_before: u32,
     pub projected_after: u32,
     pub transition_reason: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadMappingTransitionDecisionInterop {
+    pub should_emit: u32,
+    pub vkey: u32,
+    pub is_down: u32,
+    pub next_scan_cursor: u32,
+    pub reason: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadDirectionTransitionDecisionInterop {
+    pub should_emit: u32,
+    pub vkey: u32,
+    pub is_down: u32,
+    pub desired_down: u32,
+    pub projected_before: u32,
+    pub projected_after: u32,
+    pub reason: u32,
 }
 
 #[repr(C)]
@@ -405,6 +428,32 @@ impl From<ProjectedStateUpdate> for PayloadProjectedStateUpdateInterop {
             projected_before: u32::from(value.projected_before),
             projected_after: u32::from(value.projected_after),
             transition_reason: value.transition_reason as u32,
+        }
+    }
+}
+
+impl From<MappingTransitionDecision> for PayloadMappingTransitionDecisionInterop {
+    fn from(value: MappingTransitionDecision) -> Self {
+        Self {
+            should_emit: u32::from(value.should_emit),
+            vkey: value.vkey,
+            is_down: u32::from(value.is_down),
+            next_scan_cursor: value.next_scan_cursor,
+            reason: value.reason as u32,
+        }
+    }
+}
+
+impl From<DirectionTransitionDecision> for PayloadDirectionTransitionDecisionInterop {
+    fn from(value: DirectionTransitionDecision) -> Self {
+        Self {
+            should_emit: u32::from(value.should_emit),
+            vkey: value.vkey,
+            is_down: u32::from(value.is_down),
+            desired_down: u32::from(value.desired_down),
+            projected_before: u32::from(value.projected_before),
+            projected_after: u32::from(value.projected_after),
+            reason: value.reason as u32,
         }
     }
 }
@@ -1070,6 +1119,65 @@ pub unsafe extern "C" fn payload_core_state_store_update_projected(
     };
     let update = unsafe { (&mut *state).update_projected(channel, vkey as usize, down != 0) };
     unsafe { out_update.write(update.into()) };
+    1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_state_store_select_mapping_transition(
+    state: *mut SyncStateStore,
+    target_mask_ptr: *const u8,
+    keyboard_state_ptr: *const u8,
+    len: usize,
+    allow_down: u32,
+    start: usize,
+    out_decision: *mut PayloadMappingTransitionDecisionInterop,
+) -> u32 {
+    if state.is_null() || target_mask_ptr.is_null() || keyboard_state_ptr.is_null() || out_decision.is_null() {
+        return 0;
+    }
+    let target_mask = unsafe { std::slice::from_raw_parts(target_mask_ptr, len) };
+    let keyboard_state = unsafe { std::slice::from_raw_parts(keyboard_state_ptr, len) };
+    let decision = unsafe { (&mut *state).select_mapping_transition(target_mask, keyboard_state, allow_down != 0, start) };
+    unsafe { out_decision.write(decision.into()) };
+    1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_state_store_select_direction_transition(
+    state: *mut SyncStateStore,
+    target_mask_ptr: *const u8,
+    keyboard_state_ptr: *const u8,
+    edge_counter_ptr: *const u32,
+    force_release_mask_ptr: *const u8,
+    len: usize,
+    can_process_keys: u32,
+    preferred_vkey: i32,
+    out_decision: *mut PayloadDirectionTransitionDecisionInterop,
+) -> u32 {
+    if state.is_null()
+        || target_mask_ptr.is_null()
+        || keyboard_state_ptr.is_null()
+        || edge_counter_ptr.is_null()
+        || force_release_mask_ptr.is_null()
+        || out_decision.is_null()
+    {
+        return 0;
+    }
+    let target_mask = unsafe { std::slice::from_raw_parts(target_mask_ptr, len) };
+    let keyboard_state = unsafe { std::slice::from_raw_parts(keyboard_state_ptr, len) };
+    let edge_counter = unsafe { std::slice::from_raw_parts(edge_counter_ptr, len) };
+    let force_release_mask = unsafe { std::slice::from_raw_parts(force_release_mask_ptr, len) };
+    let decision = unsafe {
+        (&mut *state).select_direction_transition(
+            target_mask,
+            keyboard_state,
+            edge_counter,
+            can_process_keys != 0,
+            preferred_vkey,
+            force_release_mask,
+        )
+    };
+    unsafe { out_decision.write(decision.into()) };
     1
 }
 

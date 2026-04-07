@@ -160,6 +160,26 @@ pub enum ChannelTransitionReason {
     ObservedRelease = 6,
 }
 
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MappingTransitionReason {
+    None = 0,
+    EdgeDown = 1,
+    EdgeUp = 2,
+    NeutralSuppressed = 3,
+}
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectionSelectionReason {
+    None = 0,
+    PreferredRelease = 1,
+    ForceReleaseMask = 2,
+    StaleRawDown = 3,
+    PreferredPress = 4,
+    GroupWinnerPress = 5,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PauseReleaseDecision {
     pub should_emit: bool,
@@ -184,6 +204,26 @@ pub struct ProjectedStateUpdate {
     pub projected_before: bool,
     pub projected_after: bool,
     pub transition_reason: ChannelTransitionReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MappingTransitionDecision {
+    pub should_emit: bool,
+    pub vkey: u32,
+    pub is_down: bool,
+    pub next_scan_cursor: u32,
+    pub reason: MappingTransitionReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirectionTransitionDecision {
+    pub should_emit: bool,
+    pub vkey: u32,
+    pub is_down: bool,
+    pub desired_down: bool,
+    pub projected_before: bool,
+    pub projected_after: bool,
+    pub reason: DirectionSelectionReason,
 }
 
 impl SyncStateStore {
@@ -240,6 +280,196 @@ impl SyncStateStore {
                 ChannelTransitionReason::ObservedRelease
             },
         }
+    }
+
+    pub fn select_mapping_transition(
+        &mut self,
+        target_mask: &[u8],
+        keyboard_state: &[u8],
+        allow_down: bool,
+        start: usize,
+    ) -> MappingTransitionDecision {
+        let len = SHARED_KEYBOARD_KEY_COUNT.min(target_mask.len()).min(keyboard_state.len());
+        for offset in 0..len {
+            let idx = (start + offset) % len;
+            if target_mask[idx] == 0 {
+                continue;
+            }
+
+            let desired_down = allow_down && (keyboard_state[idx] & 0x80) != 0;
+            let update = self.update_projected(ProjectedChannelKind::Raw, idx, desired_down);
+            if update.changed {
+                return MappingTransitionDecision {
+                    should_emit: true,
+                    vkey: idx as u32,
+                    is_down: desired_down,
+                    next_scan_cursor: ((idx + 1) % len) as u32,
+                    reason: if desired_down {
+                        MappingTransitionReason::EdgeDown
+                    } else {
+                        MappingTransitionReason::EdgeUp
+                    },
+                };
+            }
+        }
+
+        if allow_down {
+            for offset in 0..len {
+                let idx = (start + offset) % len;
+                if target_mask[idx] != 0 && (keyboard_state[idx] & 0x80) != 0 {
+                    return MappingTransitionDecision {
+                        should_emit: false,
+                        vkey: 0,
+                        is_down: false,
+                        next_scan_cursor: start.min(len.saturating_sub(1)) as u32,
+                        reason: MappingTransitionReason::NeutralSuppressed,
+                    };
+                }
+            }
+        }
+
+        MappingTransitionDecision {
+            should_emit: false,
+            vkey: 0,
+            is_down: false,
+            next_scan_cursor: start.min(len.saturating_sub(1)) as u32,
+            reason: MappingTransitionReason::None,
+        }
+    }
+
+    pub fn select_direction_transition(
+        &mut self,
+        target_mask: &[u8],
+        keyboard_state: &[u8],
+        edge_counter: &[u32],
+        can_process_keys: bool,
+        preferred_vkey: i32,
+        force_release_mask: &[u8],
+    ) -> DirectionTransitionDecision {
+        let len = SHARED_KEYBOARD_KEY_COUNT
+            .min(target_mask.len())
+            .min(keyboard_state.len())
+            .min(edge_counter.len())
+            .min(force_release_mask.len());
+        let mut desired = [false; SHARED_KEYBOARD_KEY_COUNT];
+
+        if can_process_keys {
+            for &vkey in &DIRECTION_KEYS {
+                if vkey < len {
+                    desired[vkey] = target_mask[vkey] != 0 && (keyboard_state[vkey] & 0x80) != 0;
+                }
+            }
+
+            resolve_direction_pair(&mut desired, edge_counter, 0x25, 0x27);
+            resolve_direction_pair(&mut desired, edge_counter, 0x26, 0x28);
+        }
+
+        if let Some(vkey) = valid_direction_vkey(preferred_vkey)
+            && let Some(decision) = self.try_select_direction_release(
+                len,
+                &desired,
+                force_release_mask,
+                vkey,
+                DirectionSelectionReason::PreferredRelease,
+            )
+        {
+            return decision;
+        }
+
+        for &vkey in &DIRECTION_KEYS {
+            if Some(vkey) == valid_direction_vkey(preferred_vkey) {
+                continue;
+            }
+            let reason = if force_release_mask.get(vkey).copied().unwrap_or(0) != 0 {
+                DirectionSelectionReason::ForceReleaseMask
+            } else {
+                DirectionSelectionReason::StaleRawDown
+            };
+            if let Some(decision) =
+                self.try_select_direction_release(len, &desired, force_release_mask, vkey, reason)
+            {
+                return decision;
+            }
+        }
+
+        if let Some(vkey) = valid_direction_vkey(preferred_vkey)
+            && let Some(decision) =
+                self.try_select_direction_press(len, &desired, vkey, DirectionSelectionReason::PreferredPress)
+        {
+            return decision;
+        }
+
+        for &vkey in &DIRECTION_KEYS {
+            if Some(vkey) == valid_direction_vkey(preferred_vkey) {
+                continue;
+            }
+            if let Some(decision) =
+                self.try_select_direction_press(len, &desired, vkey, DirectionSelectionReason::GroupWinnerPress)
+            {
+                return decision;
+            }
+        }
+
+        DirectionTransitionDecision {
+            should_emit: false,
+            vkey: 0,
+            is_down: false,
+            desired_down: false,
+            projected_before: false,
+            projected_after: false,
+            reason: DirectionSelectionReason::None,
+        }
+    }
+
+    fn try_select_direction_release(
+        &mut self,
+        len: usize,
+        desired: &[bool; SHARED_KEYBOARD_KEY_COUNT],
+        force_release_mask: &[u8],
+        vkey: usize,
+        reason: DirectionSelectionReason,
+    ) -> Option<DirectionTransitionDecision> {
+        if vkey >= len {
+            return None;
+        }
+        if desired[vkey] && force_release_mask[vkey] == 0 {
+            return None;
+        }
+        let update = self.update_projected(ProjectedChannelKind::Raw, vkey, false);
+        if !update.projected_before {
+            return None;
+        }
+        Some(DirectionTransitionDecision {
+            should_emit: true,
+            vkey: vkey as u32,
+            is_down: false,
+            desired_down: desired[vkey],
+            projected_before: update.projected_before,
+            projected_after: update.projected_after,
+            reason,
+        })
+    }
+
+    fn try_select_direction_press(
+        &mut self,
+        len: usize,
+        desired: &[bool; SHARED_KEYBOARD_KEY_COUNT],
+        vkey: usize,
+        reason: DirectionSelectionReason,
+    ) -> Option<DirectionTransitionDecision> {
+        if vkey >= len || !desired[vkey] || self.projected(ProjectedChannelKind::Raw, vkey) {
+            return None;
+        }
+        let update = self.update_projected(ProjectedChannelKind::Raw, vkey, true);
+        Some(DirectionTransitionDecision {
+            should_emit: true,
+            vkey: vkey as u32,
+            is_down: true,
+            desired_down: true,
+            projected_before: update.projected_before,
+            projected_after: update.projected_after,
+            reason,
+        })
     }
 
     pub fn clear_logical_desired(&mut self) {
@@ -361,6 +591,25 @@ fn direction_pair(vkey: i32) -> Option<usize> {
         0x26 => Some(0x28),
         0x28 => Some(0x26),
         _ => None,
+    }
+}
+
+fn valid_direction_vkey(vkey: i32) -> Option<usize> {
+    let vkey = usize::try_from(vkey).ok()?;
+    DIRECTION_KEYS.contains(&vkey).then_some(vkey)
+}
+
+fn resolve_direction_pair(desired: &mut [bool; SHARED_KEYBOARD_KEY_COUNT], edge_counter: &[u32], first: usize, second: usize) {
+    if !desired[first] || !desired[second] {
+        return;
+    }
+    if edge_counter[first] > edge_counter[second] {
+        desired[second] = false;
+    } else if edge_counter[second] > edge_counter[first] {
+        desired[first] = false;
+    } else {
+        desired[first] = false;
+        desired[second] = false;
     }
 }
 
@@ -506,5 +755,75 @@ mod tests {
         assert!(third.projected_before);
         assert!(!third.projected_after);
         assert_eq!(third.transition_reason, ChannelTransitionReason::ObservedRelease);
+    }
+
+    #[test]
+    fn mapping_transition_picks_edge_and_advances_cursor() {
+        let mut store = SyncStateStore::default();
+        let mut target_mask = [0u8; SHARED_KEYBOARD_KEY_COUNT];
+        let mut keyboard_state = [0u8; SHARED_KEYBOARD_KEY_COUNT];
+        target_mask[0x41] = 1;
+        keyboard_state[0x41] = 0x80;
+
+        let decision = store.select_mapping_transition(&target_mask, &keyboard_state, true, 0);
+        assert!(decision.should_emit);
+        assert_eq!(decision.vkey, 0x41);
+        assert!(decision.is_down);
+        assert_eq!(decision.reason, MappingTransitionReason::EdgeDown);
+        assert_eq!(decision.next_scan_cursor, 0x42);
+    }
+
+    #[test]
+    fn mapping_transition_reports_neutral_suppressed_when_target_stays_down() {
+        let mut store = SyncStateStore::default();
+        let mut target_mask = [0u8; SHARED_KEYBOARD_KEY_COUNT];
+        let mut keyboard_state = [0u8; SHARED_KEYBOARD_KEY_COUNT];
+        target_mask[0x41] = 1;
+        keyboard_state[0x41] = 0x80;
+        store.set_projected(ProjectedChannelKind::Raw, 0x41, true);
+
+        let decision = store.select_mapping_transition(&target_mask, &keyboard_state, true, 0);
+        assert!(!decision.should_emit);
+        assert_eq!(decision.reason, MappingTransitionReason::NeutralSuppressed);
+    }
+
+    #[test]
+    fn direction_transition_prefers_force_release_then_group_press() {
+        let mut store = SyncStateStore::default();
+        let mut target_mask = [0u8; SHARED_KEYBOARD_KEY_COUNT];
+        let mut keyboard_state = [0u8; SHARED_KEYBOARD_KEY_COUNT];
+        let mut edge_counter = [0u32; SHARED_KEYBOARD_KEY_COUNT];
+        let mut force_release_mask = [0u8; SHARED_KEYBOARD_KEY_COUNT];
+
+        store.set_projected(ProjectedChannelKind::Raw, 0x27, true);
+        force_release_mask[0x27] = 1;
+        let release = store.select_direction_transition(
+            &target_mask,
+            &keyboard_state,
+            &edge_counter,
+            true,
+            0x25,
+            &force_release_mask,
+        );
+        assert!(release.should_emit);
+        assert_eq!(release.vkey, 0x27);
+        assert!(!release.is_down);
+        assert_eq!(release.reason, DirectionSelectionReason::ForceReleaseMask);
+
+        keyboard_state[0x25] = 0x80;
+        target_mask[0x25] = 1;
+        edge_counter[0x25] = 2;
+        let press = store.select_direction_transition(
+            &target_mask,
+            &keyboard_state,
+            &edge_counter,
+            true,
+            0x25,
+            &[0u8; SHARED_KEYBOARD_KEY_COUNT],
+        );
+        assert!(press.should_emit);
+        assert_eq!(press.vkey, 0x25);
+        assert!(press.is_down);
+        assert_eq!(press.reason, DirectionSelectionReason::PreferredPress);
     }
 }
