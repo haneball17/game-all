@@ -33,6 +33,8 @@ pub struct PublishHeader {
     pub last_tick: u64,
 }
 
+pub const PROFILE_MODE_MAPPING: u32 = 3;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PublishHeaderInput {
     pub user_paused: bool,
@@ -109,6 +111,30 @@ pub fn build_publish_header(input: PublishHeaderInput) -> PublishHeader {
         profile_mode: input.profile_mode,
         last_tick: input.last_tick,
     }
+}
+
+pub fn finalize_publish_profile(
+    profile_mode: u32,
+    mapping_behavior_replace: bool,
+    mapping_source_mask: &[u8],
+    block_mask: &mut [u8],
+) -> u32 {
+    let reported_mode = if profile_mode != PROFILE_MODE_MAPPING && mapping_behavior_replace {
+        PROFILE_MODE_MAPPING
+    } else {
+        profile_mode
+    };
+
+    if reported_mode == PROFILE_MODE_MAPPING {
+        let len = mapping_source_mask.len().min(block_mask.len());
+        for idx in 0..len {
+            if mapping_source_mask[idx] != 0 {
+                block_mask[idx] |= 0x01;
+            }
+        }
+    }
+
+    reported_mode
 }
 
 #[cfg(test)]
@@ -199,5 +225,14 @@ mod tests {
         assert_eq!(header.profile_id, 11);
         assert_eq!(header.profile_mode, 3);
         assert_eq!(header.last_tick, 9999);
+    }
+
+    #[test]
+    fn finalize_publish_profile_promotes_replace_mode_and_marks_block_mask() {
+        let mapping_source_mask = [0u8, 1, 0, 1];
+        let mut block_mask = [0u8; 4];
+        let reported = finalize_publish_profile(2, true, &mapping_source_mask, &mut block_mask);
+        assert_eq!(reported, PROFILE_MODE_MAPPING);
+        assert_eq!(block_mask, [0, 1, 0, 1]);
     }
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -54,6 +55,14 @@ GAME_CONTROL_CORE_API ControlPublishHeaderInterop game_control_core_build_publis
     uint32_t profile_id,
     uint32_t profile_mode,
     uint64_t last_tick);
+
+GAME_CONTROL_CORE_API uint32_t game_control_core_finalize_publish_profile(
+    uint32_t profile_mode,
+    uint32_t mapping_behavior_replace,
+    const uint8_t* mapping_source_mask_ptr,
+    size_t mapping_source_len,
+    uint8_t* block_mask_ptr,
+    size_t block_mask_len);
 
 #ifdef __cplusplus
 }

@@ -186,4 +186,13 @@ public const uint WM_SYSKEYUP = 0x0105;
         uint profileId,
         uint profileMode,
         ulong lastTick);
+
+    [DllImport(ControlCoreDll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint game_control_core_finalize_publish_profile(
+        uint profileMode,
+        uint mappingBehaviorReplace,
+        byte[] mappingSourceMask,
+        nuint mappingSourceLength,
+        byte[] blockMask,
+        nuint blockMaskLength);
 }

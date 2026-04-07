@@ -1218,6 +1218,49 @@
 
 ---
 
+## 第三十三批落地：game_control_core 开始接回发布模式与 block mask 收口（2026-04-08）
+
+### 本次新增
+- `game_control_core` 已新增：
+  - `finalize_publish_profile(...)`
+- `game_control_core_ffi` 已新增：
+  - `game_control_core_finalize_publish_profile(...)`
+
+### 本次接回
+- `SyncController.cs` 中原本本地执行的这段逻辑已开始交给 Rust：
+  - `reportedMode` 计算
+  - Replace 模式提升为 Mapping 模式
+  - `mapping source mask` 合并到 `block mask`
+- 当前 `PublishSnapshot()` 已经把：
+  - 前台/自动暂停判定
+  - 共享头部构建
+  - publish mode / block mask 收口
+  这三类逻辑的一部分交给 `game_control_core`
+
+### 当前价值
+- `SyncController.cs` 中和共享快照头部直接相关的控制逻辑进一步减少。
+- `game_control_core` 已经不仅能算“是否暂停”，还能开始干预共享快照的最终发布形态。
+- 这为后续继续迁出 profile 应用和 heartbeat/foreground 状态机打下了更完整的边界。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_control_core`
+2. `cargo clippy -p game_control_core --all-targets --all-features -- -D warnings`
+3. `cargo test --workspace`
+4. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+5. `dotnet build E:\\code\\game-all\\GUI\\Modules\\Sync\\DNFSyncBox.csproj -c Debug -p:PlatformTarget=x86`
+6. `dotnet build E:\\code\\game-all\\GUI\\Modules\\Sync\\DNFSyncBox.csproj -c Release -p:PlatformTarget=x86`
+7. `dotnet build E:\\code\\game-all\\GUI\\GameMasterGUI.csproj -c Debug -p:PlatformTarget=x86`
+8. `dotnet build E:\\code\\game-all\\GUI\\GameMasterGUI.csproj -c Release -p:PlatformTarget=x86`
+
+结果：
+- Rust workspace 全量测试与 clippy 通过
+- `DNFSyncBox` Debug / Release 构建通过
+- `GameMasterGUI` Debug / Release 构建通过
+
+---
+
 ## 第二十七批落地：Injector attempt 失败原因开始统一由 Rust 汇总（2026-04-08）
 
 ### 本次新增

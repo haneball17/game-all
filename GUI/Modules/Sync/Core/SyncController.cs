@@ -431,25 +431,19 @@ public sealed class SyncController : IDisposable
 
         var tick = (ulong)Environment.TickCount64;
 
-        // Replace 映射依赖 RawInput 重写路径；上报 Mapping 模式供注入端识别。
-        var reportedMode = profile.Mode;
-        if (reportedMode != KeyboardProfileMode.Mapping &&
+        var reportedMode = (uint)profile.Mode;
+        if (profile.Mode == KeyboardProfileMode.Mapping ||
             profile.MappingBehavior == KeyboardMappingBehavior.Replace)
-        {
-            reportedMode = KeyboardProfileMode.Mapping;
-        }
-
-        if (reportedMode == KeyboardProfileMode.Mapping)
         {
             Array.Clear(_mappingSourceMask, 0, _mappingSourceMask.Length);
             profile.BuildMappingSourceMask(_mappingSourceMask);
-            for (var i = 0; i < _blockMask.Length; i++)
-            {
-                if (_mappingSourceMask[i] != 0)
-                {
-                    _blockMask[i] |= 0x01;
-                }
-            }
+            reportedMode = NativeMethods.game_control_core_finalize_publish_profile(
+                (uint)profile.Mode,
+                profile.MappingBehavior == KeyboardMappingBehavior.Replace ? 1u : 0u,
+                _mappingSourceMask,
+                (nuint)_mappingSourceMask.Length,
+                _blockMask,
+                (nuint)_blockMask.Length);
         }
 
         var header = NativeMethods.game_control_core_build_publish_header(
