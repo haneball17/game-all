@@ -4860,7 +4860,23 @@ static void LogCountersOnce()
             getAsync,
             getKeyboard,
             observation);
-        const wchar_t* channel = ResolveObservedInputChannel(observation.channel_kind);
+        PayloadAdapterDriftSummaryInterop driftSummary = {};
+        payload_core_summarize_adapter_drift(
+            g_lastLogicalDesiredState,
+            g_lastRawKeyboardState,
+            g_lastWin32State,
+            g_lastDIState,
+            256,
+            &driftSummary);
+        PayloadSyncObservationSnapshotInterop snapshot = {};
+        payload_core_build_sync_observation_snapshot(
+            activePid,
+            alive ? 1u : 0u,
+            paused ? 1u : 0u,
+            &observation,
+            &driftSummary,
+            &snapshot);
+        const wchar_t* channel = ResolveObservedInputChannel(snapshot.channel_kind);
 
         wchar_t buffer[640] = {0};
         StringCchPrintfW(
@@ -4889,15 +4905,6 @@ static void LogCountersOnce()
 
         WriteLogLine(buffer);
 
-        PayloadAdapterDriftSummaryInterop driftSummary = {};
-        payload_core_summarize_adapter_drift(
-            g_lastLogicalDesiredState,
-            g_lastRawKeyboardState,
-            g_lastWin32State,
-            g_lastDIState,
-            256,
-            &driftSummary);
-
         wchar_t obs[512] = {0};
         StringCchPrintfW(
             obs,
@@ -4905,22 +4912,22 @@ static void LogCountersOnce()
             L"[OBS] %s channel=%s mixed=%u raw_promoted=%u raw_active=%u di_active=%u win32_active=%u drift_raw=%u drift_win32=%u drift_di=%u raw_data=%ld raw_buffer=%ld di_state=%ld di_data=%ld win32_async=%ld win32_keyboard=%ld profile=%lu mode=%lu",
             GetTimestamp().c_str(),
             channel,
-            observation.mixed_inputs,
-            observation.raw_promoted,
-            observation.raw_active,
-            observation.direct_input_active,
-            observation.win32_active,
-            driftSummary.raw_drift_count,
-            driftSummary.win32_drift_count,
-            driftSummary.direct_input_drift_count,
+            snapshot.mixed_inputs,
+            snapshot.raw_promoted,
+            snapshot.raw_active,
+            snapshot.direct_input_active,
+            snapshot.win32_active,
+            snapshot.raw_drift_count,
+            snapshot.win32_drift_count,
+            snapshot.direct_input_drift_count,
             rawData,
             rawBuffer,
             getState,
             getData,
             getAsync,
             getKeyboard,
-            g_lastProfileId,
-            g_lastProfileMode);
+            snapshot.profile_id,
+            snapshot.profile_mode);
         WriteLogLine(obs);
     }
 }

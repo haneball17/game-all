@@ -782,3 +782,45 @@
 - `game_payload_core` 新增 1 个 clear reset 测试后全部通过
 - Rust clippy 通过
 - Windows `Payload` Debug / Release 构建通过
+
+---
+
+## 第十七批落地：Sync observation snapshot 进入 Rust（2026-04-07）
+
+### 本次新增
+- `game_payload_core::diagnostics` 新增：
+  - `SyncObservationSnapshot`
+  - `build_sync_observation_snapshot(...)`
+- `game_payload_core_ffi` 新增：
+  - `PayloadSyncObservationSnapshotInterop`
+  - `payload_core_build_sync_observation_snapshot(...)`
+
+### 当前接入范围
+`SyncMod.cpp` 的诊断输出已开始改为：
+
+1. 先由 Rust 产出：
+   - `InputPathObservation`
+   - `AdapterDriftSummary`
+   - `SyncObservationSnapshot`
+2. C++ 只负责：
+   - 读取 Hook 计数器
+   - 读取共享快照基础字段
+   - 把 Rust 快照格式化成现有 `[OBS]` 日志
+
+### 当前价值
+- 现有 `[OBS]` 已不再只是临时拼装字段，而是开始消费 Rust 统一诊断快照。
+- 路径观测、drift 汇总、alive/paused/activePid 等诊断信息开始在 Rust 内部形成统一快照模型。
+- 这一步为后续继续做 adapter diagnostics event/snapshot 总线打下稳定接口。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_payload_core`
+2. `cargo clippy -p game_payload_core --all-targets --all-features -- -D warnings`
+3. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+4. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+
+结果：
+- `game_payload_core` 新增 1 个 observation snapshot 测试后全部通过
+- Rust clippy 通过
+- Windows `Payload` Debug / Release 构建通过

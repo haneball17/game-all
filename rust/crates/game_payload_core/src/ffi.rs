@@ -1,6 +1,7 @@
 #![allow(clippy::missing_safety_doc, clippy::undocumented_unsafe_blocks)]
 
 use crate::{
+    diagnostics::{SyncObservationSnapshot, build_sync_observation_snapshot},
     runtime::{
         AdapterDriftSummary, AdapterProjectedState, ChannelEmitDecision, EmitAction,
         InputPathObservation, KeyDecision, LogicalKeyDecision, PathDecision, RuntimeDecision,
@@ -154,6 +155,25 @@ pub struct PayloadClearResetDecisionInterop {
     pub raw_projected_cleared: u32,
     pub win32_projected_cleared: u32,
     pub direct_input_projected_cleared: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadSyncObservationSnapshotInterop {
+    pub channel_kind: u32,
+    pub active_pid: u32,
+    pub is_alive: u32,
+    pub is_paused: u32,
+    pub raw_promoted: u32,
+    pub raw_active: u32,
+    pub direct_input_active: u32,
+    pub win32_active: u32,
+    pub mixed_inputs: u32,
+    pub raw_drift_count: u32,
+    pub win32_drift_count: u32,
+    pub direct_input_drift_count: u32,
+    pub profile_id: u32,
+    pub profile_mode: u32,
 }
 
 impl From<RuntimeDecision> for PayloadRuntimeDecisionInterop {
@@ -324,6 +344,27 @@ impl From<ClearResetDecision> for PayloadClearResetDecisionInterop {
             raw_projected_cleared: u32::from(value.raw_projected_cleared),
             win32_projected_cleared: u32::from(value.win32_projected_cleared),
             direct_input_projected_cleared: u32::from(value.direct_input_projected_cleared),
+        }
+    }
+}
+
+impl From<SyncObservationSnapshot> for PayloadSyncObservationSnapshotInterop {
+    fn from(value: SyncObservationSnapshot) -> Self {
+        Self {
+            channel_kind: value.channel as u32,
+            active_pid: value.active_pid,
+            is_alive: u32::from(value.is_alive),
+            is_paused: u32::from(value.is_paused),
+            raw_promoted: u32::from(value.raw_promoted),
+            raw_active: u32::from(value.raw_active),
+            direct_input_active: u32::from(value.direct_input_active),
+            win32_active: u32::from(value.win32_active),
+            mixed_inputs: u32::from(value.mixed_inputs),
+            raw_drift_count: value.raw_drift_count,
+            win32_drift_count: value.win32_drift_count,
+            direct_input_drift_count: value.direct_input_drift_count,
+            profile_id: value.profile_id,
+            profile_mode: value.profile_mode,
         }
     }
 }
@@ -856,5 +897,49 @@ pub unsafe extern "C" fn payload_core_state_store_apply_clear_reset(
     }
     let decision = unsafe { (&mut *state).apply_clear_reset(clear_logical != 0, clear_projected != 0) };
     unsafe { out_decision.write(decision.into()) };
+    1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_build_sync_observation_snapshot(
+    active_pid: u32,
+    is_alive: u32,
+    is_paused: u32,
+    observation: *const PayloadInputPathObservationInterop,
+    drift: *const PayloadAdapterDriftSummaryInterop,
+    out_snapshot: *mut PayloadSyncObservationSnapshotInterop,
+) -> u32 {
+    if observation.is_null() || drift.is_null() || out_snapshot.is_null() {
+        return 0;
+    }
+    let observation = unsafe { &*observation };
+    let drift = unsafe { &*drift };
+    let channel = match observation.channel_kind {
+        1 => crate::runtime::InputChannelKind::Win32,
+        2 => crate::runtime::InputChannelKind::RawInput,
+        3 => crate::runtime::InputChannelKind::DirectInput,
+        _ => crate::runtime::InputChannelKind::Unknown,
+    };
+    let snapshot = build_sync_observation_snapshot(
+        active_pid,
+        is_alive != 0,
+        is_paused != 0,
+        InputPathObservation {
+            channel,
+            raw_promoted: observation.raw_promoted != 0,
+            raw_active: observation.raw_active != 0,
+            direct_input_active: observation.direct_input_active != 0,
+            win32_active: observation.win32_active != 0,
+            mixed_inputs: observation.mixed_inputs != 0,
+            profile_id: observation.profile_id,
+            profile_mode: observation.profile_mode,
+        },
+        AdapterDriftSummary {
+            raw_drift_count: drift.raw_drift_count,
+            win32_drift_count: drift.win32_drift_count,
+            direct_input_drift_count: drift.direct_input_drift_count,
+        },
+    );
+    unsafe { out_snapshot.write(snapshot.into()) };
     1
 }

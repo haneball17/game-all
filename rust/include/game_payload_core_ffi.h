@@ -132,6 +132,23 @@ typedef struct PayloadClearResetDecisionInterop {
     uint32_t direct_input_projected_cleared;
 } PayloadClearResetDecisionInterop;
 
+typedef struct PayloadSyncObservationSnapshotInterop {
+    uint32_t channel_kind;
+    uint32_t active_pid;
+    uint32_t is_alive;
+    uint32_t is_paused;
+    uint32_t raw_promoted;
+    uint32_t raw_active;
+    uint32_t direct_input_active;
+    uint32_t win32_active;
+    uint32_t mixed_inputs;
+    uint32_t raw_drift_count;
+    uint32_t win32_drift_count;
+    uint32_t direct_input_drift_count;
+    uint32_t profile_id;
+    uint32_t profile_mode;
+} PayloadSyncObservationSnapshotInterop;
+
 GAME_PAYLOAD_CORE_API uint32_t payload_core_evaluate_runtime_state(
     const void* snapshot_ptr,
     size_t mapping_size,
@@ -284,6 +301,13 @@ GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_apply_clear_reset(
     uint32_t clear_logical,
     uint32_t clear_projected,
     PayloadClearResetDecisionInterop* out_decision);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_build_sync_observation_snapshot(
+    uint32_t active_pid,
+    uint32_t is_alive,
+    uint32_t is_paused,
+    const PayloadInputPathObservationInterop* observation,
+    const PayloadAdapterDriftSummaryInterop* drift,
+    PayloadSyncObservationSnapshotInterop* out_snapshot);
 
 GAME_PAYLOAD_CORE_API void* payload_core_convergence_create(uint8_t extra_release_pulses);
 GAME_PAYLOAD_CORE_API void payload_core_convergence_destroy(void* state);
