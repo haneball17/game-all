@@ -994,6 +994,56 @@
 
 ---
 
+## 第二十七批落地：Injector attempt 失败原因开始统一由 Rust 汇总（2026-04-08）
+
+### 本次新增
+- `game_injector_core::runtime` 已新增：
+  - `AttemptOutcomeCode`
+  - `AttemptOutcomeSummary`
+  - `summarize_attempt_outcome(...)`
+- `game_injector_core_ffi` 已新增：
+  - `InjectorAttemptOutcomeSummaryInterop`
+  - `injector_core_summarize_attempt_outcome(...)`
+
+### 本次收口
+- `TryInjectProcess(...)` 不再在 C++ 中自己根据：
+  - `backend.started`
+  - `success.observed`
+  - `heartbeat.mapping_found`
+  - `heartbeat.contract_ok`
+  - `timed_out`
+  去解释本轮失败原因。
+- Rust 现在统一输出：
+  - 本轮是否成功
+  - 是否应重试
+  - 成功来源：
+    - `successfile`
+    - `heartbeat`
+  - 失败原因：
+    - backend 未启动
+    - heartbeat 映射缺失
+    - heartbeat 协议不匹配
+    - successfile / heartbeat 均超时
+
+### 当前价值
+- `Injector` 的“平台观测结果解释层”进一步从 C++ 中拿掉。
+- `main.cpp` 更接近“采集平台观测 -> 调 Rust 汇总 -> 记录结果”。
+- 为下一步继续压缩 `ProbeProcessWindowReady / ObserveSuccessFileChange / ObserveHelperHeartbeat` 留出了更清晰的接口边界。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_injector_core`
+2. `cargo clippy -p game_injector_core --all-targets --all-features -- -D warnings`
+3. `MSBuild.exe E:\\code\\game-all\\Injector\\Injector.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+4. `MSBuild.exe E:\\code\\game-all\\Injector\\Injector.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+
+结果：
+- Rust 测试与 clippy 通过
+- Windows `Injector` Debug / Release 构建通过
+
+---
+
 ## 第二十五批落地：方向键 group 诊断开始统一由 Rust 输出（2026-04-07）
 
 ### 本次新增
