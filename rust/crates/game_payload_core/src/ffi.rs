@@ -1058,6 +1058,19 @@ pub unsafe extern "C" fn payload_core_state_store_apply_clear_reset(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_state_store_summarize_drift(
+    state: *const SyncStateStore,
+    out_summary: *mut PayloadAdapterDriftSummaryInterop,
+) -> u32 {
+    if state.is_null() || out_summary.is_null() {
+        return 0;
+    }
+    let summary = unsafe { (&*state).summarize_drift() };
+    unsafe { out_summary.write(summary.into()) };
+    1
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn payload_core_build_sync_observation_snapshot(
     active_pid: u32,
     is_alive: u32,

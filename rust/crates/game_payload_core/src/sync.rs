@@ -1,4 +1,5 @@
 use game_core_protocols::SHARED_KEYBOARD_KEY_COUNT;
+use crate::runtime::AdapterDriftSummary;
 
 pub const DIRECTION_KEYS: [usize; 4] = [0x25, 0x26, 0x27, 0x28];
 
@@ -293,6 +294,22 @@ impl SyncStateStore {
             direct_input_projected_cleared: clear_projected,
         }
     }
+
+    pub fn summarize_drift(&self) -> AdapterDriftSummary {
+        let mut summary = AdapterDriftSummary {
+            raw_drift_count: 0,
+            win32_drift_count: 0,
+            direct_input_drift_count: 0,
+        };
+        for idx in 0..SHARED_KEYBOARD_KEY_COUNT {
+            let desired = self.logical_desired[idx] != 0;
+            summary.raw_drift_count += u32::from((self.raw_projected[idx] != 0) != desired);
+            summary.win32_drift_count += u32::from((self.win32_projected[idx] != 0) != desired);
+            summary.direct_input_drift_count +=
+                u32::from((self.direct_input_projected[idx] != 0) != desired);
+        }
+        summary
+    }
 }
 
 fn direction_pair(vkey: i32) -> Option<usize> {
@@ -412,5 +429,19 @@ mod tests {
         assert!(!store.logical_desired(0x25));
         assert!(!store.projected(ProjectedChannelKind::Raw, 0x25));
         assert!(!store.projected(ProjectedChannelKind::Win32, 0x26));
+    }
+
+    #[test]
+    fn sync_state_store_summarizes_drift_directly() {
+        let mut store = SyncStateStore::default();
+        store.set_logical_desired(0x25, true);
+        store.set_projected(ProjectedChannelKind::Raw, 0x25, false);
+        store.set_projected(ProjectedChannelKind::Win32, 0x25, true);
+        store.set_projected(ProjectedChannelKind::DirectInput, 0x25, false);
+
+        let summary = store.summarize_drift();
+        assert_eq!(summary.raw_drift_count, 1);
+        assert_eq!(summary.win32_drift_count, 0);
+        assert_eq!(summary.direct_input_drift_count, 1);
     }
 }

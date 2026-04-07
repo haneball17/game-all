@@ -5023,13 +5023,11 @@ static void LogCountersOnce()
             getKeyboard,
             observation);
         PayloadAdapterDriftSummaryInterop driftSummary = {};
-        payload_core_summarize_adapter_drift(
-            g_lastLogicalDesiredState,
-            g_lastRawKeyboardState,
-            g_lastWin32State,
-            g_lastDIState,
-            256,
-            &driftSummary);
+        EnsurePayloadStateStore();
+        if (g_payloadStateStore)
+        {
+            payload_core_state_store_summarize_drift(g_payloadStateStore, &driftSummary);
+        }
         PayloadSyncObservationSnapshotInterop snapshot = {};
         payload_core_build_sync_observation_snapshot(
             activePid,

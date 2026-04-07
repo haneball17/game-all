@@ -360,6 +360,9 @@ GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_apply_clear_reset(
     uint32_t clear_logical,
     uint32_t clear_projected,
     PayloadClearResetDecisionInterop* out_decision);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_summarize_drift(
+    const void* state,
+    PayloadAdapterDriftSummaryInterop* out_summary);
 GAME_PAYLOAD_CORE_API uint32_t payload_core_build_sync_observation_snapshot(
     uint32_t active_pid,
     uint32_t is_alive,
