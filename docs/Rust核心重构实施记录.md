@@ -738,3 +738,47 @@
 - `game_payload_core` 新增 2 个 pause release 测试后全部通过
 - Rust clippy 通过
 - Windows `Payload` Debug 构建通过
+
+---
+
+## 第十六批落地：Sync clear reset 开始收口到 Rust（2026-04-07）
+
+### 本次新增
+- `game_payload_core::sync` 新增：
+  - `ClearResetDecision`
+  - `SyncStateStore::apply_clear_reset(...)`
+- `game_payload_core_ffi` 新增：
+  - `PayloadClearResetDecisionInterop`
+  - `payload_core_state_store_apply_clear_reset(...)`
+
+### 当前接入范围
+`SyncMod.cpp` 中以下清理路径已开始改为由 Rust state store 决策：
+
+1. `ApplyClearIfNeeded(...)`
+   - 先由 Rust 决定是否清 logical desired
+2. `ApplyRawClearIfNeeded(...)`
+   - 先由 Rust 决定是否清 projected state
+
+当前仍保留在 C++：
+
+1. `g_lastEdgeCounter` 的镜像更新
+2. 实际镜像数组清零
+3. Hook 路径中的状态投影与日志
+
+### 当前价值
+- `clear` 不再只是 C++ 直接 `memset/赋零`，而是开始通过 Rust state store 统一处理逻辑态与 projected state 的清理语义。
+- 这一步把 `clear/pause reset` 收口的第二块关键逻辑迁入了 Rust。
+- 后续继续做“projected state 生命周期”和“adapter diagnostics snapshot”时，clear 语义已经和 store 真值统一在一处。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_payload_core`
+2. `cargo clippy -p game_payload_core --all-targets --all-features -- -D warnings`
+3. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+4. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+
+结果：
+- `game_payload_core` 新增 1 个 clear reset 测试后全部通过
+- Rust clippy 通过
+- Windows `Payload` Debug / Release 构建通过
