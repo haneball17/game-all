@@ -7,9 +7,10 @@ use crate::{
     },
     runtime::{
         AdapterDriftSummary, AdapterProjectedState, ChannelEmitDecision, EmitAction,
-        InputPathObservation, KeyDecision, LogicalKeyDecision, LogicalRawPlan,
-        LogicalRawTransitionDecision, PathDecision, RuntimeDecision, build_logical_raw_plan,
-        decide_channel_emit, decide_logical_raw_transition_with_store,
+        DirectionGroupDecision, InputPathObservation, KeyDecision, LogicalKeyDecision,
+        LogicalRawPlan, LogicalRawTransitionDecision, PathDecision, RuntimeDecision,
+        build_logical_raw_plan, decide_channel_emit, decide_logical_raw_transition_with_store,
+        evaluate_direction_group_decision,
         decide_channel_emit_with_store, evaluate_adapter_projected_state, evaluate_key_state_header,
         evaluate_logical_key_header, evaluate_logical_key_with_store, evaluate_path_decision_header,
         evaluate_runtime_header, evaluate_runtime_state, observe_input_path, summarize_adapter_drift,
@@ -262,6 +263,15 @@ pub struct PayloadLogicalRawTransitionInterop {
     pub released_edge: u32,
     pub repeat_vkey: u32,
     pub repeat_selection_reason: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadDirectionGroupDecisionInterop {
+    pub should_log: u32,
+    pub winner_vkey: u32,
+    pub loser_vkey: u32,
+    pub reason: u32,
 }
 
 impl From<RuntimeDecision> for PayloadRuntimeDecisionInterop {
@@ -559,6 +569,17 @@ impl From<LogicalRawTransitionDecision> for PayloadLogicalRawTransitionInterop {
             released_edge: u32::from(value.released_edge),
             repeat_vkey: value.repeat_vkey,
             repeat_selection_reason: value.repeat_selection_reason as u32,
+        }
+    }
+}
+
+impl From<DirectionGroupDecision> for PayloadDirectionGroupDecisionInterop {
+    fn from(value: DirectionGroupDecision) -> Self {
+        Self {
+            should_log: u32::from(value.should_log),
+            winner_vkey: value.winner_vkey,
+            loser_vkey: value.loser_vkey,
+            reason: value.reason as u32,
         }
     }
 }
@@ -1338,6 +1359,33 @@ pub unsafe extern "C" fn payload_core_state_store_decide_logical_raw_transition(
             preferred_vkey,
         )
     };
+    unsafe { out_decision.write(decision.into()) };
+    1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_evaluate_direction_group_decision(
+    vkey: u32,
+    desired_down: u32,
+    pair_conflict: u32,
+    pair_vkey: u32,
+    pair_target_marked: u32,
+    pair_keyboard_down: u32,
+    pair_force_release: u32,
+    out_decision: *mut PayloadDirectionGroupDecisionInterop,
+) -> u32 {
+    if out_decision.is_null() {
+        return 0;
+    }
+    let decision = evaluate_direction_group_decision(
+        vkey,
+        desired_down != 0,
+        pair_conflict != 0,
+        pair_vkey,
+        pair_target_marked != 0,
+        pair_keyboard_down != 0,
+        pair_force_release != 0,
+    );
     unsafe { out_decision.write(decision.into()) };
     1
 }

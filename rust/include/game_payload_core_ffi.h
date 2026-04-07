@@ -216,6 +216,13 @@ typedef struct PayloadLogicalRawTransitionInterop {
     uint32_t repeat_selection_reason;
 } PayloadLogicalRawTransitionInterop;
 
+typedef struct PayloadDirectionGroupDecisionInterop {
+    uint32_t should_log;
+    uint32_t winner_vkey;
+    uint32_t loser_vkey;
+    uint32_t reason;
+} PayloadDirectionGroupDecisionInterop;
+
 GAME_PAYLOAD_CORE_API uint32_t payload_core_evaluate_runtime_state(
     const void* snapshot_ptr,
     size_t mapping_size,
@@ -452,6 +459,15 @@ GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_decide_logical_raw_trans
     size_t len,
     uint32_t preferred_vkey,
     PayloadLogicalRawTransitionInterop* out_decision);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_evaluate_direction_group_decision(
+    uint32_t vkey,
+    uint32_t desired_down,
+    uint32_t pair_conflict,
+    uint32_t pair_vkey,
+    uint32_t pair_target_marked,
+    uint32_t pair_keyboard_down,
+    uint32_t pair_force_release,
+    PayloadDirectionGroupDecisionInterop* out_decision);
 GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_pick_pause_release(
     void* state,
     int32_t preferred_vkey,

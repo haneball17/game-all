@@ -39,6 +39,22 @@ pub struct LogicalKeyDecision {
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirectionGroupReason {
+    None = 0,
+    EdgeCounter = 1,
+    EdgeTieRelease = 2,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirectionGroupDecision {
+    pub should_log: bool,
+    pub winner_vkey: u32,
+    pub loser_vkey: u32,
+    pub reason: DirectionGroupReason,
+}
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmitAction {
     None = 0,
     Press = 1,
@@ -444,6 +460,42 @@ pub fn decide_channel_emit(
         should_block: logical.key.should_block,
         suppress_repeat,
         transition_reason,
+    }
+}
+
+pub fn evaluate_direction_group_decision(
+    vkey: u32,
+    desired_down: bool,
+    pair_conflict: bool,
+    pair_vkey: u32,
+    pair_target_marked: bool,
+    pair_keyboard_down: bool,
+    pair_force_release: bool,
+) -> DirectionGroupDecision {
+    if !pair_conflict || !is_direction_vkey(vkey) || !is_direction_vkey(pair_vkey) {
+        return DirectionGroupDecision {
+            should_log: false,
+            winner_vkey: 0,
+            loser_vkey: 0,
+            reason: DirectionGroupReason::None,
+        };
+    }
+
+    let pair_down = pair_target_marked && pair_keyboard_down && !pair_force_release;
+    if desired_down != pair_down {
+        DirectionGroupDecision {
+            should_log: true,
+            winner_vkey: if desired_down { vkey } else { pair_vkey },
+            loser_vkey: if desired_down { pair_vkey } else { vkey },
+            reason: DirectionGroupReason::EdgeCounter,
+        }
+    } else {
+        DirectionGroupDecision {
+            should_log: true,
+            winner_vkey: 0,
+            loser_vkey: 0,
+            reason: DirectionGroupReason::EdgeTieRelease,
+        }
     }
 }
 
@@ -1078,6 +1130,23 @@ mod tests {
         assert!(decision.is_down);
         assert_eq!(decision.selection_reason, LogicalRawSelectionReason::LogicalEmit);
         assert_eq!(decision.transition_reason, ChannelTransitionReason::DesiredPress);
+    }
+
+    #[test]
+    fn direction_group_decision_reports_edge_counter_winner() {
+        let decision = evaluate_direction_group_decision(0x25, true, true, 0x27, true, false, false);
+        assert!(decision.should_log);
+        assert_eq!(decision.winner_vkey, 0x25);
+        assert_eq!(decision.loser_vkey, 0x27);
+        assert_eq!(decision.reason, DirectionGroupReason::EdgeCounter);
+    }
+
+    #[test]
+    fn direction_group_decision_reports_edge_tie_release() {
+        let decision = evaluate_direction_group_decision(0x25, false, true, 0x27, true, false, false);
+        assert!(decision.should_log);
+        assert_eq!(decision.winner_vkey, 0);
+        assert_eq!(decision.reason, DirectionGroupReason::EdgeTieRelease);
     }
 
     #[test]

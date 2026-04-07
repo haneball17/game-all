@@ -1668,26 +1668,23 @@ static bool EvaluateLogicalKeyDecision(const SharedSnapshot& snapshot, int vKey,
         const int pair = GetDirectionPairVKey(vKey);
         if (pair >= 0)
         {
-            const bool selfDown = decision.desired_down != 0;
-            const bool pairDown =
-                snapshot.targetMask[pair] != 0 &&
-                (snapshot.keyboardState[pair] & 0x80) != 0 &&
-                !ShouldForceReleaseKey(pair);
-            if (selfDown != pairDown)
+            PayloadDirectionGroupDecisionInterop groupDecision = {};
+            if (payload_core_evaluate_direction_group_decision(
+                    static_cast<uint32_t>(vKey),
+                    decision.desired_down,
+                    decision.pair_conflict,
+                    static_cast<uint32_t>(pair),
+                    snapshot.targetMask[pair] != 0 ? 1u : 0u,
+                    (snapshot.keyboardState[pair] & 0x80) != 0 ? 1u : 0u,
+                    ShouldForceReleaseKey(pair) ? 1u : 0u,
+                    &groupDecision) != 0 &&
+                groupDecision.should_log != 0)
             {
                 LogDirectionGroupDecision(
                     (vKey == VK_LEFT || vKey == VK_RIGHT) ? L"LR" : L"UD",
-                    selfDown ? vKey : pair,
-                    selfDown ? pair : vKey,
-                    L"edge_counter");
-            }
-            else
-            {
-                LogDirectionGroupDecision(
-                    (vKey == VK_LEFT || vKey == VK_RIGHT) ? L"LR" : L"UD",
-                    0,
-                    0,
-                    L"edge_tie_release");
+                    static_cast<int>(groupDecision.winner_vkey),
+                    static_cast<int>(groupDecision.loser_vkey),
+                    groupDecision.reason == 1 ? L"edge_counter" : L"edge_tie_release");
             }
         }
     }

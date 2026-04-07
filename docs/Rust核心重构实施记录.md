@@ -942,6 +942,48 @@
 
 ---
 
+## 第二十五批落地：方向键 group 诊断开始统一由 Rust 输出（2026-04-07）
+
+### 本次新增
+- `game_payload_core::runtime` 已新增：
+  - `DirectionGroupReason`
+  - `DirectionGroupDecision`
+  - `evaluate_direction_group_decision(...)`
+- `game_payload_core_ffi` 已新增：
+  - `PayloadDirectionGroupDecisionInterop`
+  - `payload_core_evaluate_direction_group_decision(...)`
+
+### 本次收口
+- `EvaluateLogicalKeyDecision(...)` 不再在 C++ 中自己推导方向键 pair conflict 的：
+  - winner
+  - loser
+  - `edge_counter / edge_tie_release`
+- Rust 现在直接根据：
+  - `desired_down`
+  - `pair_conflict`
+  - pair 键目标态
+  - pair 键 force release
+  统一返回 direction group 决策。
+
+### 当前价值
+- `LogicalKeyDecision` 之后的方向键 group 诊断不再散落在 C++。
+- `Sync` 路径上的 edge / group / selection / transition 四类诊断继续向 Rust 汇总。
+- `EvaluateLogicalKeyDecision(...)` 这个包装层再次变薄。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_payload_core`
+2. `cargo clippy -p game_payload_core --all-targets --all-features -- -D warnings`
+3. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+4. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+
+结果：
+- Rust 测试与 clippy 通过
+- Windows `Payload` Debug / Release 构建通过
+
+---
+
 ## 第二十四批落地：logical raw emit 决策开始统一由 Rust 输出（2026-04-07）
 
 ### 本次新增
