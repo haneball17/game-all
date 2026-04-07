@@ -1630,7 +1630,13 @@ static bool EvaluateLogicalKeyDecision(const SharedSnapshot& snapshot, int vKey,
 
     const int pairVKey = GetDirectionPairVKey(vKey);
     memset(&decision, 0, sizeof(decision));
-    const bool ok = payload_core_evaluate_logical_key_header(
+    EnsurePayloadStateStore();
+    if (!g_payloadStateStore)
+    {
+        return false;
+    }
+    const bool ok = payload_core_state_store_evaluate_logical_key(
+                        g_payloadStateStore,
                         snapshot.flags,
                         snapshot.activePid,
                         snapshot.profileId,
@@ -1649,7 +1655,6 @@ static bool EvaluateLogicalKeyDecision(const SharedSnapshot& snapshot, int vKey,
                         pairVKey >= 0 && (snapshot.keyboardState[pairVKey] & 0x80) != 0 ? 1u : 0u,
                         pairVKey >= 0 ? snapshot.edgeCounter[pairVKey] : 0u,
                         ShouldForceReleaseKey(vKey) ? 1u : 0u,
-                        GetLogicalDesiredStateValue(vKey) ? 1u : 0u,
                         0u,
                         &decision) != 0 &&
                     decision.is_valid != 0;
@@ -1692,7 +1697,7 @@ static bool EvaluateLogicalKeyDecision(const SharedSnapshot& snapshot, int vKey,
         }
     }
 
-    SetLogicalDesiredStateValue(vKey, decision.desired_down != 0);
+    SyncStateMirrorsForKey(vKey);
     return true;
 }
 
