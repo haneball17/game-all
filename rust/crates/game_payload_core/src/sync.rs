@@ -156,6 +156,15 @@ pub struct PauseReleaseDecision {
     pub reason: PauseReleaseReason,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClearResetDecision {
+    pub should_clear_logical: bool,
+    pub should_clear_projected: bool,
+    pub raw_projected_cleared: bool,
+    pub win32_projected_cleared: bool,
+    pub direct_input_projected_cleared: bool,
+}
+
 impl SyncStateStore {
     pub fn set_logical_desired(&mut self, vkey: usize, down: bool) {
         if vkey < SHARED_KEYBOARD_KEY_COUNT {
@@ -267,6 +276,23 @@ impl SyncStateStore {
             reason: PauseReleaseReason::None,
         }
     }
+
+    pub fn apply_clear_reset(&mut self, clear_logical: bool, clear_projected: bool) -> ClearResetDecision {
+        if clear_logical {
+            self.clear_logical_desired();
+        }
+        if clear_projected {
+            self.clear_all_projected();
+        }
+
+        ClearResetDecision {
+            should_clear_logical: clear_logical,
+            should_clear_projected: clear_projected,
+            raw_projected_cleared: clear_projected,
+            win32_projected_cleared: clear_projected,
+            direct_input_projected_cleared: clear_projected,
+        }
+    }
 }
 
 fn direction_pair(vkey: i32) -> Option<usize> {
@@ -371,5 +397,20 @@ mod tests {
         assert_eq!(decision.reason, PauseReleaseReason::Neutralize);
         assert!(!decision.had_projected);
         assert!(!store.logical_desired(0x25));
+    }
+
+    #[test]
+    fn clear_reset_clears_logical_and_projected_states() {
+        let mut store = SyncStateStore::default();
+        store.set_logical_desired(0x25, true);
+        store.set_projected(ProjectedChannelKind::Raw, 0x25, true);
+        store.set_projected(ProjectedChannelKind::Win32, 0x26, true);
+
+        let decision = store.apply_clear_reset(true, true);
+        assert!(decision.should_clear_logical);
+        assert!(decision.should_clear_projected);
+        assert!(!store.logical_desired(0x25));
+        assert!(!store.projected(ProjectedChannelKind::Raw, 0x25));
+        assert!(!store.projected(ProjectedChannelKind::Win32, 0x26));
     }
 }

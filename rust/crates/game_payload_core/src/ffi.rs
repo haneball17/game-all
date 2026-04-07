@@ -9,7 +9,7 @@ use crate::{
         evaluate_runtime_state, observe_input_path, summarize_adapter_drift,
     },
     sync::{
-        DirectionConvergenceState, DirectionReleasePolicy, PauseReleaseDecision,
+        ClearResetDecision, DirectionConvergenceState, DirectionReleasePolicy, PauseReleaseDecision,
         PauseReleaseReason, ProjectedChannelKind, SnapshotCachePolicy, SyncStateStore,
     },
 };
@@ -144,6 +144,16 @@ pub struct PayloadPauseReleaseDecisionInterop {
     pub is_down: u32,
     pub had_projected: u32,
     pub reason: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadClearResetDecisionInterop {
+    pub should_clear_logical: u32,
+    pub should_clear_projected: u32,
+    pub raw_projected_cleared: u32,
+    pub win32_projected_cleared: u32,
+    pub direct_input_projected_cleared: u32,
 }
 
 impl From<RuntimeDecision> for PayloadRuntimeDecisionInterop {
@@ -302,6 +312,18 @@ impl From<PauseReleaseDecision> for PayloadPauseReleaseDecisionInterop {
                 PauseReleaseReason::StaleRelease => 4,
                 PauseReleaseReason::Neutralize => 5,
             },
+        }
+    }
+}
+
+impl From<ClearResetDecision> for PayloadClearResetDecisionInterop {
+    fn from(value: ClearResetDecision) -> Self {
+        Self {
+            should_clear_logical: u32::from(value.should_clear_logical),
+            should_clear_projected: u32::from(value.should_clear_projected),
+            raw_projected_cleared: u32::from(value.raw_projected_cleared),
+            win32_projected_cleared: u32::from(value.win32_projected_cleared),
+            direct_input_projected_cleared: u32::from(value.direct_input_projected_cleared),
         }
     }
 }
@@ -818,6 +840,21 @@ pub unsafe extern "C" fn payload_core_state_store_pick_pause_release(
         return 0;
     }
     let decision = unsafe { (&mut *state).pick_pause_release(preferred_vkey) };
+    unsafe { out_decision.write(decision.into()) };
+    1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_state_store_apply_clear_reset(
+    state: *mut SyncStateStore,
+    clear_logical: u32,
+    clear_projected: u32,
+    out_decision: *mut PayloadClearResetDecisionInterop,
+) -> u32 {
+    if state.is_null() || out_decision.is_null() {
+        return 0;
+    }
+    let decision = unsafe { (&mut *state).apply_clear_reset(clear_logical != 0, clear_projected != 0) };
     unsafe { out_decision.write(decision.into()) };
     1
 }

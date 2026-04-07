@@ -124,6 +124,14 @@ typedef struct PayloadPauseReleaseDecisionInterop {
     uint32_t reason;
 } PayloadPauseReleaseDecisionInterop;
 
+typedef struct PayloadClearResetDecisionInterop {
+    uint32_t should_clear_logical;
+    uint32_t should_clear_projected;
+    uint32_t raw_projected_cleared;
+    uint32_t win32_projected_cleared;
+    uint32_t direct_input_projected_cleared;
+} PayloadClearResetDecisionInterop;
+
 GAME_PAYLOAD_CORE_API uint32_t payload_core_evaluate_runtime_state(
     const void* snapshot_ptr,
     size_t mapping_size,
@@ -271,6 +279,11 @@ GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_pick_pause_release(
     void* state,
     int32_t preferred_vkey,
     PayloadPauseReleaseDecisionInterop* out_decision);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_apply_clear_reset(
+    void* state,
+    uint32_t clear_logical,
+    uint32_t clear_projected,
+    PayloadClearResetDecisionInterop* out_decision);
 
 GAME_PAYLOAD_CORE_API void* payload_core_convergence_create(uint8_t extra_release_pulses);
 GAME_PAYLOAD_CORE_API void payload_core_convergence_destroy(void* state);

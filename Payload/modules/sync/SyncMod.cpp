@@ -1311,6 +1311,17 @@ static void ApplyClearIfNeeded(const SharedSnapshot& snapshot)
     {
         g_lastEdgeCounter[i] = snapshot.edgeCounter[i];
     }
+    EnsurePayloadStateStore();
+    if (g_payloadStateStore)
+    {
+        PayloadClearResetDecisionInterop decision = {};
+        if (payload_core_state_store_apply_clear_reset(g_payloadStateStore, 1u, 0u, &decision) != 0 &&
+            decision.should_clear_logical != 0)
+        {
+            ClearLogicalDesiredStateValues();
+        }
+        return;
+    }
     ClearLogicalDesiredStateValues();
 }
 
@@ -1328,6 +1339,17 @@ static void ApplyRawClearIfNeeded(const SharedSnapshot& snapshot)
 
     g_lastRawClearSeq = snapshot.seq;
     // 清键时重置 RawInput 伪造态，避免后台出现卡键或残留按下。
+    EnsurePayloadStateStore();
+    if (g_payloadStateStore)
+    {
+        PayloadClearResetDecisionInterop decision = {};
+        if (payload_core_state_store_apply_clear_reset(g_payloadStateStore, 0u, 1u, &decision) != 0 &&
+            decision.should_clear_projected != 0)
+        {
+            ClearAllProjectedStateValues();
+        }
+        return;
+    }
     ClearAllProjectedStateValues();
 }
 
