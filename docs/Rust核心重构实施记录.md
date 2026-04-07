@@ -1040,6 +1040,44 @@
 
 ---
 
+## 第二十九批落地：新增 game_helper_core 最小协议与控制计划内核（2026-04-08）
+
+### 本次新增
+- 新增 crate：
+  - `rust/crates/game_helper_core`
+- 当前已实现的最小 Helper 核心包括：
+  - `HelperStatus` 协议契约校验
+  - `HelperControl` 协议契约校验
+  - `ActionMask` -> 控制应用计划解码
+- 已收口的动作位包括：
+  - fullscreen attack
+  - fullscreen skill
+  - auto transparent
+  - hotkey enabled
+  - attract enabled / mode / positive
+  - gather items
+  - damage enabled / multiplier
+  - invincible enabled
+
+### 当前价值
+- `Helper` 这条线不再只有 `game_core_protocols` 的结构镜像，已经开始有真正的“控制计划解释层”。
+- 后续替换 `HelperMod.cpp` 中的协议校验、`ActionMask` 解析与共享内存控制应用时，不需要从零开始抽象。
+- 这是 `Helper` 从“纯 C++ 胶水”走向“Rust 状态机/协议内核”的第一步。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_helper_core`
+2. `cargo clippy -p game_helper_core --all-targets --all-features -- -D warnings`
+3. `cargo test --workspace`
+4. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+
+结果：
+- `game_helper_core` 自测通过
+- Rust workspace 全量测试与 clippy 通过
+
+---
+
 ## 第二十七批落地：Injector attempt 失败原因开始统一由 Rust 汇总（2026-04-08）
 
 ### 本次新增
