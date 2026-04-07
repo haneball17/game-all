@@ -48,6 +48,7 @@ internal sealed class DiagnosticExportService
         "[RAW]",
         "[RAWB]",
         "[OBS]",
+        "[RUSTDIAG]",
         "DirectInput",
         "Spoof",
         "protocol_mismatch"

@@ -292,6 +292,8 @@ static bool GetProjectedStateValue(uint32_t channelKind, int vKey);
 static void SetProjectedStateValue(uint32_t channelKind, int vKey, bool down);
 static void ClearAllProjectedStateValues();
 static void ClearLogicalDesiredStateValues();
+static size_t ReadLatestAdapterDiagnosticsEvents(PayloadAdapterDiagnosticsEventInterop* outEvents, size_t capacity);
+static const wchar_t* ResolveAdapterDiagnosticsEventKind(uint32_t eventKind);
 static void SyncDirectionConvergenceState(void* convergenceState, BYTE lastDirectionState[256], const SharedSnapshot& snapshot);
 static void EnsureDirectionConvergenceState();
 static bool ShouldForceReleaseKey(int vKey);
@@ -4828,6 +4830,37 @@ static void PushAdapterDiagnosticsEvent(
     payload_core_diagnostics_buffer_push_event(g_payloadDiagnosticsBuffer, &event);
 }
 
+static size_t ReadLatestAdapterDiagnosticsEvents(PayloadAdapterDiagnosticsEventInterop* outEvents, size_t capacity)
+{
+    EnsurePayloadDiagnosticsBuffer();
+    if (!g_payloadDiagnosticsBuffer || !outEvents || capacity == 0)
+    {
+        return 0;
+    }
+    return payload_core_diagnostics_buffer_copy_latest_n(
+        g_payloadDiagnosticsBuffer,
+        capacity,
+        outEvents,
+        capacity);
+}
+
+static const wchar_t* ResolveAdapterDiagnosticsEventKind(uint32_t eventKind)
+{
+    switch (eventKind)
+    {
+        case 1:
+            return L"LogicalChanged";
+        case 2:
+            return L"AdapterEmitted";
+        case 3:
+            return L"PauseRelease";
+        case 4:
+            return L"ClearApplied";
+        default:
+            return L"Unknown";
+    }
+}
+
 static void LogCountersOnce()
 {
     const bool statsEnabled = IsStatsEnabled();
@@ -5026,6 +5059,50 @@ static void LogCountersOnce()
             snapshot.profile_id,
             snapshot.profile_mode);
         WriteLogLine(obs);
+
+        wchar_t rustDiag[512] = {0};
+        StringCchPrintfW(
+            rustDiag,
+            ARRAYSIZE(rustDiag),
+            L"[RUSTDIAG] %s snapshot channel=%s active_pid=%lu alive=%u paused=%u mixed=%u raw_active=%u di_active=%u win32_active=%u drift_raw=%u drift_win32=%u drift_di=%u profile=%lu mode=%lu",
+            GetTimestamp().c_str(),
+            channel,
+            snapshot.active_pid,
+            snapshot.is_alive,
+            snapshot.is_paused,
+            snapshot.mixed_inputs,
+            snapshot.raw_active,
+            snapshot.direct_input_active,
+            snapshot.win32_active,
+            snapshot.raw_drift_count,
+            snapshot.win32_drift_count,
+            snapshot.direct_input_drift_count,
+            snapshot.profile_id,
+            snapshot.profile_mode);
+        WriteLogLine(rustDiag);
+
+        PayloadAdapterDiagnosticsEventInterop latestEvents[4] = {};
+        const size_t latestCount = ReadLatestAdapterDiagnosticsEvents(latestEvents, ARRAYSIZE(latestEvents));
+        for (size_t i = 0; i < latestCount; ++i)
+        {
+            const auto& event = latestEvents[i];
+            wchar_t eventLine[512] = {0};
+            StringCchPrintfW(
+                eventLine,
+                ARRAYSIZE(eventLine),
+                L"[RUSTDIAG] %s event tick=%llu kind=%s channel=%s vkey=0x%02X desired=%u before=%u after=%u forced=%u reason=%u",
+                GetTimestamp().c_str(),
+                event.tick_ms,
+                ResolveAdapterDiagnosticsEventKind(event.event_kind),
+                ResolveObservedInputChannel(event.channel_kind),
+                event.vkey,
+                event.desired_down,
+                event.projected_before,
+                event.projected_after,
+                event.forced_release,
+                event.reason_code);
+            WriteLogLine(eventLine);
+        }
     }
 }
 

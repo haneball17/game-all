@@ -884,3 +884,59 @@
 - `game_payload_core` 新增 1 个 diagnostics buffer 测试后全部通过
 - Rust clippy 通过
 - Windows `Payload` Debug / Release 构建通过
+
+---
+
+## 第十九批落地：Sync Rust diagnostics 导出链接入（2026-04-07）
+
+### 本次新增
+- `SyncMod.cpp` 已开始输出稳定的 `[RUSTDIAG]` 段：
+  - `snapshot`
+  - `latest N events`
+- `DiagnosticExportService` 已把 `[RUSTDIAG]` 纳入 `SyncFocusKeywords`
+
+### 当前接入范围
+现在导出诊断文件时，`Sync` 关键摘录不再只有：
+
+- `[OBS]`
+- `[EMIT]`
+- `[PAUSE]`
+- `[EDGE]`
+- `[GROUP]`
+- `[REPEAT]`
+
+而是还会纳入：
+
+- `[RUSTDIAG] snapshot ...`
+- `[RUSTDIAG] event ...`
+
+当前 `Sync` diagnostics 导出链已形成：
+
+1. Rust 侧维护：
+   - `SyncObservationSnapshot`
+   - `AdapterDiagnosticsBuffer`
+2. C++ 侧负责：
+   - 从 Rust 读取 snapshot / latest N events
+   - 写入 payload 日志
+3. GUI 导出器负责：
+   - 把 `[RUSTDIAG]` 段纳入单文件导出
+
+### 当前价值
+- Rust diagnostics 不再只存在于 Payload 进程内存中，而是开始真正进入导出链。
+- 多开、偶发卡方向、pause/clear 异常等问题，后续可以直接从导出文件里看到 Rust 结构化诊断结果。
+- 这一步让方向 1“先做 diagnostics 导出/消费链”真正成立，为后续继续做 projected state 生命周期深收口提供更强观测面。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_payload_core`
+2. `cargo clippy -p game_payload_core --all-targets --all-features -- -D warnings`
+3. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+4. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+5. `dotnet build E:\\code\\game-all\\GUI\\GameMasterGUI.csproj -c Debug -p:PlatformTarget=x86`
+6. `dotnet build E:\\code\\game-all\\GUI\\GameMasterGUI.csproj -c Release -p:PlatformTarget=x86`
+
+结果：
+- Rust 测试与 clippy 通过
+- Windows `Payload` Debug / Release 构建通过
+- `GameMasterGUI` Debug / Release 构建通过
