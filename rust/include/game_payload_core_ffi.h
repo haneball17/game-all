@@ -70,6 +70,7 @@ typedef struct PayloadChannelEmitDecisionInterop {
     uint32_t projected_down_after;
     uint32_t should_block;
     uint32_t suppress_repeat;
+    uint32_t transition_reason;
 } PayloadChannelEmitDecisionInterop;
 
 typedef struct PayloadPathDecisionInterop {
@@ -136,6 +137,7 @@ typedef struct PayloadProjectedStateUpdateInterop {
     uint32_t changed;
     uint32_t projected_before;
     uint32_t projected_after;
+    uint32_t transition_reason;
 } PayloadProjectedStateUpdateInterop;
 
 typedef struct PayloadSyncObservationSnapshotInterop {

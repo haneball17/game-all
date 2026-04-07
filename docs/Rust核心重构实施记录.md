@@ -939,6 +939,54 @@
 结果：
 - Rust 测试与 clippy 通过
 - Windows `Payload` Debug / Release 构建通过
+
+---
+
+## 第二十一批落地：adapter transition reason 收口到 Rust（2026-04-07）
+
+### 本次新增
+- `game_payload_core::sync` 已新增：
+  - `ChannelTransitionReason`
+  - `ProjectedStateUpdate.transition_reason`
+- `game_payload_core::runtime` 已新增：
+  - `ChannelEmitDecision.transition_reason`
+- `game_payload_core_ffi` / `game_payload_core_ffi.h` 已同步新增：
+  - `PayloadChannelEmitDecisionInterop.transition_reason`
+  - `PayloadProjectedStateUpdateInterop.transition_reason`
+
+### 本次收口
+- Raw 通道的 `decide_channel_emit_with_store(...)` 现在会由 Rust 返回：
+  - `desired_press`
+  - `desired_release`
+  - `blocked_release`
+  - `repeat_suppressed`
+- Win32 / DirectInput 的 projected update 现在会由 Rust 返回：
+  - `observed_press`
+  - `observed_release`
+- `SyncMod.cpp` 已改为：
+  - `[EMIT]` 日志直接消费 Rust `transition_reason`
+  - `AdapterDiagnosticsEvent.reason_code` 对 `Raw/Win32/DirectInput` 统一写入 Rust reason
+  - C++ 不再自己推断 `emit_action` 对应的原因文本
+
+### 当前价值
+- Raw / Win32 / DirectInput 的通道级 transition reason 开始共用同一套 Rust 枚举。
+- diagnostics buffer 中的 `reason_code` 不再只是 `emit_action`，而是真正可解释状态变化来源的 Rust 决策结果。
+- `SyncMod.cpp` 继续退化为：
+  - Hook 边界
+  - FFI 调用
+  - 日志输出壳
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_payload_core`
+2. `cargo clippy -p game_payload_core --all-targets --all-features -- -D warnings`
+3. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+4. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+
+结果：
+- Rust 测试与 clippy 通过
+- Windows `Payload` Debug / Release 构建通过
 - `GameMasterGUI` Debug / Release 构建通过
 
 ---

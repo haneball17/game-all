@@ -2,7 +2,7 @@ use game_core_protocols::{
     SHARED_KEYBOARD_STATE_V2_SIZE, SHARED_KEYBOARD_STATE_V2_VERSION, SYNC_FLAG_CLEAR,
     SYNC_FLAG_PAUSED, SharedKeyboardStateV2,
 };
-use crate::sync::{ProjectedChannelKind, SyncStateStore};
+use crate::sync::{ChannelTransitionReason, ProjectedChannelKind, SyncStateStore};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeDecision {
@@ -53,6 +53,7 @@ pub struct ChannelEmitDecision {
     pub projected_down_after: bool,
     pub should_block: bool,
     pub suppress_repeat: bool,
+    pub transition_reason: ChannelTransitionReason,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -354,6 +355,7 @@ pub fn decide_channel_emit(
     let mut emit_action = EmitAction::None;
     let desired_down = logical.key.desired_down;
     let mut projected_down_after = projected_down_before;
+    let mut transition_reason = ChannelTransitionReason::None;
     let suppress_repeat = desired_down
         && projected_down_before
         && observed_down
@@ -364,6 +366,7 @@ pub fn decide_channel_emit(
         if projected_down_before {
             emit_action = EmitAction::Release;
             projected_down_after = false;
+            transition_reason = ChannelTransitionReason::BlockedRelease;
         }
     } else if desired_down != projected_down_before {
         emit_action = if desired_down {
@@ -372,6 +375,13 @@ pub fn decide_channel_emit(
             EmitAction::Release
         };
         projected_down_after = desired_down;
+        transition_reason = if desired_down {
+            ChannelTransitionReason::DesiredPress
+        } else {
+            ChannelTransitionReason::DesiredRelease
+        };
+    } else if suppress_repeat {
+        transition_reason = ChannelTransitionReason::RepeatSuppressed;
     }
 
     ChannelEmitDecision {
@@ -381,6 +391,7 @@ pub fn decide_channel_emit(
         projected_down_after,
         should_block: logical.key.should_block,
         suppress_repeat,
+        transition_reason,
     }
 }
 
@@ -711,6 +722,7 @@ mod tests {
         let emit = decide_channel_emit(logical, true, true);
         assert_eq!(emit.emit_action, EmitAction::None);
         assert!(emit.suppress_repeat);
+        assert_eq!(emit.transition_reason, ChannelTransitionReason::RepeatSuppressed);
     }
 
     #[test]
@@ -722,6 +734,7 @@ mod tests {
         let emit = decide_channel_emit(logical, false, true);
         assert_eq!(emit.emit_action, EmitAction::Press);
         assert!(emit.projected_down_after);
+        assert_eq!(emit.transition_reason, ChannelTransitionReason::DesiredPress);
     }
 
     #[test]
@@ -752,6 +765,7 @@ mod tests {
         assert_eq!(emit.emit_action, EmitAction::Release);
         assert!(!emit.projected_down_after);
         assert!(!emit.desired_down);
+        assert_eq!(emit.transition_reason, ChannelTransitionReason::DesiredRelease);
     }
 
     #[test]

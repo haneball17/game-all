@@ -148,6 +148,18 @@ pub enum PauseReleaseReason {
     Neutralize = 5,
 }
 
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelTransitionReason {
+    None = 0,
+    DesiredPress = 1,
+    DesiredRelease = 2,
+    BlockedRelease = 3,
+    RepeatSuppressed = 4,
+    ObservedPress = 5,
+    ObservedRelease = 6,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PauseReleaseDecision {
     pub should_emit: bool,
@@ -171,6 +183,7 @@ pub struct ProjectedStateUpdate {
     pub changed: bool,
     pub projected_before: bool,
     pub projected_after: bool,
+    pub transition_reason: ChannelTransitionReason,
 }
 
 impl SyncStateStore {
@@ -219,6 +232,13 @@ impl SyncStateStore {
             changed: projected_before != down,
             projected_before,
             projected_after: down,
+            transition_reason: if projected_before == down {
+                ChannelTransitionReason::None
+            } else if down {
+                ChannelTransitionReason::ObservedPress
+            } else {
+                ChannelTransitionReason::ObservedRelease
+            },
         }
     }
 
@@ -477,11 +497,14 @@ mod tests {
         assert!(first.changed);
         assert!(!first.projected_before);
         assert!(first.projected_after);
+        assert_eq!(first.transition_reason, ChannelTransitionReason::ObservedPress);
         assert!(!second.changed);
         assert!(second.projected_before);
         assert!(second.projected_after);
+        assert_eq!(second.transition_reason, ChannelTransitionReason::None);
         assert!(third.changed);
         assert!(third.projected_before);
         assert!(!third.projected_after);
+        assert_eq!(third.transition_reason, ChannelTransitionReason::ObservedRelease);
     }
 }

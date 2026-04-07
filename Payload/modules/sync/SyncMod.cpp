@@ -253,12 +253,20 @@ static void PushAdapterDiagnosticsEvent(
     bool projectedAfter,
     bool forcedRelease,
     uint32_t reasonCode);
+static const wchar_t* ResolveChannelTransitionReason(uint32_t reasonCode);
 static size_t ReadLatestAdapterDiagnosticsEvents(
     PayloadAdapterDiagnosticsEventInterop* outEvents,
     size_t capacity);
 static const wchar_t* ResolveAdapterDiagnosticsEventKind(uint32_t eventKind);
 static void LogLogicalEdge(int vKey, bool desiredDown, bool pressedEdge, bool releasedEdge);
-static void LogAdapterEmit(const wchar_t* adapter, int vKey, int emitAction, bool beforeDown, bool afterDown, const wchar_t* reason);
+static void LogAdapterEmit(
+    const wchar_t* adapter,
+    int vKey,
+    int emitAction,
+    bool beforeDown,
+    bool afterDown,
+    const wchar_t* reason,
+    uint32_t transitionReason);
 static void LogDirectionGroupDecision(const wchar_t* pairName, int winnerVKey, int loserVKey, const wchar_t* reason);
 static void LogRepeatSuppressed(const wchar_t* adapter, int vKey);
 static void LogPauseInterception(const wchar_t* adapter, int vKey, bool hadProjectedDown, const wchar_t* reason);
@@ -2126,7 +2134,14 @@ static bool TryPickLogicalRawTransition(
         {
             *reasonOut = reason;
         }
-        LogAdapterEmit(adapter, vKey, static_cast<int>(emitDecision.emit_action), beforeDown, afterDown, reason);
+        LogAdapterEmit(
+            adapter,
+            vKey,
+            static_cast<int>(emitDecision.emit_action),
+            beforeDown,
+            afterDown,
+            reason,
+            emitDecision.transition_reason);
         return true;
     };
 
@@ -2886,7 +2901,35 @@ static void LogLogicalEdge(int vKey, bool desiredDown, bool pressedEdge, bool re
         pressedEdge ? 1u : (releasedEdge ? 2u : 0u));
 }
 
-static void LogAdapterEmit(const wchar_t* adapter, int vKey, int emitAction, bool beforeDown, bool afterDown, const wchar_t* reason)
+static const wchar_t* ResolveChannelTransitionReason(uint32_t reasonCode)
+{
+    switch (reasonCode)
+    {
+        case 1:
+            return L"desired_press";
+        case 2:
+            return L"desired_release";
+        case 3:
+            return L"blocked_release";
+        case 4:
+            return L"repeat_suppressed";
+        case 5:
+            return L"observed_press";
+        case 6:
+            return L"observed_release";
+        default:
+            return L"none";
+    }
+}
+
+static void LogAdapterEmit(
+    const wchar_t* adapter,
+    int vKey,
+    int emitAction,
+    bool beforeDown,
+    bool afterDown,
+    const wchar_t* reason,
+    uint32_t transitionReason)
 {
     if (!IsKeyLogEnabled() || GetKeyLogLevel() < 2)
     {
@@ -2907,13 +2950,14 @@ static void LogAdapterEmit(const wchar_t* adapter, int vKey, int emitAction, boo
     StringCchPrintfW(
         buffer,
         ARRAYSIZE(buffer),
-        L"[EMIT] %s adapter=%s vkey=0x%02X emit=%s before=%d after=%d reason=%s",
+        L"[EMIT] %s adapter=%s vkey=0x%02X emit=%s before=%d after=%d transition=%s reason=%s",
         GetTimestamp().c_str(),
         adapter ? adapter : L"unknown",
         vKey,
         emitText,
         beforeDown ? 1 : 0,
         afterDown ? 1 : 0,
+        ResolveChannelTransitionReason(transitionReason),
         reason ? reason : L"none");
     WriteLogLine(buffer);
     uint32_t channelKind = 0;
@@ -2937,7 +2981,7 @@ static void LogAdapterEmit(const wchar_t* adapter, int vKey, int emitAction, boo
         beforeDown,
         afterDown,
         emitAction == 2 && beforeDown && !afterDown,
-        static_cast<uint32_t>(emitAction));
+        transitionReason);
 }
 
 static void LogDirectionGroupDecision(const wchar_t* pairName, int winnerVKey, int loserVKey, const wchar_t* reason)
@@ -3030,6 +3074,16 @@ static void RecordWin32KeyEventIfNeeded(int vKey, SHORT result, bool spoofed, ui
     {
         RecordKeyEvent(KeyChannel::Win32, vKey, isDown, spoofed, 0, 0, profileMode);
     }
+
+    PushAdapterDiagnosticsEvent(
+        2u,
+        1u,
+        vKey,
+        isDown,
+        update.projected_before != 0,
+        update.projected_after != 0,
+        false,
+        update.transition_reason);
 }
 
 static void RecordDirectInputKeyEventIfNeeded(int vKey, bool isDown, bool spoofed, uint32_t profileMode)
@@ -3049,6 +3103,16 @@ static void RecordDirectInputKeyEventIfNeeded(int vKey, bool isDown, bool spoofe
     {
         RecordKeyEvent(KeyChannel::DirectInput, vKey, isDown, spoofed, 0, 0, profileMode);
     }
+
+    PushAdapterDiagnosticsEvent(
+        2u,
+        3u,
+        vKey,
+        isDown,
+        update.projected_before != 0,
+        update.projected_after != 0,
+        false,
+        update.transition_reason);
 }
 
 static void CheckKeyUpTimeouts()
@@ -3846,7 +3910,7 @@ static UINT WINAPI Hook_GetRawInputBuffer(PRAWINPUT data, PUINT size, UINT heade
                     {
                         BuildRawKeyboardEvent(vKey, isDown, raw->data.keyboard);
                         spoofed = true;
-                        LogAdapterEmit(L"RawInputBuffer", vKey, isDown ? 1 : 2, !isDown, isDown, reason);
+                        LogAdapterEmit(L"RawInputBuffer", vKey, isDown ? 1 : 2, !isDown, isDown, reason, 0u);
                     }
                 }
                 else if (pathDecision.should_use_mapping != 0)
@@ -3865,7 +3929,7 @@ static UINT WINAPI Hook_GetRawInputBuffer(PRAWINPUT data, PUINT size, UINT heade
                     {
                         BuildRawKeyboardEvent(vKey, isDown, raw->data.keyboard);
                         spoofed = true;
-                        LogAdapterEmit(L"RawInputBuffer", vKey, isDown ? 1 : 2, !isDown, isDown, reason);
+                        LogAdapterEmit(L"RawInputBuffer", vKey, isDown ? 1 : 2, !isDown, isDown, reason, 0u);
                     }
                 }
                 else
@@ -3978,7 +4042,7 @@ static UINT WINAPI Hook_GetRawInputData(HRAWINPUT hRawInput, UINT command, LPVOI
                         {
                             BuildRawKeyboardEvent(vKey, isDown, raw->data.keyboard);
                             spoofed = true;
-                            LogAdapterEmit(L"RawInputData", vKey, isDown ? 1 : 2, !isDown, isDown, reason);
+                            LogAdapterEmit(L"RawInputData", vKey, isDown ? 1 : 2, !isDown, isDown, reason, 0u);
                         }
                     }
                     else if (allowDataSpoof && pathDecision.should_use_mapping != 0)
@@ -3997,7 +4061,7 @@ static UINT WINAPI Hook_GetRawInputData(HRAWINPUT hRawInput, UINT command, LPVOI
                         {
                             BuildRawKeyboardEvent(vKey, isDown, raw->data.keyboard);
                             spoofed = true;
-                            LogAdapterEmit(L"RawInputData", vKey, isDown ? 1 : 2, !isDown, isDown, reason);
+                            LogAdapterEmit(L"RawInputData", vKey, isDown ? 1 : 2, !isDown, isDown, reason, 0u);
                         }
                     }
                     else

@@ -87,6 +87,7 @@ pub struct PayloadChannelEmitDecisionInterop {
     pub projected_down_after: u32,
     pub should_block: u32,
     pub suppress_repeat: u32,
+    pub transition_reason: u32,
 }
 
 #[repr(C)]
@@ -167,6 +168,7 @@ pub struct PayloadProjectedStateUpdateInterop {
     pub changed: u32,
     pub projected_before: u32,
     pub projected_after: u32,
+    pub transition_reason: u32,
 }
 
 #[repr(C)]
@@ -279,6 +281,7 @@ impl From<ChannelEmitDecision> for PayloadChannelEmitDecisionInterop {
             projected_down_after: u32::from(value.projected_down_after),
             should_block: u32::from(value.should_block),
             suppress_repeat: u32::from(value.suppress_repeat),
+            transition_reason: value.transition_reason as u32,
         }
     }
 }
@@ -401,6 +404,7 @@ impl From<ProjectedStateUpdate> for PayloadProjectedStateUpdateInterop {
             changed: u32::from(value.changed),
             projected_before: u32::from(value.projected_before),
             projected_after: u32::from(value.projected_after),
+            transition_reason: value.transition_reason as u32,
         }
     }
 }
