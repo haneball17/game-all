@@ -30,6 +30,8 @@ struct InjectorConfig {
     DWORD success_interval_ms = 200;
     DWORD heartbeat_timeout_ms = 6000;
     DWORD heartbeat_interval_ms = 200;
+    DWORD inject_backend = 1;
+    DWORD success_observer_mode = 1;
     bool watch_mode = true;
     DWORD idle_exit_seconds = 600;
     DWORD max_concurrent_tasks = 3;
@@ -80,6 +82,8 @@ static InjectorConfig BuildDefaultInjectorConfig() {
     config.success_interval_ms = defaults.success_interval_ms;
     config.heartbeat_timeout_ms = defaults.heartbeat_timeout_ms;
     config.heartbeat_interval_ms = defaults.heartbeat_interval_ms;
+    config.inject_backend = defaults.inject_backend;
+    config.success_observer_mode = defaults.success_observer_mode;
     config.watch_mode = defaults.watch_mode != 0;
     config.idle_exit_seconds = defaults.idle_exit_seconds;
     config.max_concurrent_tasks = defaults.max_concurrent_tasks;
@@ -135,6 +139,19 @@ static std::wstring Utf8ToWide(const std::string& value) {
     return wide;
 }
 
+static std::string WideToUtf8(const std::wstring& value) {
+    if (value.empty()) {
+        return {};
+    }
+    int length = WideCharToMultiByte(CP_UTF8, 0, value.c_str(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
+    if (length <= 0) {
+        return {};
+    }
+    std::string utf8(static_cast<size_t>(length), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, value.c_str(), static_cast<int>(value.size()), &utf8[0], length, nullptr, nullptr);
+    return utf8;
+}
+
 static std::string ReadCStringFromBuffer(const char* buffer, size_t capacity) {
     if (!buffer || capacity == 0) {
         return {};
@@ -144,6 +161,15 @@ static std::string ReadCStringFromBuffer(const char* buffer, size_t capacity) {
         ++length;
     }
     return std::string(buffer, buffer + length);
+}
+
+static bool CopyUtf8CString(char* dest, size_t capacity, const std::string& value) {
+    if (!dest || capacity == 0 || value.size() >= capacity) {
+        return false;
+    }
+    memset(dest, 0, capacity);
+    memcpy(dest, value.data(), value.size());
+    return true;
 }
 
 static std::wstring GetExeDirectory() {
@@ -211,6 +237,44 @@ static bool FileExists(const std::wstring& path) {
         return false;
     }
     return (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+static bool BuildInjectorConfigInterop(const InjectorConfig& config, InjectorConfigInterop* out) {
+    if (!out) {
+        return false;
+    }
+    ZeroMemory(out, sizeof(*out));
+
+    std::string process_name = WideToUtf8(config.process_name);
+    std::string dll_path = WideToUtf8(config.dll_path);
+    std::string output_dir = WideToUtf8(config.output_dir);
+    if (!CopyUtf8CString(out->process_name, sizeof(out->process_name), process_name)) {
+        return false;
+    }
+    if (!CopyUtf8CString(out->dll_path, sizeof(out->dll_path), dll_path)) {
+        return false;
+    }
+    if (!CopyUtf8CString(out->output_dir, sizeof(out->output_dir), output_dir)) {
+        return false;
+    }
+
+    out->view.scan_interval_ms = config.scan_interval_ms;
+    out->view.inject_delay_ms = config.inject_delay_ms;
+    out->view.window_wait_timeout_ms = config.window_wait_timeout_ms;
+    out->view.window_poll_interval_ms = config.window_poll_interval_ms;
+    out->view.post_window_delay_ms = config.post_window_delay_ms;
+    out->view.max_retries = static_cast<uint32_t>(config.max_retries);
+    out->view.retry_interval_ms = config.retry_interval_ms;
+    out->view.success_timeout_ms = config.success_timeout_ms;
+    out->view.success_interval_ms = config.success_interval_ms;
+    out->view.heartbeat_timeout_ms = config.heartbeat_timeout_ms;
+    out->view.heartbeat_interval_ms = config.heartbeat_interval_ms;
+    out->view.inject_backend = config.inject_backend;
+    out->view.success_observer_mode = config.success_observer_mode;
+    out->view.watch_mode = config.watch_mode ? 1u : 0u;
+    out->view.idle_exit_seconds = config.idle_exit_seconds;
+    out->view.max_concurrent_tasks = config.max_concurrent_tasks;
+    return true;
 }
 
 static bool EnsureDirectoryExists(const std::wstring& path) {
@@ -325,6 +389,10 @@ static void EnsureDefaultInjectorConfig(const std::wstring& config_path) {
             "; 共享内存心跳兜底\r\n"
             "heartbeat_timeout_ms=6000\r\n"
             "heartbeat_interval_ms=200\r\n"
+            "; 注入后端：apc / fallback（当前默认 apc）\r\n"
+            "inject_backend=apc\r\n"
+            "; successfile 观察方式：notify / poll\r\n"
+            "success_observer_mode=notify\r\n"
             "; 常驻监听模式\r\n"
             "watch_mode=true\r\n"
             "; 无新目标进程出现后自动退出（秒，0 表示不退出）\r\n"
@@ -405,6 +473,30 @@ static bool WaitForProcessWindow(DWORD pid, DWORD timeout_ms, DWORD poll_interva
         Sleep(poll_interval_ms);
     }
     return false;
+}
+
+static bool TryWaitForInputIdleHint(DWORD pid, DWORD timeout_ms) {
+    HANDLE process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_INFORMATION, FALSE, pid);
+    if (!process) {
+        return false;
+    }
+    DWORD wait = WaitForInputIdle(process, timeout_ms);
+    CloseHandle(process);
+    return wait == 0;
+}
+
+static InjectorWindowProbeResultInterop ProbeProcessWindowReady(DWORD pid, DWORD timeout_ms, DWORD poll_interval_ms) {
+    InjectorWindowProbeResultInterop result = {};
+    DWORD idle_timeout = timeout_ms > 5000 ? 5000 : timeout_ms;
+    bool usedHint = false;
+    if (idle_timeout > 0) {
+        usedHint = TryWaitForInputIdleHint(pid, idle_timeout);
+    }
+    result.used_hint = usedHint ? 1u : 0u;
+    result.ok = WaitForProcessWindow(pid, timeout_ms, poll_interval_ms) ? 1u : 0u;
+    result.timed_out = result.ok == 0 ? 1u : 0u;
+    result.error_code = result.ok != 0 ? 0u : WAIT_TIMEOUT;
+    return result;
 }
 
 static std::wstring NormalizeProcessName(const std::wstring& name) {
@@ -699,7 +791,7 @@ static bool HasFileUpdated(const std::wstring& path, bool baseline_valid, const 
     return CompareFileTime(&current, &baseline) == 1;
 }
 
-static bool WaitForSuccessFile(const std::wstring& path, DWORD timeout_ms, DWORD interval_ms, bool baseline_valid, const FILETIME& baseline) {
+static bool WaitForSuccessFilePoll(const std::wstring& path, DWORD timeout_ms, DWORD interval_ms, bool baseline_valid, const FILETIME& baseline) {
     ULONGLONG start = GetTickCount64();
     while (GetTickCount64() - start <= timeout_ms) {
         if (HasFileUpdated(path, baseline_valid, baseline)) {
@@ -708,6 +800,68 @@ static bool WaitForSuccessFile(const std::wstring& path, DWORD timeout_ms, DWORD
         Sleep(interval_ms);
     }
     return false;
+}
+
+static bool WaitForSuccessFileNotify(const std::wstring& path, DWORD timeout_ms, DWORD interval_ms, bool baseline_valid, const FILETIME& baseline) {
+    std::wstring directory = GetFileDirectory(path);
+    if (directory.empty()) {
+        return WaitForSuccessFilePoll(path, timeout_ms, interval_ms, baseline_valid, baseline);
+    }
+
+    HANDLE change = FindFirstChangeNotificationW(
+        directory.c_str(),
+        FALSE,
+        FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE);
+    if (change == INVALID_HANDLE_VALUE) {
+        return WaitForSuccessFilePoll(path, timeout_ms, interval_ms, baseline_valid, baseline);
+    }
+
+    ULONGLONG start = GetTickCount64();
+    bool updated = false;
+    while (GetTickCount64() - start <= timeout_ms) {
+        if (HasFileUpdated(path, baseline_valid, baseline)) {
+            updated = true;
+            break;
+        }
+
+        DWORD remaining = timeout_ms - static_cast<DWORD>(GetTickCount64() - start);
+        DWORD wait = WaitForSingleObject(change, remaining);
+        if (wait == WAIT_OBJECT_0) {
+            if (HasFileUpdated(path, baseline_valid, baseline)) {
+                updated = true;
+                break;
+            }
+            if (!FindNextChangeNotification(change)) {
+                break;
+            }
+            continue;
+        }
+        if (wait == WAIT_TIMEOUT) {
+            break;
+        }
+        break;
+    }
+
+    FindCloseChangeNotification(change);
+    if (updated) {
+        return true;
+    }
+    return WaitForSuccessFilePoll(path, interval_ms, interval_ms, baseline_valid, baseline);
+}
+
+static InjectorSuccessObservationResultInterop ObserveSuccessFileChange(const std::wstring& path, const InjectorConfig& config, bool baseline_valid, const FILETIME& baseline) {
+    InjectorSuccessObservationResultInterop result = {};
+    if (config.success_observer_mode == 2) {
+        result.used_fallback = 1;
+        result.observed = WaitForSuccessFilePoll(path, config.success_timeout_ms, config.success_interval_ms, baseline_valid, baseline) ? 1u : 0u;
+        result.timed_out = result.observed == 0 ? 1u : 0u;
+        result.error_code = result.observed != 0 ? 0u : WAIT_TIMEOUT;
+        return result;
+    }
+    result.observed = WaitForSuccessFileNotify(path, config.success_timeout_ms, config.success_interval_ms, baseline_valid, baseline) ? 1u : 0u;
+    result.timed_out = result.observed == 0 ? 1u : 0u;
+    result.error_code = result.observed != 0 ? 0u : WAIT_TIMEOUT;
+    return result;
 }
 
 static bool TryReadHelperStatus(const std::wstring& mapping_name, HelperStatusV5* output) {
@@ -726,9 +880,8 @@ static bool TryReadHelperStatus(const std::wstring& mapping_name, HelperStatusV5
     return true;
 }
 
-static bool HasHelperHeartbeat(DWORD pid, DWORD timeout_ms) {
-    uint32_t expected_version = injector_core_helper_status_version();
-    uint32_t expected_size = injector_core_helper_status_size();
+static InjectorHeartbeatObservationResultInterop ObserveHelperHeartbeat(DWORD pid, DWORD timeout_ms) {
+    InjectorHeartbeatObservationResultInterop result = {};
     const wchar_t* prefixes[] = {L"Local\\GameHelperStatus_", L"Global\\GameHelperStatus_"};
     for (int i = 0; i < 2; ++i) {
         wchar_t mapping_name[64] = {0};
@@ -737,16 +890,22 @@ static bool HasHelperHeartbeat(DWORD pid, DWORD timeout_ms) {
         if (!TryReadHelperStatus(mapping_name, &status)) {
             continue;
         }
-        if (status.Version != expected_version || status.Size != expected_size) {
-            continue;
-        }
-        ULONGLONG now = GetTickCount64();
-        ULONGLONG delta = now >= status.LastTickMs ? now - status.LastTickMs : 0;
-        if (status.ProcessAlive != 0 && delta <= timeout_ms) {
-            return true;
-        }
+        result.mapping_found = 1;
+        InjectorHelperHeartbeatDecisionInterop decision = injector_core_evaluate_helper_heartbeat(
+            status.Version,
+            status.Size,
+            status.ProcessAlive != 0 ? 1u : 0u,
+            status.LastTickMs,
+            GetTickCount64(),
+            timeout_ms);
+        result.contract_ok = decision.contract_ok;
+        result.observed = decision.heartbeat_ok;
+        result.timed_out = decision.heartbeat_ok == 0 ? 1u : 0u;
+        result.error_code = decision.heartbeat_ok != 0 ? 0u : WAIT_TIMEOUT;
+        return result;
     }
-    return false;
+    result.error_code = ERROR_FILE_NOT_FOUND;
+    return result;
 }
 
 static bool PerformApcInjection(DWORD pid, const std::wstring& dll_path) {
@@ -805,49 +964,121 @@ static bool PerformApcInjection(DWORD pid, const std::wstring& dll_path) {
     return queued > 0;
 }
 
+static InjectorBackendExecutionResultInterop PerformInjectionWithBackend(DWORD pid, const InjectorConfig& config) {
+    InjectorBackendExecutionResultInterop result = {};
+    result.configured_backend = config.inject_backend;
+    switch (config.inject_backend) {
+    case 2:
+        result.effective_backend = 1;
+        result.downgraded = 1;
+        result.started = PerformApcInjection(pid, config.dll_path) ? 1u : 0u;
+        result.error_code = result.started != 0 ? 0u : ERROR_GEN_FAILURE;
+        return result;
+    case 1:
+    default:
+        result.effective_backend = 1;
+        result.started = PerformApcInjection(pid, config.dll_path) ? 1u : 0u;
+        result.error_code = result.started != 0 ? 0u : ERROR_GEN_FAILURE;
+        return result;
+    }
+}
+
+static std::wstring DescribeInjectionBackend(const InjectorConfig& config) {
+    switch (config.inject_backend) {
+    case 2:
+        return L"fallback";
+    case 1:
+    default:
+        return L"apc";
+    }
+}
+
+static std::wstring DescribeEffectiveInjectionBackend(const InjectorBackendExecutionResultInterop& result) {
+    switch (result.effective_backend) {
+    case 2:
+        return L"fallback";
+    case 1:
+    default:
+        return L"apc";
+    }
+}
+
 static bool TryInjectProcess(DWORD pid, const InjectorConfig& config) {
     std::wstring success_path = BuildSuccessFilePath(config.dll_path, config.output_dir, pid);
-    for (int attempt = 1; attempt <= config.max_retries; ++attempt) {
+    InjectionRetryRuntime* retry_runtime = injector_core_retry_runtime_create(
+        static_cast<uint32_t>(config.max_retries),
+        config.retry_interval_ms);
+    if (!retry_runtime) {
+        return false;
+    }
+
+    bool injected = false;
+    while (injector_core_retry_runtime_can_attempt(retry_runtime) != 0) {
+        uint32_t attempt = injector_core_retry_runtime_current_attempt(retry_runtime);
         FILETIME baseline = {};
         bool baseline_valid = false;
         if (!success_path.empty()) {
             baseline_valid = GetFileWriteTime(success_path, &baseline);
         }
 
-        Log(L"执行 APC 注入 (PID " + std::to_wstring(pid) + L", 尝试 " + std::to_wstring(attempt) + L"/" + std::to_wstring(config.max_retries) + L")");
-        if (!PerformApcInjection(pid, config.dll_path)) {
-            Log(L"APC 注入排队失败");
-        } else {
-            bool injected = false;
+        InjectorBackendExecutionResultInterop backend = PerformInjectionWithBackend(pid, config);
+        Log(L"执行 " + DescribeInjectionBackend(config) + L" 注入 (PID " + std::to_wstring(pid) + L", 尝试 " + std::to_wstring(attempt) + L"/" + std::to_wstring(config.max_retries) + L", effective=" + DescribeEffectiveInjectionBackend(backend) + L")");
+        if (backend.downgraded != 0) {
+            Log(L"注入后端已自动降级为 apc");
+        }
+        if (backend.started == 0) {
+            Log(L"注入后端执行失败");
+        }
+
+        InjectorSuccessObservationResultInterop success = {};
+        InjectorHeartbeatObservationResultInterop heartbeat = {};
+        if (backend.started != 0) {
             if (!success_path.empty()) {
                 Log(L"等待成功文件: " + success_path);
-                if (WaitForSuccessFile(success_path, config.success_timeout_ms, config.success_interval_ms, baseline_valid, baseline)) {
-                    injected = true;
+                success = ObserveSuccessFileChange(success_path, config, baseline_valid, baseline);
+                if (success.observed != 0) {
                     Log(L"成功文件已更新，注入成功");
                 }
             }
-            if (!injected) {
+
+            if (success.observed == 0) {
                 Log(L"成功文件未确认，尝试共享内存心跳兜底");
                 ULONGLONG start = GetTickCount64();
                 while (GetTickCount64() - start <= config.heartbeat_timeout_ms) {
-                    if (HasHelperHeartbeat(pid, config.heartbeat_timeout_ms)) {
-                        injected = true;
+                    heartbeat = ObserveHelperHeartbeat(pid, config.heartbeat_timeout_ms);
+                    if (heartbeat.observed != 0) {
                         Log(L"共享内存心跳正常，注入成功");
                         break;
                     }
                     Sleep(config.heartbeat_interval_ms);
                 }
-            }
-            if (injected) {
-                return true;
+                if (heartbeat.observed == 0) {
+                    heartbeat.timed_out = 1;
+                    if (heartbeat.error_code == 0) {
+                        heartbeat.error_code = WAIT_TIMEOUT;
+                    }
+                }
             }
         }
 
-        if (attempt < config.max_retries) {
-            Sleep(config.retry_interval_ms);
+        InjectorRetryDecisionInterop decision = {};
+        injector_core_retry_runtime_finish_attempt_with_results(
+            retry_runtime,
+            &backend,
+            &success,
+            &heartbeat,
+            &decision);
+        if (decision.succeeded != 0) {
+            injected = true;
+            break;
+        }
+        if (decision.should_retry != 0 && decision.retry_delay_ms > 0) {
+            Sleep(decision.retry_delay_ms);
         }
     }
-    return false;
+
+    injector_core_retry_runtime_destroy(retry_runtime);
+    return injected;
 }
 
 static void DeleteSuccessFileForPid(DWORD pid, const InjectorConfig& config) {
@@ -874,15 +1105,25 @@ static void DeleteSuccessFileForPid(DWORD pid, const InjectorConfig& config) {
     }
 }
 
-static InjectorConfig LoadInjectorConfig(const std::wstring& config_path, const std::wstring& exe_dir) {
+static InjectorConfig LoadInjectorConfig(
+    const std::wstring& config_path,
+    const std::wstring& exe_dir,
+    InjectorConfigInterop* out_interop) {
     InjectorConfig config = BuildDefaultInjectorConfig();
     std::vector<unsigned char> file_bytes;
     if (ReadFileBytes(config_path, &file_bytes) && !file_bytes.empty()) {
         InjectorConfigInterop interop = {};
-        if (injector_core_parse_ini_text_utf8(file_bytes.data(), file_bytes.size(), &interop) != 0) {
+        std::string exe_dir_utf8 = WideToUtf8(exe_dir);
+        if (!exe_dir_utf8.empty() &&
+            injector_core_load_config_utf8(
+                file_bytes.data(),
+                file_bytes.size(),
+                reinterpret_cast<const uint8_t*>(exe_dir_utf8.data()),
+                exe_dir_utf8.size(),
+                &interop) != 0) {
             config.process_name = Utf8ToWide(ReadCStringFromBuffer(interop.process_name, sizeof(interop.process_name)));
-            std::wstring dll_path = Utf8ToWide(ReadCStringFromBuffer(interop.dll_path, sizeof(interop.dll_path)));
-            std::wstring output_dir = Utf8ToWide(ReadCStringFromBuffer(interop.output_dir, sizeof(interop.output_dir)));
+            config.dll_path = Utf8ToWide(ReadCStringFromBuffer(interop.dll_path, sizeof(interop.dll_path)));
+            config.output_dir = Utf8ToWide(ReadCStringFromBuffer(interop.output_dir, sizeof(interop.output_dir)));
             config.scan_interval_ms = interop.view.scan_interval_ms;
             config.inject_delay_ms = interop.view.inject_delay_ms;
             config.window_wait_timeout_ms = interop.view.window_wait_timeout_ms;
@@ -894,12 +1135,13 @@ static InjectorConfig LoadInjectorConfig(const std::wstring& config_path, const 
             config.success_interval_ms = interop.view.success_interval_ms;
             config.heartbeat_timeout_ms = interop.view.heartbeat_timeout_ms;
             config.heartbeat_interval_ms = interop.view.heartbeat_interval_ms;
+            config.inject_backend = interop.view.inject_backend;
+            config.success_observer_mode = interop.view.success_observer_mode;
             config.watch_mode = interop.view.watch_mode != 0;
             config.idle_exit_seconds = interop.view.idle_exit_seconds;
             config.max_concurrent_tasks = interop.view.max_concurrent_tasks;
-            config.dll_path = NormalizePath(dll_path, exe_dir);
-            if (!output_dir.empty()) {
-                config.output_dir = NormalizePath(output_dir, exe_dir);
+            if (out_interop) {
+                *out_interop = interop;
             }
             return config;
         }
@@ -926,29 +1168,22 @@ static InjectorConfig LoadInjectorConfig(const std::wstring& config_path, const 
     config.success_interval_ms = ReadIniUInt32(config_path, L"success_interval_ms", config.success_interval_ms);
     config.heartbeat_timeout_ms = ReadIniUInt32(config_path, L"heartbeat_timeout_ms", config.heartbeat_timeout_ms);
     config.heartbeat_interval_ms = ReadIniUInt32(config_path, L"heartbeat_interval_ms", config.heartbeat_interval_ms);
+    std::wstring inject_backend = ReadIniStringValue(config_path, L"inject_backend", L"");
+    if (!inject_backend.empty() && _wcsicmp(inject_backend.c_str(), L"fallback") == 0) {
+        config.inject_backend = 2;
+    }
+    std::wstring success_observer_mode = ReadIniStringValue(config_path, L"success_observer_mode", L"");
+    if (!success_observer_mode.empty() && _wcsicmp(success_observer_mode.c_str(), L"poll") == 0) {
+        config.success_observer_mode = 2;
+    }
     config.watch_mode = ReadIniBool(config_path, L"watch_mode", config.watch_mode);
     config.idle_exit_seconds = ReadIniUInt32(config_path, L"idle_exit_seconds", config.idle_exit_seconds);
     config.max_concurrent_tasks = ReadIniUInt32(config_path, L"max_concurrent_tasks", config.max_concurrent_tasks);
+    if (out_interop) {
+        BuildInjectorConfigInterop(config, out_interop);
+    }
     return config;
 }
-
-enum InjectTaskState {
-    kTaskPending = 0,
-    kTaskWaitingWindow = 1,
-    kTaskInjecting = 2,
-    kTaskSucceeded = 3,
-    kTaskFailed = 4,
-    kTaskAbandoned = 5
-};
-
-struct InjectTask {
-    DWORD pid = 0;
-    ULONGLONG last_seen = 0;
-    volatile LONG state = kTaskPending;
-    HANDLE thread = nullptr;
-    bool injected = false;
-    bool pending = true;
-};
 
 struct InjectTaskParams {
     DWORD pid = 0;
@@ -961,7 +1196,11 @@ static DWORD WINAPI InjectTaskThread(LPVOID param) {
     InjectorConfig config = payload->config;
 
     Log(L"等待目标进程窗口初始化... (PID " + std::to_wstring(pid) + L")");
-    if (!WaitForProcessWindow(pid, config.window_wait_timeout_ms, config.window_poll_interval_ms)) {
+    InjectorWindowProbeResultInterop window_probe = ProbeProcessWindowReady(
+        pid,
+        config.window_wait_timeout_ms,
+        config.window_poll_interval_ms);
+    if (window_probe.ok == 0) {
         Log(L"超时：目标进程未创建窗口，跳过注入 (PID " + std::to_wstring(pid) + L")");
         return 0;
     }
@@ -981,62 +1220,76 @@ static DWORD WINAPI InjectTaskThread(LPVOID param) {
     } else {
         Log(L"注入失败: PID " + std::to_wstring(pid));
     }
-    return 0;
+    return injected ? 1u : 0u;
 }
 
-static void CleanupFinishedTasks(std::unordered_map<DWORD, InjectTask>& states) {
-    for (auto& pair : states) {
-        InjectTask& task = pair.second;
-        if (!task.thread) {
+static void CleanupFinishedTasks(
+    std::unordered_map<DWORD, HANDLE>& threads,
+    InjectorWatchRuntime* runtime) {
+    for (auto it = threads.begin(); it != threads.end(); ) {
+        if (!it->second) {
+            it = threads.erase(it);
             continue;
         }
-        DWORD wait = WaitForSingleObject(task.thread, 0);
+        DWORD wait = WaitForSingleObject(it->second, 0);
         if (wait == WAIT_OBJECT_0) {
-            CloseHandle(task.thread);
-            task.thread = nullptr;
+            DWORD exit_code = 0;
+            GetExitCodeThread(it->second, &exit_code);
+            injector_core_watch_runtime_mark_finished(runtime, it->first, exit_code == 1 ? 1u : 0u);
+            CloseHandle(it->second);
+            it = threads.erase(it);
+            continue;
         }
+        ++it;
     }
 }
 
-static size_t CountActiveTasks(const std::unordered_map<DWORD, InjectTask>& states) {
-    size_t count = 0;
-    for (const auto& pair : states) {
-        if (pair.second.thread) {
-            ++count;
-        }
-    }
-    return count;
-}
-
-static void TryStartPendingTasks(std::unordered_map<DWORD, InjectTask>& states, const InjectorConfig& config) {
-    size_t active = CountActiveTasks(states);
-    size_t limit = config.max_concurrent_tasks == 0
-        ? (std::numeric_limits<size_t>::max)()
-        : static_cast<size_t>(config.max_concurrent_tasks);
-    if (active >= limit) {
+static void CollectRuntimeRemovals(
+    InjectorWatchRuntime* runtime,
+    const InjectorConfig& config) {
+    size_t task_count = injector_core_watch_runtime_task_count(runtime);
+    if (task_count == 0) {
         return;
     }
-    for (auto& pair : states) {
-        if (active >= limit) {
-            break;
-        }
-        InjectTask& task = pair.second;
-        if (!task.pending || task.thread) {
-            continue;
-        }
+    std::vector<uint32_t> removable(task_count);
+    size_t count = injector_core_watch_runtime_collect_removals(
+        runtime,
+        removable.data(),
+        removable.size());
+    for (size_t i = 0; i < count; ++i) {
+        DWORD pid = removable[i];
+        Log(L"进程退出: PID " + std::to_wstring(pid));
+        DeleteSuccessFileForPid(pid, config);
+    }
+}
+
+static void TryStartPendingTasks(
+    std::unordered_map<DWORD, HANDLE>& threads,
+    InjectorWatchRuntime* runtime,
+    const InjectorConfig& config,
+    size_t start_budget) {
+    if (start_budget == 0) {
+        return;
+    }
+    std::vector<uint32_t> pending(start_budget);
+    size_t count = injector_core_watch_runtime_collect_pending(
+        runtime,
+        start_budget,
+        pending.data(),
+        pending.size());
+    for (size_t i = 0; i < count; ++i) {
+        DWORD pid = pending[i];
         std::unique_ptr<InjectTaskParams> payload(new InjectTaskParams());
-        payload->pid = task.pid;
+        payload->pid = pid;
         payload->config = config;
         HANDLE thread = CreateThread(nullptr, 0, InjectTaskThread, payload.release(), 0, nullptr);
         if (!thread) {
-            Log(L"创建注入线程失败: PID " + std::to_wstring(task.pid));
-            task.pending = true;
+            Log(L"创建注入线程失败: PID " + std::to_wstring(pid));
             continue;
         }
-        task.thread = thread;
-        task.pending = false;
-        ++active;
-        Log(L"启动注入任务: PID " + std::to_wstring(task.pid));
+        threads[pid] = thread;
+        injector_core_watch_runtime_mark_started(runtime, pid);
+        Log(L"启动注入任务: PID " + std::to_wstring(pid));
     }
 }
 
@@ -1045,7 +1298,9 @@ int wmain() {
     std::wstring exe_dir = GetExeDirectory();
     std::wstring config_path = GetInjectorConfigPath(exe_dir);
     InjectorConfig config;
-    std::unordered_map<DWORD, InjectTask> states;
+    InjectorConfigInterop config_interop = {};
+    InjectorWatchRuntime* watch_runtime = nullptr;
+    std::unordered_map<DWORD, HANDLE> threads;
 
     std::wstring contract_error;
     if (!ValidateRustContracts(&contract_error)) {
@@ -1055,7 +1310,7 @@ int wmain() {
     }
 
     EnsureDefaultInjectorConfig(config_path);
-    config = LoadInjectorConfig(config_path, exe_dir);
+    config = LoadInjectorConfig(config_path, exe_dir, &config_interop);
 
     Log(L"Injector 启动");
     Log(L"配置文件: " + config_path);
@@ -1064,6 +1319,8 @@ int wmain() {
         + L", Size=" + std::to_wstring(injector_core_helper_status_size()));
     Log(L"进程名: " + config.process_name);
     Log(L"DLL 路径: " + config.dll_path);
+    Log(L"注入后端配置: " + DescribeInjectionBackend(config));
+    Log(L"successfile 观察方式: " + std::wstring(config.success_observer_mode == 2 ? L"poll" : L"notify"));
     Log(L"窗口等待超时: " + std::to_wstring(config.window_wait_timeout_ms) + L"ms");
     Log(L"窗口检测间隔: " + std::to_wstring(config.window_poll_interval_ms) + L"ms");
     Log(L"窗口后等待: " + std::to_wstring(config.post_window_delay_ms) + L"ms");
@@ -1087,7 +1344,11 @@ int wmain() {
         }
         Log(L"发现 PID: " + std::to_wstring(pid));
         Log(L"等待目标进程窗口初始化...");
-        if (!WaitForProcessWindow(pid, config.window_wait_timeout_ms, config.window_poll_interval_ms)) {
+        InjectorWindowProbeResultInterop window_probe = ProbeProcessWindowReady(
+            pid,
+            config.window_wait_timeout_ms,
+            config.window_poll_interval_ms);
+        if (window_probe.ok == 0) {
             Log(L"超时：目标进程未创建窗口，终止注入");
             exit_code = 3;
             goto Exit;
@@ -1110,60 +1371,48 @@ int wmain() {
     }
 
     Log(L"进入常驻监听模式");
-    ULONGLONG last_new_tick = GetTickCount64();
+    watch_runtime = injector_core_watch_runtime_create(&config_interop, GetTickCount64());
+    if (!watch_runtime) {
+        Log(L"Rust watch runtime 创建失败");
+        exit_code = 5;
+        goto Exit;
+    }
 
     for (;;) {
         ULONGLONG now = GetTickCount64();
-        CleanupFinishedTasks(states);
+        CleanupFinishedTasks(threads, watch_runtime);
         std::vector<DWORD> pids = ListProcessIds(config.process_name);
-        std::unordered_set<DWORD> current(pids.begin(), pids.end());
+        injector_core_watch_runtime_observe_processes(
+            watch_runtime,
+            now,
+            reinterpret_cast<const uint32_t*>(pids.data()),
+            pids.size());
+        CollectRuntimeRemovals(watch_runtime, config);
 
-        // 清理已退出进程
-        for (auto it = states.begin(); it != states.end(); ) {
-            if (current.find(it->first) == current.end()) {
-                Log(L"进程退出: PID " + std::to_wstring(it->first));
-                DeleteSuccessFileForPid(it->first, config);
-                if (it->second.thread) {
-                    // 任务线程仍在运行，不强制结束
-                    it->second.pending = false;
-                    ++it;
-                    continue;
-                }
-                it = states.erase(it);
-                continue;
-            }
-            it->second.last_seen = now;
-            ++it;
-        }
+        size_t active = threads.size();
+        size_t limit = config.max_concurrent_tasks == 0
+            ? pids.size()
+            : static_cast<size_t>(config.max_concurrent_tasks);
+        size_t start_budget = limit > active ? (limit - active) : 0;
+        TryStartPendingTasks(threads, watch_runtime, config, start_budget);
 
-        // 处理新进程
-        for (DWORD pid : pids) {
-            if (states.find(pid) != states.end()) {
-                continue;
-            }
-            InjectTask state;
-            state.pid = pid;
-            state.last_seen = now;
-            state.pending = true;
-            states.emplace(pid, state);
-            last_new_tick = now;
-
-            Log(L"发现新进程: PID " + std::to_wstring(pid));
-        }
-
-        TryStartPendingTasks(states, config);
-
-        if (config.idle_exit_seconds > 0) {
-            ULONGLONG idle_ms = static_cast<ULONGLONG>(config.idle_exit_seconds) * 1000ULL;
-            if (GetTickCount64() - last_new_tick >= idle_ms) {
-                Log(L"超过 idle_exit_seconds 无新进程出现，退出注入器");
-                break;
-            }
+        if (injector_core_watch_runtime_should_exit_idle(watch_runtime, now) != 0) {
+            Log(L"超过 idle_exit_seconds 无新进程出现，退出注入器");
+            break;
         }
         Sleep(config.scan_interval_ms);
     }
 
 Exit:
+    if (watch_runtime) {
+        injector_core_watch_runtime_destroy(watch_runtime);
+        watch_runtime = nullptr;
+    }
+    for (auto& pair : threads) {
+        if (pair.second) {
+            CloseHandle(pair.second);
+        }
+    }
 #ifdef _DEBUG
     ArchiveDebugLogIfNeeded();
 #endif

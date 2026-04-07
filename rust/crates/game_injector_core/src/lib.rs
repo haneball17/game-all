@@ -5,5 +5,7 @@
 
 mod config;
 pub mod ffi;
+mod runtime;
 
 pub use config::{InjectorConfig, InjectorConfigInterop, InjectorConfigView};
+pub use runtime::{InjectorRuntimePlan, InjectorWatchRuntime};

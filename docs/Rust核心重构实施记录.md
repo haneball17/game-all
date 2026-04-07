@@ -296,3 +296,240 @@
 - 顶层解决方案并行构建恢复稳定通过
 - `Payload` / `Injector` 的 Debug 与 Release 中间产物已按配置隔离
 - `artifacts/run` 仍保持原有统一运行产物布局
+
+---
+
+## 第八批落地：Injector 运行计划与 watch_mode 状态机下沉到 Rust（2026-04-07）
+
+### 本次新增
+- `game_injector_core` 新增 `runtime.rs`：
+  - `InjectorRuntimePlan`
+  - `InjectorWatchRuntime`
+- 新增能力：
+  - 基于 `injector.ini` 文本和基础目录构建**归一化运行计划**
+  - watch_mode 下的任务状态机：
+    - 进程发现
+    - pending 任务收集
+    - running 标记
+    - finished 标记
+    - 进程退出后的任务移除
+    - idle 自动退出判定
+
+### 新增 FFI
+- `injector_core_load_config_utf8(...)`
+- `injector_core_watch_runtime_create(...)`
+- `injector_core_watch_runtime_destroy(...)`
+- `injector_core_watch_runtime_observe_processes(...)`
+- `injector_core_watch_runtime_collect_pending(...)`
+- `injector_core_watch_runtime_mark_started(...)`
+- `injector_core_watch_runtime_mark_finished(...)`
+- `injector_core_watch_runtime_collect_removals(...)`
+- `injector_core_watch_runtime_should_exit_idle(...)`
+- `injector_core_watch_runtime_task_count(...)`
+
+### 当前接入范围
+`Injector/main.cpp` 已改为优先让 Rust 承担：
+
+1. 配置文本解析与路径归一化
+2. watch_mode 的任务表状态维护
+3. pending / running / finished / removal 的任务生命周期决策
+4. idle_exit_seconds 自动退出判定
+
+当前仍保留在 C++ 的部分：
+
+1. `QueueUserAPC` 注入动作
+2. `WaitForProcessWindow(...)`
+3. successfile / heartbeat 的具体验证循环
+4. Win32 句柄、线程与日志边界
+
+### 当前价值
+- `Injector/main.cpp` 不再直接维护 `unordered_map<DWORD, InjectTask>` 这类主状态表。
+- watch_mode 下“哪些任务可启动、何时可移除、何时可触发 idle 退出”开始由 Rust 统一决策。
+- 配置归一化从“Rust 解析 + C++ 再次手工补路径”收敛为“Rust 直接输出可执行配置”。
+- 这一步为后续继续把 successfile / heartbeat / retry 状态机迁入 Rust 打下边界基础。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_injector_core`
+2. `cargo test --workspace`
+3. `cargo clippy -p game_injector_core --all-targets --all-features -- -D warnings`
+4. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+5. `MSBuild.exe E:\\code\\game-all\\Injector\\Injector.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+6. `MSBuild.exe E:\\code\\game-all\\Injector\\Injector.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+
+结果：
+- `game_injector_core` 新增 4 个 runtime 测试后全部通过
+- Rust workspace 测试与静态检查通过
+- Windows `Injector` Debug / Release 构建通过
+- 当前改动未影响现有 GUI / Payload 构建边界
+
+---
+
+## 第九批落地：Injector 成功判定与重试状态机继续收口到 Rust（2026-04-07）
+
+### 本次新增
+- `game_injector_core` 新增：
+  - `HelperHeartbeatDecision`
+  - `InjectionRetryRuntime`
+  - `InjectionRetryDecision`
+- 新增 FFI：
+  - `injector_core_evaluate_helper_heartbeat(...)`
+  - `injector_core_retry_runtime_create(...)`
+  - `injector_core_retry_runtime_destroy(...)`
+  - `injector_core_retry_runtime_can_attempt(...)`
+  - `injector_core_retry_runtime_current_attempt(...)`
+  - `injector_core_retry_runtime_finish_attempt(...)`
+
+### 当前接入范围
+`Injector/main.cpp` 已改为优先让 Rust 统一负责：
+
+1. `HelperStatusV5` 的协议/心跳有效性判断
+2. 单次注入尝试是否成功：
+   - successfile 成功
+   - heartbeat 成功
+3. 尝试失败后是否继续重试
+4. 重试间隔与 finished 判定
+
+当前仍保留在 C++：
+
+1. `WaitForSuccessFile(...)` 的文件等待循环
+2. `HasHelperHeartbeat(...)` 的共享内存读取壳
+3. `QueueUserAPC` 注入动作
+4. `WaitForProcessWindow(...)`
+
+### 当前价值
+- `TryInjectProcess(...)` 不再自己维护“attempt < max_retries / Sleep(retry_interval_ms)”这套重试决策。
+- successfile 与 heartbeat 的成功信号开始统一汇总到 Rust `InjectionRetryRuntime`。
+- 心跳判定不再由 C++ 直接写死协议/超时解释，而是开始由 Rust 核心输出结果。
+- 这一步让 Injector 的“成功判定 + 重试策略”继续从 C++ 边界层抽离。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_injector_core`
+2. `cargo clippy -p game_injector_core --all-targets --all-features -- -D warnings`
+3. `cargo test --workspace`
+4. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+5. `MSBuild.exe E:\\code\\game-all\\Injector\\Injector.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+6. `MSBuild.exe E:\\code\\game-all\\Injector\\Injector.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+
+结果：
+- `game_injector_core` 新增 3 个测试后全部通过
+- Rust workspace 测试与静态检查通过
+- Windows `Injector` Debug / Release 构建通过
+- Phase 1 中“配置/运行计划/watch/retry/heartbeat 决策”已形成稳定 Rust 边界
+
+---
+
+## 第十批落地：Injector 注入后端抽象、successfile 目录通知与窗口就绪提示信号（2026-04-07）
+
+### 本次新增
+- `game_injector_core::config` 新增配置枚举：
+  - `InjectionBackendKind`
+  - `SuccessObserverMode`
+- `InjectorConfig` / `InjectorConfigView` / `InjectorConfigInterop` 已新增：
+  - `inject_backend`
+  - `success_observer_mode`
+- 默认配置与模板已更新：
+  - `inject_backend=apc`
+  - `success_observer_mode=notify`
+
+### 当前接入范围
+`Injector/main.cpp` 已新增并接入以下边界适配器：
+
+1. `TryWaitForInputIdleHint(...)`
+   - 仅作为 GUI 初始化提示信号，不替代窗口存在性确认
+2. `ProbeProcessWindowReady(...)`
+   - 先尝试 `WaitForInputIdle`
+   - 再回到 `EnumWindows` 做最终窗口确认
+3. `ObserveSuccessFileChange(...)`
+   - 默认使用目录变更通知
+   - 回退到原有时间戳轮询
+4. `PerformInjectionWithBackend(...)`
+   - 当前默认 `apc`
+   - `fallback` 仅预留接口并记录日志
+
+### 当前价值
+- successfile 观察从固定 `Sleep(...)` 轮询升级为“目录通知优先、轮询回退”。
+- 注入方式不再在主流程中写死为 APC，而是开始形成可切换的后端抽象。
+- 窗口等待不再只依赖纯轮询，开始引入 `WaitForInputIdle` 作为**辅助提示信号**。
+- 这一步与官方文档约束对齐：
+  - `QueueUserAPC` 保留在 Win32 边界，不继续向 Rust 深推
+  - `WaitForInputIdle` 仅作提示，不作为真值来源
+  - successfile 观察开始减少固定轮询带来的空转
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_injector_core`
+2. `cargo clippy -p game_injector_core --all-targets --all-features -- -D warnings`
+3. `cargo test --workspace`
+4. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+5. `MSBuild.exe E:\\code\\game-all\\Injector\\Injector.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+6. `MSBuild.exe E:\\code\\game-all\\Injector\\Injector.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+
+结果：
+- Rust workspace 测试与静态检查通过
+- Windows `Injector` Debug / Release 构建通过
+- 当前仍保持 APC 为默认后端，未破坏既有运行方式
+
+---
+
+## 第十一批落地：Injector 结构化平台观测结果与 fallback 降级语义（2026-04-07）
+
+### 本次新增
+- 新增结构化 interop 结果类型：
+  - `InjectorWindowProbeResultInterop`
+  - `InjectorSuccessObservationResultInterop`
+  - `InjectorHeartbeatObservationResultInterop`
+  - `InjectorBackendExecutionResultInterop`
+- 新增 FFI：
+  - `injector_core_retry_runtime_finish_attempt_with_results(...)`
+- `game_injector_core` 新增：
+  - `WindowProbeResult`
+  - `SuccessObservationResult`
+  - `HeartbeatObservationResult`
+  - `BackendExecutionResult`
+  - `finish_attempt_with_observation(...)`
+
+### 当前接入范围
+`Injector/main.cpp` 中以下平台适配器已改为返回结构化结果，而不是单纯 `bool`：
+
+1. `ProbeProcessWindowReady(...)`
+2. `ObserveSuccessFileChange(...)`
+3. `ObserveHelperHeartbeat(...)`
+4. `PerformInjectionWithBackend(...)`
+
+当前效果：
+
+- `TryInjectProcess(...)` 不再自己拼接 backend/success/heartbeat 的布尔结果，
+  而是统一把结构化观测结果交回 Rust 推进一次 attempt。
+- `inject_backend=fallback` 的当前运行语义已固定为：
+  - 自动降级为 `apc`
+  - 记录 warning
+  - 结构化结果中标记 `downgraded=1`
+- `WaitForInputIdle` 的使用语义也已固定：
+  - 仅作为窗口初始化 hint
+  - 不作为窗口 ready 的真值来源
+
+### 当前价值
+- `Injector/main.cpp` 的平台边界开始具备统一形状，为后续继续收口到 Rust 状态机打下稳定接口。
+- successfile / heartbeat / backend 的观测结果不再散落为多个 `bool`，诊断能力更强。
+- `fallback` 不再是“配置后直接失败”的不确定状态，而是明确降级为 `apc`。
+- 这一步让 Injector 的边界模型更接近后续 `Sync` 侧要采用的“Rust 决策 + C++ 观测器”模式。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_injector_core`
+2. `cargo clippy -p game_injector_core --all-targets --all-features -- -D warnings`
+3. `cargo test --workspace`
+4. `MSBuild.exe E:\\code\\game-all\\Injector\\Injector.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+5. `MSBuild.exe E:\\code\\game-all\\Injector\\Injector.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+
+结果：
+- `game_injector_core` 新增 1 个结构化观测测试后全部通过
+- Rust clippy 通过
+- Windows `Injector` Debug / Release 构建通过
+- 当前变更未破坏既有 `Payload` / GUI 构建链

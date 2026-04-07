@@ -4,6 +4,38 @@ use game_core_protocols::{HELPER_STATUS_V5_SIZE, HELPER_STATUS_V5_VERSION};
 pub const PROCESS_NAME_CAPACITY: usize = 64;
 pub const PATH_TEXT_CAPACITY: usize = 1024;
 
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InjectionBackendKind {
+    Apc = 1,
+    Fallback = 2,
+}
+
+impl InjectionBackendKind {
+    fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "fallback" => Self::Fallback,
+            _ => Self::Apc,
+        }
+    }
+}
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuccessObserverMode {
+    Notify = 1,
+    Poll = 2,
+}
+
+impl SuccessObserverMode {
+    fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "poll" => Self::Poll,
+            _ => Self::Notify,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InjectorConfig {
     pub process_name: String,
@@ -23,6 +55,8 @@ pub struct InjectorConfig {
     pub watch_mode: bool,
     pub idle_exit_seconds: u32,
     pub max_concurrent_tasks: u32,
+    pub inject_backend: InjectionBackendKind,
+    pub success_observer_mode: SuccessObserverMode,
 }
 
 impl Default for InjectorConfig {
@@ -45,6 +79,8 @@ impl Default for InjectorConfig {
             watch_mode: true,
             idle_exit_seconds: 600,
             max_concurrent_tasks: 3,
+            inject_backend: InjectionBackendKind::Apc,
+            success_observer_mode: SuccessObserverMode::Notify,
         }
     }
 }
@@ -78,6 +114,10 @@ impl InjectorConfig {
             "; 共享内存心跳兜底",
             "heartbeat_timeout_ms=6000",
             "heartbeat_interval_ms=200",
+            "; 注入后端：apc / fallback（当前默认 apc，fallback 预留）",
+            "inject_backend=apc",
+            "; successfile 观察方式：notify / poll",
+            "success_observer_mode=notify",
             "; 常驻监听模式",
             "watch_mode=true",
             "; 无新目标进程出现后自动退出（秒，0 表示不退出）",
@@ -141,6 +181,12 @@ impl InjectorConfig {
             config.heartbeat_interval_ms =
                 value::parse_u32_like(value, config.heartbeat_interval_ms);
         }
+        if let Some(value) = injector.get("inject_backend") {
+            config.inject_backend = InjectionBackendKind::parse(value);
+        }
+        if let Some(value) = injector.get("success_observer_mode") {
+            config.success_observer_mode = SuccessObserverMode::parse(value);
+        }
         if let Some(value) = injector.get("watch_mode") {
             config.watch_mode = value::parse_bool_like(value, config.watch_mode);
         }
@@ -181,6 +227,8 @@ pub struct InjectorConfigView {
     pub success_interval_ms: u32,
     pub heartbeat_timeout_ms: u32,
     pub heartbeat_interval_ms: u32,
+    pub inject_backend: u32,
+    pub success_observer_mode: u32,
     pub watch_mode: u32,
     pub idle_exit_seconds: u32,
     pub max_concurrent_tasks: u32,
@@ -200,6 +248,8 @@ impl From<&InjectorConfig> for InjectorConfigView {
             success_interval_ms: value.success_interval_ms,
             heartbeat_timeout_ms: value.heartbeat_timeout_ms,
             heartbeat_interval_ms: value.heartbeat_interval_ms,
+            inject_backend: value.inject_backend as u32,
+            success_observer_mode: value.success_observer_mode as u32,
             watch_mode: u32::from(value.watch_mode),
             idle_exit_seconds: value.idle_exit_seconds,
             max_concurrent_tasks: value.max_concurrent_tasks,
@@ -231,6 +281,38 @@ impl InjectorConfigInterop {
     }
 }
 
+impl InjectorConfig {
+    pub fn from_interop(value: &InjectorConfigInterop) -> Option<Self> {
+        Some(Self {
+            process_name: read_utf8_c_string(&value.process_name)?,
+            dll_path: read_utf8_c_string(&value.dll_path)?,
+            output_dir: read_utf8_c_string(&value.output_dir)?,
+            scan_interval_ms: value.view.scan_interval_ms,
+            inject_delay_ms: value.view.inject_delay_ms,
+            window_wait_timeout_ms: value.view.window_wait_timeout_ms,
+            window_poll_interval_ms: value.view.window_poll_interval_ms,
+            post_window_delay_ms: value.view.post_window_delay_ms,
+            max_retries: value.view.max_retries,
+            retry_interval_ms: value.view.retry_interval_ms,
+            success_timeout_ms: value.view.success_timeout_ms,
+            success_interval_ms: value.view.success_interval_ms,
+            heartbeat_timeout_ms: value.view.heartbeat_timeout_ms,
+            heartbeat_interval_ms: value.view.heartbeat_interval_ms,
+            inject_backend: match value.view.inject_backend {
+                2 => InjectionBackendKind::Fallback,
+                _ => InjectionBackendKind::Apc,
+            },
+            success_observer_mode: match value.view.success_observer_mode {
+                2 => SuccessObserverMode::Poll,
+                _ => SuccessObserverMode::Notify,
+            },
+            watch_mode: value.view.watch_mode != 0,
+            idle_exit_seconds: value.view.idle_exit_seconds,
+            max_concurrent_tasks: value.view.max_concurrent_tasks,
+        })
+    }
+}
+
 fn copy_utf8_c_string<const N: usize>(dest: &mut [u8; N], value: &str) -> Option<()> {
     let bytes = value.as_bytes();
     if bytes.len() >= N {
@@ -239,6 +321,11 @@ fn copy_utf8_c_string<const N: usize>(dest: &mut [u8; N], value: &str) -> Option
     dest[..bytes.len()].copy_from_slice(bytes);
     dest[bytes.len()] = 0;
     Some(())
+}
+
+fn read_utf8_c_string<const N: usize>(buffer: &[u8; N]) -> Option<String> {
+    let length = buffer.iter().position(|&byte| byte == 0).unwrap_or(N);
+    std::str::from_utf8(&buffer[..length]).ok().map(str::to_string)
 }
 
 #[cfg(test)]
@@ -264,6 +351,8 @@ mod tests {
         assert!(!config.watch_mode);
         assert_eq!(config.inject_delay_ms, 0);
         assert_eq!(config.helper_status_contract(), (5, 152));
+        assert_eq!(config.inject_backend, InjectionBackendKind::Apc);
+        assert_eq!(config.success_observer_mode, SuccessObserverMode::Notify);
     }
 
     #[test]
@@ -275,12 +364,14 @@ mod tests {
     #[test]
     fn interop_view_contains_utf8_strings_and_values() {
         let config = InjectorConfig::parse_ini(
-            "[injector]\nprocess_name=DNF\ndll_path=mods\\game-payload.dll\noutput_dir=logs\nmax_retries=9\n",
+            "[injector]\nprocess_name=DNF\ndll_path=mods\\game-payload.dll\noutput_dir=logs\nmax_retries=9\ninject_backend=fallback\nsuccess_observer_mode=poll\n",
         );
         let interop = InjectorConfigInterop::from_config(&config).expect("interop");
         assert_eq!(interop.process_name[0..7], *b"DNF.exe");
         assert_eq!(interop.dll_path[0..21], *b"mods\\game-payload.dll");
         assert_eq!(interop.output_dir[0..4], *b"logs");
         assert_eq!(interop.view.max_retries, 9);
+        assert_eq!(interop.view.inject_backend, 2);
+        assert_eq!(interop.view.success_observer_mode, 2);
     }
 }
