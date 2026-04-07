@@ -1,8 +1,9 @@
 #![allow(clippy::missing_safety_doc, clippy::undocumented_unsafe_blocks)]
 
 use crate::{
-    HelperControlApplyPlan, HelperStatusContractDecision, decode_control_apply_plan,
-    evaluate_helper_control_contract, evaluate_helper_status_contract,
+    HelperControlApplyPlan, HelperStatusContractDecision, HelperStatusSnapshotInput,
+    build_helper_status_snapshot, decode_control_apply_plan, evaluate_helper_control_contract,
+    evaluate_helper_status_contract,
 };
 use game_core_protocols::{HelperControlV4, HelperStatusV5};
 
@@ -11,6 +12,29 @@ use game_core_protocols::{HelperControlV4, HelperStatusV5};
 pub struct HelperStatusContractDecisionInterop {
     pub contract_ok: u32,
     pub process_alive: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HelperStatusSnapshotInputInterop {
+    pub last_tick_ms: u64,
+    pub pid: u32,
+    pub process_alive: u32,
+    pub auto_transparent_enabled: u32,
+    pub fullscreen_attack_target: u32,
+    pub fullscreen_attack_patch_on: u32,
+    pub attract_mode: i32,
+    pub attract_positive: u32,
+    pub gather_items_enabled: u32,
+    pub damage_enabled: u32,
+    pub damage_multiplier: i32,
+    pub invincible_enabled: u32,
+    pub summon_enabled: u32,
+    pub summon_last_tick: u64,
+    pub fullscreen_skill_enabled: u32,
+    pub fullscreen_skill_active: u32,
+    pub fullscreen_skill_hotkey: u32,
+    pub hotkey_enabled: u32,
 }
 
 #[repr(C)]
@@ -47,6 +71,31 @@ impl From<HelperStatusContractDecision> for HelperStatusContractDecisionInterop 
         Self {
             contract_ok: u32::from(value.contract_ok),
             process_alive: u32::from(value.process_alive),
+        }
+    }
+}
+
+impl From<HelperStatusSnapshotInputInterop> for HelperStatusSnapshotInput {
+    fn from(value: HelperStatusSnapshotInputInterop) -> Self {
+        Self {
+            last_tick_ms: value.last_tick_ms,
+            pid: value.pid,
+            process_alive: value.process_alive != 0,
+            auto_transparent_enabled: value.auto_transparent_enabled != 0,
+            fullscreen_attack_target: value.fullscreen_attack_target != 0,
+            fullscreen_attack_patch_on: value.fullscreen_attack_patch_on != 0,
+            attract_mode: value.attract_mode,
+            attract_positive: value.attract_positive != 0,
+            gather_items_enabled: value.gather_items_enabled != 0,
+            damage_enabled: value.damage_enabled != 0,
+            damage_multiplier: value.damage_multiplier,
+            invincible_enabled: value.invincible_enabled != 0,
+            summon_enabled: value.summon_enabled != 0,
+            summon_last_tick: value.summon_last_tick,
+            fullscreen_skill_enabled: value.fullscreen_skill_enabled != 0,
+            fullscreen_skill_active: value.fullscreen_skill_active != 0,
+            fullscreen_skill_hotkey: value.fullscreen_skill_hotkey,
+            hotkey_enabled: value.hotkey_enabled != 0,
         }
     }
 }
@@ -115,5 +164,18 @@ pub unsafe extern "C" fn game_helper_core_decode_control_apply_plan(
     }
     let plan = decode_control_apply_plan(unsafe { &*(snapshot as *const HelperControlV4) });
     unsafe { out_plan.write(plan.into()) };
+    1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn game_helper_core_build_status_snapshot(
+    input: *const HelperStatusSnapshotInputInterop,
+    out_snapshot: *mut core::ffi::c_void,
+) -> u32 {
+    if input.is_null() || out_snapshot.is_null() {
+        return 0;
+    }
+    let snapshot = build_helper_status_snapshot(unsafe { (*input).into() });
+    unsafe { (out_snapshot as *mut HelperStatusV5).write(snapshot) };
     1
 }

@@ -1823,36 +1823,38 @@ static void WriteSharedMemorySnapshot() {
 	if (!InitializeSharedMemory()) {
 		return;
 	}
-	HelperStatusV5 snapshot = {0};
-	snapshot.version = kSharedMemoryVersion;
-	snapshot.size = static_cast<DWORD>(sizeof(HelperStatusV5));
-	snapshot.last_tick_ms = GetTickCount64();
-	snapshot.pid = GetCurrentProcessId();
-	snapshot.process_alive = TRUE;
-	snapshot.auto_transparent_enabled = g_auto_transparent_enabled;
-	snapshot.fullscreen_attack_target = IsFullscreenAttackTargetEnabled() ? TRUE : FALSE;
+	HelperStatusSnapshotInputInterop input = {0};
+	input.last_tick_ms = GetTickCount64();
+	input.pid = GetCurrentProcessId();
+	input.process_alive = TRUE;
+	input.auto_transparent_enabled = g_auto_transparent_enabled;
+	input.fullscreen_attack_target = IsFullscreenAttackTargetEnabled() ? TRUE : FALSE;
 	BYTE current[2] = {0};
 	if (ReadBytesSafely(kFullScreenAttackPatchAddress, current, sizeof(current))) {
 		if (memcmp(current, kFullscreenAttackPatchOn, kFullscreenAttackPatchSize) == 0) {
-			snapshot.fullscreen_attack_patch_on = TRUE;
+			input.fullscreen_attack_patch_on = TRUE;
 		} else if (IsFullscreenAttackOffBytes(current)) {
-			snapshot.fullscreen_attack_patch_on = FALSE;
+			input.fullscreen_attack_patch_on = FALSE;
 		} else {
-			snapshot.fullscreen_attack_patch_on = FALSE;
+			input.fullscreen_attack_patch_on = FALSE;
 		}
 	}
-	snapshot.attract_mode = g_attract_mode;
-	snapshot.attract_positive = g_attract_positive_enabled;
-	snapshot.gather_items_enabled = g_gather_items_enabled;
-	snapshot.damage_enabled = g_damage_enabled;
-	snapshot.damage_multiplier = g_damage_multiplier;
-	snapshot.invincible_enabled = g_invincible_enabled;
-	snapshot.summon_enabled = g_summon_enabled;
-	snapshot.summon_last_tick = g_summon_last_tick;
-	snapshot.fullscreen_skill_enabled = g_fullscreen_skill_enabled;
-	snapshot.fullscreen_skill_active = g_fullscreen_skill_active;
-	snapshot.fullscreen_skill_hotkey = g_fullscreen_skill_hotkey;
-	snapshot.hotkey_enabled = g_hotkey_enabled;
+	input.attract_mode = g_attract_mode;
+	input.attract_positive = g_attract_positive_enabled;
+	input.gather_items_enabled = g_gather_items_enabled;
+	input.damage_enabled = g_damage_enabled;
+	input.damage_multiplier = g_damage_multiplier;
+	input.invincible_enabled = g_invincible_enabled;
+	input.summon_enabled = g_summon_enabled;
+	input.summon_last_tick = g_summon_last_tick;
+	input.fullscreen_skill_enabled = g_fullscreen_skill_enabled;
+	input.fullscreen_skill_active = g_fullscreen_skill_active;
+	input.fullscreen_skill_hotkey = g_fullscreen_skill_hotkey;
+	input.hotkey_enabled = g_hotkey_enabled;
+	HelperStatusV5 snapshot = {0};
+	if (game_helper_core_build_status_snapshot(&input, &snapshot) == 0) {
+		return;
+	}
 	ReadPlayerName(snapshot.player_name, kPlayerNameMaxChars);
 	memcpy(g_shared_memory_view, &snapshot, sizeof(snapshot));
 }

@@ -1123,6 +1123,61 @@
 
 ---
 
+## 第三十一批落地：game_helper_core 开始接回 HelperStatus 快照生成（2026-04-08）
+
+### 本次新增
+- `game_helper_core` 已新增：
+  - `HelperStatusSnapshotInput`
+  - `build_helper_status_snapshot(...)`
+- `game_helper_core_ffi` 已新增：
+  - `HelperStatusSnapshotInputInterop`
+  - `game_helper_core_build_status_snapshot(...)`
+
+### 本次接回
+- `WriteSharedMemorySnapshot()` 不再在 C++ 中手工组装全部 `HelperStatusV5` 数值字段。
+- Rust 现在负责生成 `HelperStatusV5` 的数值快照主体，包括：
+  - `last_tick_ms`
+  - `pid`
+  - `process_alive`
+  - auto transparent
+  - fullscreen attack target / patch on
+  - attract mode / positive
+  - gather items
+  - damage / multiplier
+  - invincible
+  - summon
+  - fullscreen skill
+  - hotkey enabled
+- C++ 继续保留：
+  - 读取 patch 字节
+  - 读取玩家名
+  - 最终共享内存写入
+
+### 当前价值
+- `HelperStatus` 快照生成开始从 `HelperMod.cpp` 中迁出。
+- `Helper` 现在已经同时有：
+  - control 协议校验
+  - action mask 解码
+  - status snapshot 生成
+  这三类 Rust 内核能力。
+- 后续继续推进共享内存写入状态机时，C++ 只需保留真正依赖游戏内存/本地 API 的边界读取。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_helper_core`
+2. `cargo clippy -p game_helper_core --all-targets --all-features -- -D warnings`
+3. `cargo test --workspace`
+4. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+5. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+6. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+
+结果：
+- `game_helper_core` 与 Rust workspace 全量验证通过
+- Windows `Payload` Debug / Release 构建通过
+
+---
+
 ## 第二十七批落地：Injector attempt 失败原因开始统一由 Rust 汇总（2026-04-08）
 
 ### 本次新增

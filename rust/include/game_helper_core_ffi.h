@@ -15,6 +15,27 @@ typedef struct HelperStatusContractDecisionInterop {
     uint32_t process_alive;
 } HelperStatusContractDecisionInterop;
 
+typedef struct HelperStatusSnapshotInputInterop {
+    uint64_t last_tick_ms;
+    uint32_t pid;
+    uint32_t process_alive;
+    uint32_t auto_transparent_enabled;
+    uint32_t fullscreen_attack_target;
+    uint32_t fullscreen_attack_patch_on;
+    int32_t attract_mode;
+    uint32_t attract_positive;
+    uint32_t gather_items_enabled;
+    uint32_t damage_enabled;
+    int32_t damage_multiplier;
+    uint32_t invincible_enabled;
+    uint32_t summon_enabled;
+    uint64_t summon_last_tick;
+    uint32_t fullscreen_skill_enabled;
+    uint32_t fullscreen_skill_active;
+    uint32_t fullscreen_skill_hotkey;
+    uint32_t hotkey_enabled;
+} HelperStatusSnapshotInputInterop;
+
 typedef struct HelperControlApplyPlanInterop {
     uint32_t apply_fullscreen_attack_target;
     uint32_t fullscreen_attack_target;
@@ -52,6 +73,10 @@ GAME_HELPER_CORE_API uint32_t game_helper_core_evaluate_control_contract(
 GAME_HELPER_CORE_API uint32_t game_helper_core_decode_control_apply_plan(
     const void* snapshot,
     HelperControlApplyPlanInterop* out_plan);
+
+GAME_HELPER_CORE_API uint32_t game_helper_core_build_status_snapshot(
+    const HelperStatusSnapshotInputInterop* input,
+    void* out_snapshot);
 
 #ifdef __cplusplus
 }
