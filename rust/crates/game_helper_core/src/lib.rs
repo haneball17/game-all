@@ -17,6 +17,10 @@ pub const ACTION_MASK_DAMAGE_ENABLED: u32 = 1 << 8;
 pub const ACTION_MASK_DAMAGE_MULTIPLIER: u32 = 1 << 9;
 pub const ACTION_MASK_INVINCIBLE_ENABLED: u32 = 1 << 10;
 
+pub const CONTROL_FOLLOW: u8 = 0;
+pub const CONTROL_FORCE_OFF: u8 = 1;
+pub const CONTROL_FORCE_ON: u8 = 2;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HelperStatusContractDecision {
     pub contract_ok: bool,
@@ -60,6 +64,33 @@ pub struct HelperControlApplyPlan {
     pub invincible_enabled: Option<bool>,
     pub summon_sequence: u32,
     pub action_sequence: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HelperControlRuntimeState {
+    pub last_summon_sequence: u32,
+    pub last_action_sequence: u32,
+    pub fullscreen_attack: u8,
+    pub fullscreen_skill: u8,
+    pub auto_transparent: u8,
+    pub attract: u8,
+    pub hotkey_enabled: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HelperControlTickDecision {
+    pub next_state: HelperControlRuntimeState,
+    pub control_changed: bool,
+    pub should_apply_overrides: bool,
+    pub summon_sequence_changed: bool,
+    pub action_sequence_changed: bool,
+}
+
+pub fn normalize_control_value(value: u8) -> u8 {
+    match value {
+        CONTROL_FORCE_OFF | CONTROL_FORCE_ON => value,
+        _ => CONTROL_FOLLOW,
+    }
 }
 
 pub fn evaluate_helper_status_contract(snapshot: &HelperStatusV5) -> HelperStatusContractDecision {
@@ -124,6 +155,47 @@ pub fn decode_control_apply_plan(snapshot: &HelperControlV4) -> HelperControlApp
             .then_some(snapshot.DesiredInvincibleEnabled != 0),
         summon_sequence: snapshot.SummonSequence,
         action_sequence: snapshot.ActionSequence,
+    }
+}
+
+pub fn evaluate_control_tick(
+    state: HelperControlRuntimeState,
+    snapshot: &HelperControlV4,
+) -> HelperControlTickDecision {
+    let normalized_fullscreen_attack = normalize_control_value(snapshot.FullscreenAttack);
+    let normalized_fullscreen_skill = normalize_control_value(snapshot.FullscreenSkill);
+    let normalized_auto_transparent = normalize_control_value(snapshot.AutoTransparent);
+    let normalized_attract = normalize_control_value(snapshot.Attract);
+    let normalized_hotkey_enabled = normalize_control_value(snapshot.HotkeyEnabled);
+
+    let control_changed = normalized_fullscreen_attack != state.fullscreen_attack
+        || normalized_fullscreen_skill != state.fullscreen_skill
+        || normalized_auto_transparent != state.auto_transparent
+        || normalized_attract != state.attract
+        || normalized_hotkey_enabled != state.hotkey_enabled;
+
+    let summon_sequence_changed = snapshot.SummonSequence != state.last_summon_sequence;
+    let action_sequence_changed =
+        snapshot.ActionSequence != 0 && snapshot.ActionSequence != state.last_action_sequence;
+
+    HelperControlTickDecision {
+        next_state: HelperControlRuntimeState {
+            last_summon_sequence: snapshot.SummonSequence,
+            last_action_sequence: if action_sequence_changed {
+                snapshot.ActionSequence
+            } else {
+                state.last_action_sequence
+            },
+            fullscreen_attack: normalized_fullscreen_attack,
+            fullscreen_skill: normalized_fullscreen_skill,
+            auto_transparent: normalized_auto_transparent,
+            attract: normalized_attract,
+            hotkey_enabled: normalized_hotkey_enabled,
+        },
+        control_changed,
+        should_apply_overrides: control_changed,
+        summon_sequence_changed,
+        action_sequence_changed,
     }
 }
 
@@ -198,5 +270,22 @@ mod tests {
         assert_eq!(pid, 42);
         assert_eq!(process_alive, 1);
         assert_eq!(damage_multiplier, 20);
+    }
+
+    #[test]
+    fn control_tick_detects_changes_and_sequence_advances() {
+        let snapshot = HelperControlV4 {
+            FullscreenAttack: CONTROL_FORCE_ON,
+            SummonSequence: 2,
+            ActionSequence: 3,
+            ..HelperControlV4::default()
+        };
+        let decision = evaluate_control_tick(HelperControlRuntimeState::default(), &snapshot);
+        assert!(decision.control_changed);
+        assert!(decision.should_apply_overrides);
+        assert!(decision.summon_sequence_changed);
+        assert!(decision.action_sequence_changed);
+        assert_eq!(decision.next_state.fullscreen_attack, CONTROL_FORCE_ON);
+        assert_eq!(decision.next_state.last_action_sequence, 3);
     }
 }

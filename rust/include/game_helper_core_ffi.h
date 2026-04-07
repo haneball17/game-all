@@ -63,6 +63,30 @@ typedef struct HelperControlApplyPlanInterop {
     uint32_t action_sequence;
 } HelperControlApplyPlanInterop;
 
+typedef struct HelperControlRuntimeStateInterop {
+    uint32_t last_summon_sequence;
+    uint32_t last_action_sequence;
+    uint8_t fullscreen_attack;
+    uint8_t fullscreen_skill;
+    uint8_t auto_transparent;
+    uint8_t attract;
+    uint8_t hotkey_enabled;
+} HelperControlRuntimeStateInterop;
+
+typedef struct HelperControlTickDecisionInterop {
+    uint32_t last_summon_sequence;
+    uint32_t last_action_sequence;
+    uint8_t fullscreen_attack;
+    uint8_t fullscreen_skill;
+    uint8_t auto_transparent;
+    uint8_t attract;
+    uint8_t hotkey_enabled;
+    uint32_t control_changed;
+    uint32_t should_apply_overrides;
+    uint32_t summon_sequence_changed;
+    uint32_t action_sequence_changed;
+} HelperControlTickDecisionInterop;
+
 GAME_HELPER_CORE_API uint32_t game_helper_core_evaluate_status_contract(
     const void* snapshot,
     HelperStatusContractDecisionInterop* out_decision);
@@ -77,6 +101,11 @@ GAME_HELPER_CORE_API uint32_t game_helper_core_decode_control_apply_plan(
 GAME_HELPER_CORE_API uint32_t game_helper_core_build_status_snapshot(
     const HelperStatusSnapshotInputInterop* input,
     void* out_snapshot);
+
+GAME_HELPER_CORE_API uint32_t game_helper_core_evaluate_control_tick(
+    const HelperControlRuntimeStateInterop* state,
+    const void* snapshot,
+    HelperControlTickDecisionInterop* out_decision);
 
 #ifdef __cplusplus
 }

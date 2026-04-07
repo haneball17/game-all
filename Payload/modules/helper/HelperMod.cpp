@@ -1962,38 +1962,34 @@ static void ControlReaderTick() {
 	snapshot.auto_transparent = NormalizeControlValue(snapshot.auto_transparent);
 	snapshot.attract = NormalizeControlValue(snapshot.attract);
 	snapshot.hotkey_enabled = NormalizeControlValue(snapshot.hotkey_enabled);
+	HelperControlRuntimeStateInterop state = {};
+	state.last_summon_sequence = g_control_last_summon_sequence;
+	state.last_action_sequence = g_control_last_action_sequence;
+	state.fullscreen_attack = g_control_fullscreen_attack;
+	state.fullscreen_skill = g_control_fullscreen_skill;
+	state.auto_transparent = g_control_auto_transparent;
+	state.attract = g_control_attract;
+	state.hotkey_enabled = g_control_hotkey_enabled;
+	HelperControlTickDecisionInterop decision = {};
+	if (game_helper_core_evaluate_control_tick(&state, &snapshot, &decision) == 0) {
+		return;
+	}
 
-	BOOL control_changed = FALSE;
-	if (snapshot.fullscreen_attack != g_control_fullscreen_attack) {
-		g_control_fullscreen_attack = snapshot.fullscreen_attack;
-		control_changed = TRUE;
-	}
-	if (snapshot.fullscreen_skill != g_control_fullscreen_skill) {
-		g_control_fullscreen_skill = snapshot.fullscreen_skill;
-		control_changed = TRUE;
-	}
-	if (snapshot.auto_transparent != g_control_auto_transparent) {
-		g_control_auto_transparent = snapshot.auto_transparent;
-		control_changed = TRUE;
-	}
-	if (snapshot.attract != g_control_attract) {
-		g_control_attract = snapshot.attract;
-		control_changed = TRUE;
-	}
-	if (snapshot.hotkey_enabled != g_control_hotkey_enabled) {
-		g_control_hotkey_enabled = snapshot.hotkey_enabled;
-		control_changed = TRUE;
-	}
-	if (control_changed) {
+	g_control_last_summon_sequence = decision.last_summon_sequence;
+	g_control_last_action_sequence = decision.last_action_sequence;
+	g_control_fullscreen_attack = decision.fullscreen_attack;
+	g_control_fullscreen_skill = decision.fullscreen_skill;
+	g_control_auto_transparent = decision.auto_transparent;
+	g_control_attract = decision.attract;
+	g_control_hotkey_enabled = decision.hotkey_enabled;
+
+	if (decision.should_apply_overrides != 0) {
 		ApplyControlOverrides();
 	}
-	if (snapshot.summon_sequence != g_control_last_summon_sequence) {
-		g_control_last_summon_sequence = snapshot.summon_sequence;
+	if (decision.summon_sequence_changed != 0) {
 		TrySummonDoll();
 	}
-	if (snapshot.action_sequence != 0 &&
-		snapshot.action_sequence != g_control_last_action_sequence) {
-		g_control_last_action_sequence = snapshot.action_sequence;
+	if (decision.action_sequence_changed != 0) {
 		HelperControlApplyPlanInterop plan = {};
 		if (game_helper_core_decode_control_apply_plan(&snapshot, &plan) != 0) {
 			ApplyControlActions(plan);

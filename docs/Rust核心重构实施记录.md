@@ -1178,6 +1178,52 @@
 
 ---
 
+## 第三十四批落地：game_helper_core 开始接回 ControlReaderTick 运行时状态机（2026-04-08）
+
+### 本次新增
+- `game_helper_core` 已新增：
+  - `HelperControlRuntimeState`
+  - `HelperControlTickDecision`
+  - `normalize_control_value(...)`
+  - `evaluate_control_tick(...)`
+- `game_helper_core_ffi` 已新增：
+  - `HelperControlRuntimeStateInterop`
+  - `HelperControlTickDecisionInterop`
+  - `game_helper_core_evaluate_control_tick(...)`
+
+### 本次接回
+- `ControlReaderTick()` 不再在 C++ 中自己维护：
+  - control 前态比较
+  - `control_changed`
+  - `summon_sequence_changed`
+  - `action_sequence_changed`
+- Rust 现在统一输出：
+  - 归一化后的 control mode 状态
+  - 是否需要 `ApplyControlOverrides()`
+  - 是否应触发 `TrySummonDoll()`
+  - 是否应应用 action plan
+
+### 当前价值
+- `Helper` 的控制共享内存读取路径已经不只是“协议校验 + action 解码”，而是开始拥有独立 Rust 运行时状态机。
+- `HelperMod.cpp` 中 `ControlReaderTick()` 的本地状态比较逻辑明显缩小。
+- 这为后续继续迁出共享内存写入/读取状态机、诊断和热重载逻辑提供了直接落点。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_helper_core`
+2. `cargo clippy -p game_helper_core --all-targets --all-features -- -D warnings`
+3. `cargo test --workspace`
+4. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+5. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+6. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+
+结果：
+- `game_helper_core` 与 Rust workspace 全量验证通过
+- Windows `Payload` Debug / Release 构建通过
+
+---
+
 ## 第三十二批落地：game_control_core 开始接回 SyncController（2026-04-08）
 
 ### 本次接回

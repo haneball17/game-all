@@ -1,8 +1,9 @@
 #![allow(clippy::missing_safety_doc, clippy::undocumented_unsafe_blocks)]
 
 use crate::{
-    HelperControlApplyPlan, HelperStatusContractDecision, HelperStatusSnapshotInput,
-    build_helper_status_snapshot, decode_control_apply_plan, evaluate_helper_control_contract,
+    HelperControlApplyPlan, HelperControlRuntimeState, HelperControlTickDecision,
+    HelperStatusContractDecision, HelperStatusSnapshotInput, build_helper_status_snapshot,
+    decode_control_apply_plan, evaluate_control_tick, evaluate_helper_control_contract,
     evaluate_helper_status_contract,
 };
 use game_core_protocols::{HelperControlV4, HelperStatusV5};
@@ -64,6 +65,34 @@ pub struct HelperControlApplyPlanInterop {
     pub invincible_enabled: u32,
     pub summon_sequence: u32,
     pub action_sequence: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HelperControlRuntimeStateInterop {
+    pub last_summon_sequence: u32,
+    pub last_action_sequence: u32,
+    pub fullscreen_attack: u8,
+    pub fullscreen_skill: u8,
+    pub auto_transparent: u8,
+    pub attract: u8,
+    pub hotkey_enabled: u8,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HelperControlTickDecisionInterop {
+    pub last_summon_sequence: u32,
+    pub last_action_sequence: u32,
+    pub fullscreen_attack: u8,
+    pub fullscreen_skill: u8,
+    pub auto_transparent: u8,
+    pub attract: u8,
+    pub hotkey_enabled: u8,
+    pub control_changed: u32,
+    pub should_apply_overrides: u32,
+    pub summon_sequence_changed: u32,
+    pub action_sequence_changed: u32,
 }
 
 impl From<HelperStatusContractDecision> for HelperStatusContractDecisionInterop {
@@ -131,6 +160,38 @@ impl From<HelperControlApplyPlan> for HelperControlApplyPlanInterop {
     }
 }
 
+impl From<HelperControlRuntimeStateInterop> for HelperControlRuntimeState {
+    fn from(value: HelperControlRuntimeStateInterop) -> Self {
+        Self {
+            last_summon_sequence: value.last_summon_sequence,
+            last_action_sequence: value.last_action_sequence,
+            fullscreen_attack: value.fullscreen_attack,
+            fullscreen_skill: value.fullscreen_skill,
+            auto_transparent: value.auto_transparent,
+            attract: value.attract,
+            hotkey_enabled: value.hotkey_enabled,
+        }
+    }
+}
+
+impl From<HelperControlTickDecision> for HelperControlTickDecisionInterop {
+    fn from(value: HelperControlTickDecision) -> Self {
+        Self {
+            last_summon_sequence: value.next_state.last_summon_sequence,
+            last_action_sequence: value.next_state.last_action_sequence,
+            fullscreen_attack: value.next_state.fullscreen_attack,
+            fullscreen_skill: value.next_state.fullscreen_skill,
+            auto_transparent: value.next_state.auto_transparent,
+            attract: value.next_state.attract,
+            hotkey_enabled: value.next_state.hotkey_enabled,
+            control_changed: u32::from(value.control_changed),
+            should_apply_overrides: u32::from(value.should_apply_overrides),
+            summon_sequence_changed: u32::from(value.summon_sequence_changed),
+            action_sequence_changed: u32::from(value.action_sequence_changed),
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn game_helper_core_evaluate_status_contract(
     snapshot: *const core::ffi::c_void,
@@ -177,5 +238,22 @@ pub unsafe extern "C" fn game_helper_core_build_status_snapshot(
     }
     let snapshot = build_helper_status_snapshot(unsafe { (*input).into() });
     unsafe { (out_snapshot as *mut HelperStatusV5).write(snapshot) };
+    1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn game_helper_core_evaluate_control_tick(
+    state: *const HelperControlRuntimeStateInterop,
+    snapshot: *const core::ffi::c_void,
+    out_decision: *mut HelperControlTickDecisionInterop,
+) -> u32 {
+    if state.is_null() || snapshot.is_null() || out_decision.is_null() {
+        return 0;
+    }
+    let decision = evaluate_control_tick(
+        unsafe { (*state).into() },
+        unsafe { &*(snapshot as *const HelperControlV4) },
+    );
+    unsafe { out_decision.write(decision.into()) };
     1
 }
