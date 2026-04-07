@@ -942,6 +942,64 @@
 
 ---
 
+## 第二十三批落地：logical raw 候选顺序与 selection reason 开始收口到 Rust（2026-04-07）
+
+### 本次新增
+- `game_payload_core::runtime` 已新增：
+  - `LogicalRawSelectionReason`
+  - `LogicalRawCandidate`
+  - `LogicalRawPlan`
+  - `build_logical_raw_plan(...)`
+- `game_payload_core_ffi` 已新增：
+  - `PayloadLogicalRawCandidateInterop`
+  - `PayloadLogicalRawPlanInterop`
+  - `payload_core_build_logical_raw_plan(...)`
+
+### 本次收口
+- `TryPickLogicalRawTransition(...)` 不再在 C++ 里硬编码候选顺序：
+  - `direction_release_first`
+  - `logical_release`
+  - `logical_press`
+  - `group_winner_press`
+  - `logical_emit`
+- Rust 现在负责给出 logical raw 的 candidate plan：
+  - 候选 `vkey`
+  - `observed_down`
+  - `required_action`
+  - `selection_reason`
+- C++ 只负责：
+  - 读取 Rust plan
+  - 调用现有 `EvaluateChannelEmitDecision(...)`
+  - 改写 RawInput 结构
+  - 输出日志与 diagnostics
+
+### 当前价值
+- Raw 路径上的候选顺序与选择原因不再散落在 `SyncMod.cpp`。
+- `SyncMod.cpp` 在 logical raw 这条热路径上继续退化成：
+  - 读取 snapshot
+  - 调 Rust
+  - 改写结构
+  - 打日志
+- 现在 Rust 已经覆盖了：
+  - mapping selection
+  - direction selection
+  - logical raw candidate order
+  只剩最后一层“按候选计划执行 emit 决策”仍通过 C++ 包装函数调用。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_payload_core`
+2. `cargo clippy -p game_payload_core --all-targets --all-features -- -D warnings`
+3. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+4. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+
+结果：
+- Rust 测试与 clippy 通过
+- Windows `Payload` Debug / Release 构建通过
+
+---
+
 ## 第二十二批落地：mapping / direction selection 开始收口到 Rust（2026-04-07）
 
 ### 本次新增

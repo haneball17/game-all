@@ -56,6 +56,30 @@ pub struct ChannelEmitDecision {
     pub transition_reason: ChannelTransitionReason,
 }
 
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogicalRawSelectionReason {
+    None = 0,
+    DirectionReleaseFirst = 1,
+    LogicalRelease = 2,
+    LogicalPress = 3,
+    GroupWinnerPress = 4,
+    LogicalEmit = 5,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogicalRawCandidate {
+    pub vkey: u32,
+    pub observed_down: bool,
+    pub required_action: EmitAction,
+    pub selection_reason: LogicalRawSelectionReason,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogicalRawPlan {
+    pub candidates: Vec<LogicalRawCandidate>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PathDecision {
     pub runtime: RuntimeDecision,
@@ -106,6 +130,16 @@ pub struct AdapterDriftSummary {
 
 fn is_direction_vkey(vkey: u32) -> bool {
     matches!(vkey, 0x25..=0x28)
+}
+
+fn direction_pair_vkey(vkey: u32) -> Option<u32> {
+    match vkey {
+        0x25 => Some(0x27),
+        0x27 => Some(0x25),
+        0x26 => Some(0x28),
+        0x28 => Some(0x26),
+        _ => None,
+    }
 }
 
 fn resolve_direction_conflict(
@@ -393,6 +427,69 @@ pub fn decide_channel_emit(
         suppress_repeat,
         transition_reason,
     }
+}
+
+pub fn build_logical_raw_plan(preferred_vkey: u32, preferred_observed_down: bool) -> LogicalRawPlan {
+    if !is_direction_vkey(preferred_vkey) {
+        return LogicalRawPlan {
+            candidates: vec![LogicalRawCandidate {
+                vkey: preferred_vkey,
+                observed_down: preferred_observed_down,
+                required_action: EmitAction::None,
+                selection_reason: LogicalRawSelectionReason::LogicalEmit,
+            }],
+        };
+    }
+
+    let mut candidates = Vec::with_capacity(11);
+    if let Some(pair_vkey) = direction_pair_vkey(preferred_vkey) {
+        candidates.push(LogicalRawCandidate {
+            vkey: pair_vkey,
+            observed_down: false,
+            required_action: EmitAction::Release,
+            selection_reason: LogicalRawSelectionReason::DirectionReleaseFirst,
+        });
+    }
+
+    candidates.push(LogicalRawCandidate {
+        vkey: preferred_vkey,
+        observed_down: preferred_observed_down,
+        required_action: EmitAction::Release,
+        selection_reason: LogicalRawSelectionReason::LogicalRelease,
+    });
+
+    for vkey in [0x25_u32, 0x27, 0x26, 0x28] {
+        if vkey == preferred_vkey || Some(vkey) == direction_pair_vkey(preferred_vkey) {
+            continue;
+        }
+        candidates.push(LogicalRawCandidate {
+            vkey,
+            observed_down: false,
+            required_action: EmitAction::Release,
+            selection_reason: LogicalRawSelectionReason::LogicalRelease,
+        });
+    }
+
+    candidates.push(LogicalRawCandidate {
+        vkey: preferred_vkey,
+        observed_down: preferred_observed_down,
+        required_action: EmitAction::Press,
+        selection_reason: LogicalRawSelectionReason::LogicalPress,
+    });
+
+    for vkey in [0x25_u32, 0x27, 0x26, 0x28] {
+        if vkey == preferred_vkey {
+            continue;
+        }
+        candidates.push(LogicalRawCandidate {
+            vkey,
+            observed_down: false,
+            required_action: EmitAction::Press,
+            selection_reason: LogicalRawSelectionReason::GroupWinnerPress,
+        });
+    }
+
+    LogicalRawPlan { candidates }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -766,6 +863,36 @@ mod tests {
         assert!(!emit.projected_down_after);
         assert!(!emit.desired_down);
         assert_eq!(emit.transition_reason, ChannelTransitionReason::DesiredRelease);
+    }
+
+    #[test]
+    fn logical_raw_plan_orders_direction_candidates_before_presses() {
+        let plan = build_logical_raw_plan(0x25, true);
+        assert_eq!(plan.candidates[0].vkey, 0x27);
+        assert_eq!(
+            plan.candidates[0].selection_reason,
+            LogicalRawSelectionReason::DirectionReleaseFirst
+        );
+        assert_eq!(plan.candidates[1].vkey, 0x25);
+        assert_eq!(
+            plan.candidates[1].selection_reason,
+            LogicalRawSelectionReason::LogicalRelease
+        );
+        assert_eq!(
+            plan.candidates.iter().filter(|c| c.required_action == EmitAction::Press).count(),
+            4
+        );
+    }
+
+    #[test]
+    fn logical_raw_plan_for_non_direction_emits_single_candidate() {
+        let plan = build_logical_raw_plan(0x41, true);
+        assert_eq!(plan.candidates.len(), 1);
+        assert_eq!(plan.candidates[0].vkey, 0x41);
+        assert_eq!(
+            plan.candidates[0].selection_reason,
+            LogicalRawSelectionReason::LogicalEmit
+        );
     }
 
     #[test]

@@ -1965,7 +1965,34 @@ static bool TryPickLogicalRawTransition(
     }
 
     const bool preferredObservedDown = (snapshot.keyboardState[preferredVKey] & 0x80) != 0;
-    auto tryEmit = [&](int vKey, bool observedDown, const wchar_t* adapter, const wchar_t* reason, int requiredAction) -> bool {
+    PayloadLogicalRawPlanInterop plan = {};
+    if (payload_core_build_logical_raw_plan(
+            static_cast<uint32_t>(preferredVKey),
+            preferredObservedDown ? 1u : 0u,
+            &plan) == 0)
+    {
+        return false;
+    }
+
+    auto resolveSelectionReason = [](uint32_t reason) -> const wchar_t* {
+        switch (reason)
+        {
+            case 1:
+                return L"direction_release_first";
+            case 2:
+                return L"logical_release";
+            case 3:
+                return L"logical_press";
+            case 4:
+                return L"group_winner_press";
+            case 5:
+                return L"logical_emit";
+            default:
+                return L"logical_none";
+        }
+    };
+
+    auto tryEmit = [&](int vKey, bool observedDown, const wchar_t* adapter, uint32_t selectionReason, int requiredAction) -> bool {
         if (vKey < 0 || vKey >= 256)
         {
             return false;
@@ -2004,6 +2031,7 @@ static bool TryPickLogicalRawTransition(
         SyncStateMirrorsForKey(vKey);
         *vKeyOut = vKey;
         *isDownOut = emitDecision.emit_action == 1;
+        const wchar_t* reason = resolveSelectionReason(selectionReason);
         if (reasonOut)
         {
             *reasonOut = reason;
@@ -2019,45 +2047,21 @@ static bool TryPickLogicalRawTransition(
         return true;
     };
 
-    if (IsDirectionVKey(preferredVKey))
+    for (uint32_t i = 0; i < plan.candidate_count && i < ARRAYSIZE(plan.candidates); i++)
     {
-        const int pairVKey = GetDirectionPairVKey(preferredVKey);
-        const int order[] = {pairVKey, preferredVKey, VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN};
-
-        for (int vKey : order)
-        {
-            if (!IsDirectionVKey(vKey))
-            {
-                continue;
-            }
-            const bool observedDown = (vKey == preferredVKey) ? preferredObservedDown : false;
-            if (tryEmit(vKey, observedDown, L"RawInput", vKey == pairVKey ? L"direction_release_first" : L"logical_release", 2))
-            {
-                return true;
-            }
-        }
-
-        if (tryEmit(preferredVKey, preferredObservedDown, L"RawInput", L"logical_press", 1))
+        const auto& candidate = plan.candidates[i];
+        if (tryEmit(
+                static_cast<int>(candidate.vkey),
+                candidate.observed_down != 0,
+                L"RawInput",
+                candidate.selection_reason,
+                static_cast<int>(candidate.required_action)))
         {
             return true;
         }
-
-        for (int vKey : {VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN})
-        {
-            if (vKey == preferredVKey)
-            {
-                continue;
-            }
-            if (tryEmit(vKey, false, L"RawInput", L"group_winner_press", 1))
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
-    return tryEmit(preferredVKey, preferredObservedDown, L"RawInput", L"logical_emit", -1);
+    return false;
 }
 
 static bool IsSnapshotAlive(const SharedSnapshot& snapshot)

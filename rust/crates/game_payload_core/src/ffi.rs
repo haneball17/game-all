@@ -7,10 +7,11 @@ use crate::{
     },
     runtime::{
         AdapterDriftSummary, AdapterProjectedState, ChannelEmitDecision, EmitAction,
-        InputPathObservation, KeyDecision, LogicalKeyDecision, PathDecision, RuntimeDecision,
-        decide_channel_emit, decide_channel_emit_with_store, evaluate_adapter_projected_state, evaluate_key_state_header,
-        evaluate_logical_key_header, evaluate_logical_key_with_store, evaluate_path_decision_header, evaluate_runtime_header,
-        evaluate_runtime_state, observe_input_path, summarize_adapter_drift,
+        InputPathObservation, KeyDecision, LogicalKeyDecision, LogicalRawPlan, PathDecision,
+        RuntimeDecision, build_logical_raw_plan, decide_channel_emit,
+        decide_channel_emit_with_store, evaluate_adapter_projected_state, evaluate_key_state_header,
+        evaluate_logical_key_header, evaluate_logical_key_with_store, evaluate_path_decision_header,
+        evaluate_runtime_header, evaluate_runtime_state, observe_input_path, summarize_adapter_drift,
     },
     sync::{
         ClearResetDecision, DirectionConvergenceState, DirectionReleasePolicy,
@@ -225,6 +226,22 @@ pub struct PayloadAdapterDiagnosticsEventInterop {
     pub projected_after: u32,
     pub forced_release: u32,
     pub reason_code: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadLogicalRawCandidateInterop {
+    pub vkey: u32,
+    pub observed_down: u32,
+    pub required_action: u32,
+    pub selection_reason: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadLogicalRawPlanInterop {
+    pub candidate_count: u32,
+    pub candidates: [PayloadLogicalRawCandidateInterop; 12],
 }
 
 impl From<RuntimeDecision> for PayloadRuntimeDecisionInterop {
@@ -471,6 +488,33 @@ impl From<AdapterDiagnosticsEvent> for PayloadAdapterDiagnosticsEventInterop {
             forced_release: u32::from(value.forced_release),
             reason_code: value.reason_code,
         }
+    }
+}
+
+impl From<LogicalRawPlan> for PayloadLogicalRawPlanInterop {
+    fn from(value: LogicalRawPlan) -> Self {
+        let mut out = PayloadLogicalRawPlanInterop {
+            candidate_count: value.candidates.len().min(12) as u32,
+            candidates: [PayloadLogicalRawCandidateInterop {
+                vkey: 0,
+                observed_down: 0,
+                required_action: 0,
+                selection_reason: 0,
+            }; 12],
+        };
+        for (idx, candidate) in value.candidates.into_iter().take(12).enumerate() {
+            out.candidates[idx] = PayloadLogicalRawCandidateInterop {
+                vkey: candidate.vkey,
+                observed_down: u32::from(candidate.observed_down),
+                required_action: match candidate.required_action {
+                    EmitAction::None => 0,
+                    EmitAction::Press => 1,
+                    EmitAction::Release => 2,
+                },
+                selection_reason: candidate.selection_reason as u32,
+            };
+        }
+        out
     }
 }
 
@@ -1178,6 +1222,20 @@ pub unsafe extern "C" fn payload_core_state_store_select_direction_transition(
         )
     };
     unsafe { out_decision.write(decision.into()) };
+    1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_build_logical_raw_plan(
+    preferred_vkey: u32,
+    preferred_observed_down: u32,
+    out_plan: *mut PayloadLogicalRawPlanInterop,
+) -> u32 {
+    if out_plan.is_null() {
+        return 0;
+    }
+    let plan = build_logical_raw_plan(preferred_vkey, preferred_observed_down != 0);
+    unsafe { out_plan.write(plan.into()) };
     1
 }
 

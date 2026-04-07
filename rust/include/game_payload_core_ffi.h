@@ -187,6 +187,18 @@ typedef struct PayloadAdapterDiagnosticsEventInterop {
     uint32_t reason_code;
 } PayloadAdapterDiagnosticsEventInterop;
 
+typedef struct PayloadLogicalRawCandidateInterop {
+    uint32_t vkey;
+    uint32_t observed_down;
+    uint32_t required_action;
+    uint32_t selection_reason;
+} PayloadLogicalRawCandidateInterop;
+
+typedef struct PayloadLogicalRawPlanInterop {
+    uint32_t candidate_count;
+    PayloadLogicalRawCandidateInterop candidates[12];
+} PayloadLogicalRawPlanInterop;
+
 GAME_PAYLOAD_CORE_API uint32_t payload_core_evaluate_runtime_state(
     const void* snapshot_ptr,
     size_t mapping_size,
@@ -401,6 +413,10 @@ GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_select_direction_transit
     uint32_t can_process_keys,
     int32_t preferred_vkey,
     PayloadDirectionTransitionDecisionInterop* out_decision);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_build_logical_raw_plan(
+    uint32_t preferred_vkey,
+    uint32_t preferred_observed_down,
+    PayloadLogicalRawPlanInterop* out_plan);
 GAME_PAYLOAD_CORE_API uint32_t payload_core_state_store_pick_pause_release(
     void* state,
     int32_t preferred_vkey,
