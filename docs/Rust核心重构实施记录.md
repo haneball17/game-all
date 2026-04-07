@@ -588,3 +588,45 @@
 - Rust workspace 测试通过
 - Windows `Payload` Debug / Release 构建通过
 - `GameMasterGUI` Debug / Release 构建通过
+
+---
+
+## 第十三批落地：Sync drift 汇总继续收口到 Rust（2026-04-07）
+
+### 本次新增
+- `game_payload_core::runtime` 新增：
+  - `AdapterDriftSummary`
+  - `summarize_adapter_drift(...)`
+- `game_payload_core_ffi` 新增：
+  - `PayloadAdapterDriftSummaryInterop`
+  - `payload_core_summarize_adapter_drift(...)`
+
+### 当前接入范围
+`SyncMod.cpp` 中用于 `[OBS]` 输出的 256 键 drift 统计，已从 C++ 循环改为 Rust 汇总：
+
+1. `raw_drift_count`
+2. `win32_drift_count`
+3. `direct_input_drift_count`
+
+当前 `[OBS]` 日志已变为：
+- 路径通道摘要由 Rust 输出
+- mixed/raw/di/win32 活跃态由 Rust 输出
+- drift 汇总也由 Rust 输出
+
+### 当前价值
+- `SyncMod.cpp` 不再自己逐键遍历统计 drift，观测摘要进一步从“日志拼接”收口到 Rust 核心模型。
+- 这一步让后续继续做 `projected state` / `drift detection` / `adapter diagnostics` 时，Rust 已经具备可复用的摘要接口。
+- 为后续把 `[OBS]` 扩展成更高信号的适配器观测事件总线打下基础。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_payload_core`
+2. `cargo clippy -p game_payload_core --all-targets --all-features -- -D warnings`
+3. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+4. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+
+结果：
+- `game_payload_core` 新增 1 个 drift summary 测试后全部通过
+- Rust clippy 通过
+- Windows `Payload` Debug / Release 构建通过

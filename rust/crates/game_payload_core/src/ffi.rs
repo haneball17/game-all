@@ -2,11 +2,11 @@
 
 use crate::{
     runtime::{
-        AdapterProjectedState, ChannelEmitDecision, EmitAction, InputPathObservation,
-        KeyDecision, LogicalKeyDecision, PathDecision, RuntimeDecision, decide_channel_emit,
-        evaluate_adapter_projected_state, evaluate_key_state_header,
+        AdapterDriftSummary, AdapterProjectedState, ChannelEmitDecision, EmitAction,
+        InputPathObservation, KeyDecision, LogicalKeyDecision, PathDecision, RuntimeDecision,
+        decide_channel_emit, evaluate_adapter_projected_state, evaluate_key_state_header,
         evaluate_logical_key_header, evaluate_path_decision_header, evaluate_runtime_header,
-        evaluate_runtime_state, observe_input_path,
+        evaluate_runtime_state, observe_input_path, summarize_adapter_drift,
     },
     sync::{DirectionConvergenceState, DirectionReleasePolicy, SnapshotCachePolicy},
 };
@@ -123,6 +123,14 @@ pub struct PayloadAdapterProjectedStateInterop {
     pub win32_drift: u32,
     pub direct_input_drift: u32,
     pub any_drift: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadAdapterDriftSummaryInterop {
+    pub raw_drift_count: u32,
+    pub win32_drift_count: u32,
+    pub direct_input_drift_count: u32,
 }
 
 impl From<RuntimeDecision> for PayloadRuntimeDecisionInterop {
@@ -252,6 +260,16 @@ impl From<AdapterProjectedState> for PayloadAdapterProjectedStateInterop {
             win32_drift: u32::from(value.win32_drift),
             direct_input_drift: u32::from(value.direct_input_drift),
             any_drift: u32::from(value.any_drift),
+        }
+    }
+}
+
+impl From<AdapterDriftSummary> for PayloadAdapterDriftSummaryInterop {
+    fn from(value: AdapterDriftSummary) -> Self {
+        Self {
+            raw_drift_count: value.raw_drift_count,
+            win32_drift_count: value.win32_drift_count,
+            direct_input_drift_count: value.direct_input_drift_count,
         }
     }
 }
@@ -539,6 +557,37 @@ pub unsafe extern "C" fn payload_core_evaluate_adapter_projected_state(
         direct_input_projected != 0,
     );
     unsafe { out_state.write(state.into()) };
+    1
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn payload_core_summarize_adapter_drift(
+    logical_desired_ptr: *const u8,
+    raw_projected_ptr: *const u8,
+    win32_projected_ptr: *const u8,
+    direct_input_projected_ptr: *const u8,
+    len: usize,
+    out_summary: *mut PayloadAdapterDriftSummaryInterop,
+) -> u32 {
+    if logical_desired_ptr.is_null()
+        || raw_projected_ptr.is_null()
+        || win32_projected_ptr.is_null()
+        || direct_input_projected_ptr.is_null()
+        || out_summary.is_null()
+    {
+        return 0;
+    }
+    let logical_desired = unsafe { std::slice::from_raw_parts(logical_desired_ptr, len) };
+    let raw_projected = unsafe { std::slice::from_raw_parts(raw_projected_ptr, len) };
+    let win32_projected = unsafe { std::slice::from_raw_parts(win32_projected_ptr, len) };
+    let direct_input_projected = unsafe { std::slice::from_raw_parts(direct_input_projected_ptr, len) };
+    let summary = summarize_adapter_drift(
+        logical_desired,
+        raw_projected,
+        win32_projected,
+        direct_input_projected,
+    );
+    unsafe { out_summary.write(summary.into()) };
     1
 }
 

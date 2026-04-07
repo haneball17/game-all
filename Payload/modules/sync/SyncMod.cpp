@@ -4776,26 +4776,14 @@ static void LogCountersOnce()
 
         WriteLogLine(buffer);
 
-        UINT rawDrift = 0;
-        UINT win32Drift = 0;
-        UINT directInputDrift = 0;
-        for (int vKey = 0; vKey < 256; ++vKey)
-        {
-            PayloadAdapterProjectedStateInterop projectedState = {};
-            if (!EvaluateAdapterProjectedState(
-                    g_lastLogicalDesiredState[vKey] != 0,
-                    (g_lastRawKeyboardState[vKey] & 0x80) != 0,
-                    g_lastWin32State[vKey] != 0,
-                    g_lastDIState[vKey] != 0,
-                    projectedState))
-            {
-                continue;
-            }
-
-            rawDrift += projectedState.raw_drift != 0 ? 1u : 0u;
-            win32Drift += projectedState.win32_drift != 0 ? 1u : 0u;
-            directInputDrift += projectedState.direct_input_drift != 0 ? 1u : 0u;
-        }
+        PayloadAdapterDriftSummaryInterop driftSummary = {};
+        payload_core_summarize_adapter_drift(
+            g_lastLogicalDesiredState,
+            g_lastRawKeyboardState,
+            g_lastWin32State,
+            g_lastDIState,
+            256,
+            &driftSummary);
 
         wchar_t obs[512] = {0};
         StringCchPrintfW(
@@ -4809,9 +4797,9 @@ static void LogCountersOnce()
             observation.raw_active,
             observation.direct_input_active,
             observation.win32_active,
-            rawDrift,
-            win32Drift,
-            directInputDrift,
+            driftSummary.raw_drift_count,
+            driftSummary.win32_drift_count,
+            driftSummary.direct_input_drift_count,
             rawData,
             rawBuffer,
             getState,

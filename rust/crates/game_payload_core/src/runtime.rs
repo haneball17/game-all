@@ -95,6 +95,13 @@ pub struct AdapterProjectedState {
     pub any_drift: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdapterDriftSummary {
+    pub raw_drift_count: u32,
+    pub win32_drift_count: u32,
+    pub direct_input_drift_count: u32,
+}
+
 fn is_direction_vkey(vkey: u32) -> bool {
     matches!(vkey, 0x25..=0x28)
 }
@@ -420,6 +427,36 @@ pub fn evaluate_adapter_projected_state(
     }
 }
 
+pub fn summarize_adapter_drift(
+    logical_desired: &[u8],
+    raw_projected: &[u8],
+    win32_projected: &[u8],
+    direct_input_projected: &[u8],
+) -> AdapterDriftSummary {
+    let len = logical_desired
+        .len()
+        .min(raw_projected.len())
+        .min(win32_projected.len())
+        .min(direct_input_projected.len());
+    let mut summary = AdapterDriftSummary {
+        raw_drift_count: 0,
+        win32_drift_count: 0,
+        direct_input_drift_count: 0,
+    };
+    for idx in 0..len {
+        let state = evaluate_adapter_projected_state(
+            logical_desired[idx] != 0,
+            raw_projected[idx] != 0,
+            win32_projected[idx] != 0,
+            direct_input_projected[idx] != 0,
+        );
+        summary.raw_drift_count += u32::from(state.raw_drift);
+        summary.win32_drift_count += u32::from(state.win32_drift);
+        summary.direct_input_drift_count += u32::from(state.direct_input_drift);
+    }
+    summary
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,5 +701,18 @@ mod tests {
         assert!(!state.win32_drift);
         assert!(state.direct_input_drift);
         assert!(state.any_drift);
+    }
+
+    #[test]
+    fn summarize_adapter_drift_counts_each_channel() {
+        let summary = summarize_adapter_drift(
+            &[1, 0, 1],
+            &[0, 0, 1],
+            &[1, 1, 1],
+            &[0, 0, 0],
+        );
+        assert_eq!(summary.raw_drift_count, 1);
+        assert_eq!(summary.win32_drift_count, 1);
+        assert_eq!(summary.direct_input_drift_count, 2);
     }
 }

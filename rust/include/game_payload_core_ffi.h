@@ -110,6 +110,12 @@ typedef struct PayloadAdapterProjectedStateInterop {
     uint32_t any_drift;
 } PayloadAdapterProjectedStateInterop;
 
+typedef struct PayloadAdapterDriftSummaryInterop {
+    uint32_t raw_drift_count;
+    uint32_t win32_drift_count;
+    uint32_t direct_input_drift_count;
+} PayloadAdapterDriftSummaryInterop;
+
 GAME_PAYLOAD_CORE_API uint32_t payload_core_evaluate_runtime_state(
     const void* snapshot_ptr,
     size_t mapping_size,
@@ -221,6 +227,13 @@ GAME_PAYLOAD_CORE_API uint32_t payload_core_evaluate_adapter_projected_state(
     uint32_t win32_projected,
     uint32_t direct_input_projected,
     PayloadAdapterProjectedStateInterop* out_state);
+GAME_PAYLOAD_CORE_API uint32_t payload_core_summarize_adapter_drift(
+    const uint8_t* logical_desired_ptr,
+    const uint8_t* raw_projected_ptr,
+    const uint8_t* win32_projected_ptr,
+    const uint8_t* direct_input_projected_ptr,
+    size_t len,
+    PayloadAdapterDriftSummaryInterop* out_summary);
 
 GAME_PAYLOAD_CORE_API void* payload_core_convergence_create(uint8_t extra_release_pulses);
 GAME_PAYLOAD_CORE_API void payload_core_convergence_destroy(void* state);
