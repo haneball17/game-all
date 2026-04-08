@@ -491,8 +491,15 @@ public sealed class SyncController : IDisposable
     {
         try
         {
-            AlignKeyStateWithPhysicalInput();
-            PublishSnapshot(forceClear: false);
+            var plan = NativeMethods.game_control_core_build_heartbeat_plan(_sharedMemory.IsReady ? 1u : 0u);
+            if (plan.ShouldAlignPhysicalInput != 0)
+            {
+                AlignKeyStateWithPhysicalInput();
+            }
+            if (plan.ShouldPublishSnapshot != 0)
+            {
+                PublishSnapshot(forceClear: false);
+            }
         }
         catch (Exception ex)
         {

@@ -33,6 +33,12 @@ pub struct PublishHeader {
     pub last_tick: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeartbeatPlan {
+    pub should_align_physical_input: bool,
+    pub should_publish_snapshot: bool,
+}
+
 pub const PROFILE_MODE_MAPPING: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,6 +197,13 @@ pub fn build_physical_alignment_plan(
     }
 }
 
+pub fn build_heartbeat_plan(shared_memory_ready: bool) -> HeartbeatPlan {
+    HeartbeatPlan {
+        should_align_physical_input: shared_memory_ready,
+        should_publish_snapshot: shared_memory_ready,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,5 +329,16 @@ mod tests {
 
         assert_eq!(apply_mask, [1, 1, 0, 1]);
         assert_eq!(desired_down, [0, 1, 0, 0]);
+    }
+
+    #[test]
+    fn heartbeat_plan_skips_work_when_shared_memory_is_not_ready() {
+        let not_ready = build_heartbeat_plan(false);
+        let ready = build_heartbeat_plan(true);
+
+        assert!(!not_ready.should_align_physical_input);
+        assert!(!not_ready.should_publish_snapshot);
+        assert!(ready.should_align_physical_input);
+        assert!(ready.should_publish_snapshot);
     }
 }

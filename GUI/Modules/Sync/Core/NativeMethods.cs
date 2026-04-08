@@ -168,6 +168,13 @@ public const uint WM_SYSKEYUP = 0x0105;
         public ulong LastTick;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct ControlHeartbeatPlanInterop
+    {
+        public uint ShouldAlignPhysicalInput;
+        public uint ShouldPublishSnapshot;
+    }
+
     [DllImport(ControlCoreDll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern ControlForegroundDecisionInterop game_control_core_evaluate_foreground(
         ControlWindowSnapshotInterop snapshot,
@@ -214,4 +221,8 @@ public const uint WM_SYSKEYUP = 0x0105;
         nuint length,
         byte[] applyMask,
         byte[] desiredDown);
+
+    [DllImport(ControlCoreDll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern ControlHeartbeatPlanInterop game_control_core_build_heartbeat_plan(
+        uint sharedMemoryReady);
 }

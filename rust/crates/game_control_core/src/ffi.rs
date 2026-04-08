@@ -1,9 +1,9 @@
 #![allow(clippy::missing_safety_doc, clippy::undocumented_unsafe_blocks)]
 
 use crate::{
-    ForegroundDecision, ForegroundTracker, PublishHeader, PublishHeaderInput, WindowSnapshotInput,
-    build_physical_alignment_plan, build_publish_header, evaluate_foreground_state, finalize_input_mask,
-    finalize_publish_profile,
+    ForegroundDecision, ForegroundTracker, HeartbeatPlan, PublishHeader, PublishHeaderInput,
+    WindowSnapshotInput, build_heartbeat_plan, build_physical_alignment_plan, build_publish_header,
+    evaluate_foreground_state, finalize_input_mask, finalize_publish_profile,
 };
 
 #[repr(C)]
@@ -40,6 +40,13 @@ pub struct ControlPublishHeaderInterop {
     pub profile_id: u32,
     pub profile_mode: u32,
     pub last_tick: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlHeartbeatPlanInterop {
+    pub should_align_physical_input: u32,
+    pub should_publish_snapshot: u32,
 }
 
 impl From<ControlWindowSnapshotInterop> for WindowSnapshotInput {
@@ -82,6 +89,15 @@ impl From<PublishHeader> for ControlPublishHeaderInterop {
             profile_id: value.profile_id,
             profile_mode: value.profile_mode,
             last_tick: value.last_tick,
+        }
+    }
+}
+
+impl From<HeartbeatPlan> for ControlHeartbeatPlanInterop {
+    fn from(value: HeartbeatPlan) -> Self {
+        Self {
+            should_align_physical_input: u32::from(value.should_align_physical_input),
+            should_publish_snapshot: u32::from(value.should_publish_snapshot),
         }
     }
 }
@@ -191,4 +207,11 @@ pub unsafe extern "C" fn game_control_core_build_physical_alignment_plan(
         out_apply_mask,
         out_desired_down,
     );
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn game_control_core_build_heartbeat_plan(
+    shared_memory_ready: u32,
+) -> ControlHeartbeatPlanInterop {
+    build_heartbeat_plan(shared_memory_ready != 0).into()
 }

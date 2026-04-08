@@ -1311,6 +1311,54 @@
 
 ---
 
+## 第三十八批落地：game_control_core 开始接回 heartbeat 与 physical alignment 流程计划（2026-04-08）
+
+### 本次新增
+- `game_control_core` 已新增：
+  - `HeartbeatPlan`
+  - `build_heartbeat_plan(...)`
+  - `build_physical_alignment_plan(...)`
+- `game_control_core_ffi` 已新增：
+  - `ControlHeartbeatPlanInterop`
+  - `game_control_core_build_heartbeat_plan(...)`
+  - `game_control_core_build_physical_alignment_plan(...)`
+
+### 本次接回
+- `HeartbeatTick()` 不再在 C# 中直接决定：
+  - 是否需要做 physical alignment
+  - 是否需要发布 snapshot
+- `AlignKeyStateWithPhysicalInput()` 不再在 C# 中自己判断：
+  - 哪些键需要补抬起
+  - 哪些键需要补按下
+  - 前台/暂停条件下哪些键应忽略
+- Rust 现在统一输出：
+  - heartbeat plan
+  - physical alignment apply mask / desired state
+
+### 当前价值
+- 控制端心跳路径的流程判断已开始迁出 GUI。
+- `SyncController.cs` 在 heartbeat + physical alignment 这条路径上进一步从“自己算流程”变成“Rust 给计划，C# 执行”。
+- `game_control_core` 已经不仅能处理前台/暂停/发布头部，还开始承担控制端周期性同步流程的判定层。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_control_core`
+2. `cargo clippy -p game_control_core --all-targets --all-features -- -D warnings`
+3. `cargo test --workspace`
+4. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+5. `dotnet build E:\\code\\game-all\\GUI\\Modules\\Sync\\DNFSyncBox.csproj -c Debug -p:PlatformTarget=x86`
+6. `dotnet build E:\\code\\game-all\\GUI\\Modules\\Sync\\DNFSyncBox.csproj -c Release -p:PlatformTarget=x86`
+7. `dotnet build E:\\code\\game-all\\GUI\\GameMasterGUI.csproj -c Debug -p:PlatformTarget=x86`
+8. `dotnet build E:\\code\\game-all\\GUI\\GameMasterGUI.csproj -c Release -p:PlatformTarget=x86`
+
+结果：
+- Rust workspace 全量测试与 clippy 通过
+- `DNFSyncBox` Debug / Release 构建通过
+- `GameMasterGUI` Debug / Release 构建通过
+
+---
+
 ## 第三十七批落地：game_control_core 开始接回 physical alignment 计划（2026-04-08）
 
 ### 本次新增

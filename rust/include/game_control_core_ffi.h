@@ -39,6 +39,11 @@ typedef struct ControlPublishHeaderInterop {
     uint64_t last_tick;
 } ControlPublishHeaderInterop;
 
+typedef struct ControlHeartbeatPlanInterop {
+    uint32_t should_align_physical_input;
+    uint32_t should_publish_snapshot;
+} ControlHeartbeatPlanInterop;
+
 GAME_CONTROL_CORE_API ControlForegroundDecisionInterop game_control_core_evaluate_foreground(
     ControlWindowSnapshotInterop snapshot,
     ControlForegroundTrackerInterop tracker,
@@ -80,6 +85,9 @@ GAME_CONTROL_CORE_API void game_control_core_build_physical_alignment_plan(
     size_t len,
     uint8_t* out_apply_mask_ptr,
     uint8_t* out_desired_down_ptr);
+
+GAME_CONTROL_CORE_API ControlHeartbeatPlanInterop game_control_core_build_heartbeat_plan(
+    uint32_t shared_memory_ready);
 
 #ifdef __cplusplus
 }
