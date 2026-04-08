@@ -1,18 +1,25 @@
+using System;
+
 namespace DNFSyncBox;
 
-public sealed class KeyStateTracker
+public sealed class KeyStateTracker : IDisposable
 {
-    private readonly bool[] _down = new bool[SharedMemoryConstants.KeyCount];
-    private readonly uint[] _edgeCounter = new uint[SharedMemoryConstants.KeyCount];
-    private readonly bool[] _repeatDown = new bool[SharedMemoryConstants.KeyCount];
-    private readonly long[] _repeatNextToggle = new long[SharedMemoryConstants.KeyCount];
-    private readonly uint[] _repeatEdgeCounter = new uint[SharedMemoryConstants.KeyCount];
-    private readonly bool[] _effectiveDown = new bool[SharedMemoryConstants.KeyCount];
+    private readonly IntPtr _nativeState;
+    private readonly byte[] _repeatMaskBytes = new byte[SharedMemoryConstants.KeyCount];
+    private readonly byte[] _effectiveDownBytes = new byte[SharedMemoryConstants.KeyCount];
     private readonly uint[] _effectiveEdge = new uint[SharedMemoryConstants.KeyCount];
+    private readonly bool[] _effectiveDown = new bool[SharedMemoryConstants.KeyCount];
+    private bool _disposed;
 
-    /// <summary>
-    /// 更新按键状态，返回是否发生变化（用于去重与边沿计数）。
-    /// </summary>
+    public KeyStateTracker()
+    {
+        _nativeState = NativeMethods.game_control_core_key_state_create();
+        if (_nativeState == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("无法创建 Rust key state core");
+        }
+    }
+
     public bool SetState(int vKey, bool isDown)
     {
         if (vKey < 0 || vKey >= SharedMemoryConstants.KeyCount)
@@ -20,107 +27,75 @@ public sealed class KeyStateTracker
             return false;
         }
 
-        if (_down[vKey] == isDown)
-        {
-            return false;
-        }
-
-        _down[vKey] = isDown;
-        if (isDown)
-        {
-            _edgeCounter[vKey] = unchecked(_edgeCounter[vKey] + 1);
-        }
-        else
-        {
-            _repeatDown[vKey] = false;
-            _repeatNextToggle[vKey] = 0;
-        }
-
-        return true;
+        return NativeMethods.game_control_core_key_state_set_state(
+            _nativeState,
+            (uint)vKey,
+            isDown ? 1u : 0u) != 0;
     }
 
-    /// <summary>
-    /// 按方案生成键盘快照。
-    /// </summary>
-    internal void ApplyProfile(KeyboardProfile profile, byte[] toggleState, byte[] keyboardState, uint[] edgeOut, byte[] maskOut, long nowMs)
+    internal void ApplyProfile(
+        KeyboardProfile profile,
+        byte[] toggleState,
+        byte[] keyboardState,
+        uint[] edgeOut,
+        byte[] maskOut,
+        long nowMs)
     {
-        BuildEffectiveState(profile, nowMs);
+        Array.Clear(_repeatMaskBytes, 0, _repeatMaskBytes.Length);
+        var repeatMask = profile.RepeatMask;
+        for (var i = 0; i < SharedMemoryConstants.KeyCount; i++)
+        {
+            _repeatMaskBytes[i] = repeatMask[i] ? (byte)1 : (byte)0;
+        }
+
+        NativeMethods.game_control_core_key_state_build_effective(
+            _nativeState,
+            _repeatMaskBytes,
+            (nuint)_repeatMaskBytes.Length,
+            (uint)Math.Max(profile.RepeatIntervalMs, 0),
+            (ulong)Math.Max(nowMs, 0L),
+            _effectiveDownBytes,
+            _effectiveEdge,
+            (nuint)SharedMemoryConstants.KeyCount);
+
+        for (var i = 0; i < SharedMemoryConstants.KeyCount; i++)
+        {
+            _effectiveDown[i] = _effectiveDownBytes[i] != 0;
+        }
+
         profile.Apply(_effectiveDown, _effectiveEdge, toggleState, keyboardState, edgeOut, maskOut);
     }
 
-    /// <summary>
-    /// 复制边沿计数（用于暂停/清键时保持一致性）。
-    /// </summary>
     public void CopyEdgeCounters(uint[] edgeOut)
     {
-        for (var i = 0; i < SharedMemoryConstants.KeyCount; i++)
-        {
-            edgeOut[i] = _edgeCounter[i] + _repeatEdgeCounter[i];
-        }
+        NativeMethods.game_control_core_key_state_copy_edge_counters(
+            _nativeState,
+            edgeOut,
+            (nuint)edgeOut.Length);
     }
 
-
-    /// <summary>
-    /// 清空所有按下状态（用于暂停时的清键逻辑）。
-    /// </summary>
     public void Clear()
     {
-        Array.Clear(_down, 0, _down.Length);
-        Array.Clear(_repeatDown, 0, _repeatDown.Length);
-        Array.Clear(_repeatNextToggle, 0, _repeatNextToggle.Length);
+        NativeMethods.game_control_core_key_state_clear(_nativeState);
     }
 
-    private void BuildEffectiveState(KeyboardProfile profile, long nowMs)
+    public void Dispose()
     {
-        Array.Copy(_down, _effectiveDown, _down.Length);
-        for (var i = 0; i < SharedMemoryConstants.KeyCount; i++)
+        if (_disposed)
         {
-            _effectiveEdge[i] = _edgeCounter[i];
-        }
-
-        var repeatIntervalMs = profile.RepeatIntervalMs;
-        var repeatMask = profile.RepeatMask;
-        if (repeatIntervalMs <= 0 || repeatMask.Length == 0)
-        {
-            Array.Clear(_repeatDown, 0, _repeatDown.Length);
-            Array.Clear(_repeatNextToggle, 0, _repeatNextToggle.Length);
             return;
         }
 
-        var halfInterval = Math.Max(20, repeatIntervalMs / 2);
-        for (var i = 0; i < SharedMemoryConstants.KeyCount; i++)
+        NativeMethods.game_control_core_key_state_destroy(_nativeState);
+        _disposed = true;
+        GC.SuppressFinalize(this);
+    }
+
+    ~KeyStateTracker()
+    {
+        if (!_disposed)
         {
-            if (!repeatMask[i])
-            {
-                _repeatDown[i] = false;
-                _repeatNextToggle[i] = 0;
-                continue;
-            }
-
-            if (!_down[i])
-            {
-                _repeatDown[i] = false;
-                _repeatNextToggle[i] = 0;
-                continue;
-            }
-
-            if (_repeatNextToggle[i] == 0)
-            {
-                _repeatDown[i] = true;
-                _repeatNextToggle[i] = nowMs + halfInterval;
-            }
-            else if (nowMs >= _repeatNextToggle[i])
-            {
-                _repeatDown[i] = !_repeatDown[i];
-                _repeatNextToggle[i] = nowMs + halfInterval;
-                if (_repeatDown[i])
-                {
-                    _repeatEdgeCounter[i] = unchecked(_repeatEdgeCounter[i] + 1);
-                }
-            }
-
-            _effectiveDown[i] = _repeatDown[i];
-            _effectiveEdge[i] = _edgeCounter[i] + _repeatEdgeCounter[i];
+            NativeMethods.game_control_core_key_state_destroy(_nativeState);
         }
     }
 }

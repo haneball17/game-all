@@ -1,9 +1,9 @@
 #![allow(clippy::missing_safety_doc, clippy::undocumented_unsafe_blocks)]
 
 use crate::{
-    ForegroundDecision, ForegroundTracker, HeartbeatPlan, PublishHeader, PublishHeaderInput,
-    WindowSnapshotInput, build_heartbeat_plan, build_physical_alignment_plan, build_publish_header,
-    evaluate_foreground_state, finalize_input_mask, finalize_publish_profile,
+    ControlKeyStateCore, ForegroundDecision, ForegroundTracker, HeartbeatPlan, PublishHeader,
+    PublishHeaderInput, WindowSnapshotInput, build_heartbeat_plan, build_physical_alignment_plan,
+    build_publish_header, evaluate_foreground_state, finalize_input_mask, finalize_publish_profile,
 };
 
 #[repr(C)]
@@ -214,4 +214,84 @@ pub extern "C" fn game_control_core_build_heartbeat_plan(
     shared_memory_ready: u32,
 ) -> ControlHeartbeatPlanInterop {
     build_heartbeat_plan(shared_memory_ready != 0).into()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn game_control_core_key_state_create() -> *mut ControlKeyStateCore {
+    Box::into_raw(Box::new(ControlKeyStateCore::default()))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn game_control_core_key_state_destroy(state: *mut ControlKeyStateCore) {
+    if state.is_null() {
+        return;
+    }
+    unsafe {
+        drop(Box::from_raw(state));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn game_control_core_key_state_set_state(
+    state: *mut ControlKeyStateCore,
+    vkey: u32,
+    is_down: u32,
+) -> u32 {
+    if state.is_null() {
+        return 0;
+    }
+    u32::from(unsafe { (&mut *state).set_state(vkey as usize, is_down != 0) })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn game_control_core_key_state_clear(state: *mut ControlKeyStateCore) {
+    if state.is_null() {
+        return;
+    }
+    unsafe { (&mut *state).clear() };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn game_control_core_key_state_copy_edge_counters(
+    state: *const ControlKeyStateCore,
+    out_edge_ptr: *mut u32,
+    out_len: usize,
+) {
+    if state.is_null() || out_edge_ptr.is_null() {
+        return;
+    }
+    let out_edge = unsafe { std::slice::from_raw_parts_mut(out_edge_ptr, out_len) };
+    unsafe { (&*state).copy_edge_counters(out_edge) };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn game_control_core_key_state_build_effective(
+    state: *mut ControlKeyStateCore,
+    repeat_mask_ptr: *const u8,
+    repeat_mask_len: usize,
+    repeat_interval_ms: u32,
+    now_ms: u64,
+    out_effective_down_ptr: *mut u8,
+    out_effective_edge_ptr: *mut u32,
+    out_len: usize,
+) {
+    if state.is_null()
+        || repeat_mask_ptr.is_null()
+        || out_effective_down_ptr.is_null()
+        || out_effective_edge_ptr.is_null()
+    {
+        return;
+    }
+    let repeat_mask = unsafe { std::slice::from_raw_parts(repeat_mask_ptr, repeat_mask_len) };
+    let out_effective_down = unsafe { std::slice::from_raw_parts_mut(out_effective_down_ptr, out_len) };
+    let out_effective_edge = unsafe { std::slice::from_raw_parts_mut(out_effective_edge_ptr, out_len) };
+    unsafe {
+        (&mut *state).build_effective_state(
+            repeat_mask,
+            repeat_interval_ms,
+            now_ms,
+            out_effective_down,
+            out_effective_edge,
+        )
+    };
 }

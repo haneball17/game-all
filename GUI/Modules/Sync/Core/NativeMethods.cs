@@ -225,4 +225,33 @@ public const uint WM_SYSKEYUP = 0x0105;
     [DllImport(ControlCoreDll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern ControlHeartbeatPlanInterop game_control_core_build_heartbeat_plan(
         uint sharedMemoryReady);
+
+    [DllImport(ControlCoreDll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern IntPtr game_control_core_key_state_create();
+
+    [DllImport(ControlCoreDll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern void game_control_core_key_state_destroy(IntPtr state);
+
+    [DllImport(ControlCoreDll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint game_control_core_key_state_set_state(IntPtr state, uint vKey, uint isDown);
+
+    [DllImport(ControlCoreDll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern void game_control_core_key_state_clear(IntPtr state);
+
+    [DllImport(ControlCoreDll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern void game_control_core_key_state_copy_edge_counters(
+        IntPtr state,
+        uint[] edgeOut,
+        nuint outLength);
+
+    [DllImport(ControlCoreDll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern void game_control_core_key_state_build_effective(
+        IntPtr state,
+        byte[] repeatMask,
+        nuint repeatMaskLength,
+        uint repeatIntervalMs,
+        ulong nowMs,
+        byte[] effectiveDown,
+        uint[] effectiveEdge,
+        nuint outLength);
 }

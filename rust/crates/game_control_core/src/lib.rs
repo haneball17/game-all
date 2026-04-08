@@ -53,6 +53,15 @@ pub struct PublishHeaderInput {
     pub last_tick: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlKeyStateCore {
+    down: [u8; 256],
+    edge_counter: [u32; 256],
+    repeat_down: [u8; 256],
+    repeat_next_toggle: [u64; 256],
+    repeat_edge_counter: [u32; 256],
+}
+
 pub fn evaluate_foreground_state(
     input: WindowSnapshotInput,
     tracker: ForegroundTracker,
@@ -96,6 +105,106 @@ pub fn evaluate_foreground_state(
         effective_foreground_pid,
         effective_foreground_is_dnf,
         auto_paused: !effective_foreground_is_dnf,
+    }
+}
+
+impl Default for ControlKeyStateCore {
+    fn default() -> Self {
+        Self {
+            down: [0; 256],
+            edge_counter: [0; 256],
+            repeat_down: [0; 256],
+            repeat_next_toggle: [0; 256],
+            repeat_edge_counter: [0; 256],
+        }
+    }
+}
+
+impl ControlKeyStateCore {
+    pub fn set_state(&mut self, vkey: usize, is_down: bool) -> bool {
+        if vkey >= 256 {
+            return false;
+        }
+        let value = u8::from(is_down);
+        if self.down[vkey] == value {
+            return false;
+        }
+        self.down[vkey] = value;
+        if is_down {
+            self.edge_counter[vkey] = self.edge_counter[vkey].wrapping_add(1);
+        } else {
+            self.repeat_down[vkey] = 0;
+            self.repeat_next_toggle[vkey] = 0;
+        }
+        true
+    }
+
+    pub fn clear(&mut self) {
+        self.down.fill(0);
+        self.repeat_down.fill(0);
+        self.repeat_next_toggle.fill(0);
+    }
+
+    pub fn copy_edge_counters(&self, out_edge: &mut [u32]) {
+        let len = out_edge.len().min(256);
+        for (idx, slot) in out_edge.iter_mut().take(len).enumerate() {
+            *slot = self.edge_counter[idx].wrapping_add(self.repeat_edge_counter[idx]);
+        }
+    }
+
+    pub fn build_effective_state(
+        &mut self,
+        repeat_mask: &[u8],
+        repeat_interval_ms: u32,
+        now_ms: u64,
+        out_effective_down: &mut [u8],
+        out_effective_edge: &mut [u32],
+    ) {
+        let len = repeat_mask
+            .len()
+            .min(out_effective_down.len())
+            .min(out_effective_edge.len())
+            .min(256);
+
+        out_effective_down[..len].copy_from_slice(&self.down[..len]);
+        for (idx, slot) in out_effective_edge.iter_mut().take(len).enumerate() {
+            *slot = self.edge_counter[idx];
+        }
+
+        if repeat_interval_ms == 0 {
+            self.repeat_down.fill(0);
+            self.repeat_next_toggle.fill(0);
+            return;
+        }
+
+        let half_interval = u64::from(repeat_interval_ms.max(20) / 2);
+        for idx in 0..len {
+            if repeat_mask[idx] == 0 {
+                self.repeat_down[idx] = 0;
+                self.repeat_next_toggle[idx] = 0;
+                continue;
+            }
+
+            if self.down[idx] == 0 {
+                self.repeat_down[idx] = 0;
+                self.repeat_next_toggle[idx] = 0;
+                continue;
+            }
+
+            if self.repeat_next_toggle[idx] == 0 {
+                self.repeat_down[idx] = 1;
+                self.repeat_next_toggle[idx] = now_ms.saturating_add(half_interval);
+            } else if now_ms >= self.repeat_next_toggle[idx] {
+                self.repeat_down[idx] = u8::from(self.repeat_down[idx] == 0);
+                self.repeat_next_toggle[idx] = now_ms.saturating_add(half_interval);
+                if self.repeat_down[idx] != 0 {
+                    self.repeat_edge_counter[idx] = self.repeat_edge_counter[idx].wrapping_add(1);
+                }
+            }
+
+            out_effective_down[idx] = self.repeat_down[idx];
+            out_effective_edge[idx] = self.edge_counter[idx].wrapping_add(self.repeat_edge_counter[idx]);
+        }
     }
 }
 
@@ -340,5 +449,28 @@ mod tests {
         assert!(!not_ready.should_publish_snapshot);
         assert!(ready.should_align_physical_input);
         assert!(ready.should_publish_snapshot);
+    }
+
+    #[test]
+    fn control_key_state_core_tracks_edges_and_repeat_state() {
+        let mut core = ControlKeyStateCore::default();
+        assert!(core.set_state(0x41, true));
+        assert!(!core.set_state(0x41, true));
+
+        let mut edges = [0u32; 256];
+        core.copy_edge_counters(&mut edges);
+        assert_eq!(edges[0x41], 1);
+
+        let mut effective_down = [0u8; 256];
+        let mut effective_edge = [0u32; 256];
+        let mut repeat_mask = [0u8; 256];
+        repeat_mask[0x41] = 1;
+        core.build_effective_state(&repeat_mask, 100, 1000, &mut effective_down, &mut effective_edge);
+        assert_eq!(effective_down[0x41], 1);
+        assert_eq!(effective_edge[0x41], 1);
+
+        core.clear();
+        core.copy_edge_counters(&mut edges);
+        assert_eq!(edges[0x41], 1);
     }
 }

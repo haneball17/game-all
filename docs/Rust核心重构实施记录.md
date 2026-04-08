@@ -1311,6 +1311,60 @@
 
 ---
 
+## 第三十九批落地：KeyStateTracker 开始迁到 game_control_core（2026-04-08）
+
+### 本次新增
+- `game_control_core` 已新增：
+  - `ControlKeyStateCore`
+  - `set_state(...)`
+  - `clear()`
+  - `copy_edge_counters(...)`
+  - `build_effective_state(...)`
+- `game_control_core_ffi` 已新增：
+  - `game_control_core_key_state_create(...)`
+  - `game_control_core_key_state_destroy(...)`
+  - `game_control_core_key_state_set_state(...)`
+  - `game_control_core_key_state_clear(...)`
+  - `game_control_core_key_state_copy_edge_counters(...)`
+  - `game_control_core_key_state_build_effective(...)`
+
+### 本次接回
+- `GUI/Modules/Sync/Core/KeyStateTracker.cs` 已从“纯 C# 状态机实现”改成“Rust handle 包装层”。
+- 当前已经迁到 Rust 的 key state 逻辑包括：
+  - 按下/抬起去重
+  - edgeCounter 推进
+  - repeat down / repeat interval
+  - effectiveDown / effectiveEdge 生成
+  - clear 与 copy edge counters
+- C# 当前只负责：
+  - 把 `RepeatMask` 转成字节数组
+  - 调用 Rust 生成 effective state
+  - 继续调用 `KeyboardProfile.Apply(...)`
+
+### 当前价值
+- `SyncController.cs` 控制端里最大的一块本地状态机已经开始迁往 Rust。
+- 这一步是 `game_control_core` 从“流程判定内核”走向“真实 key state 内核”的关键节点。
+- 后续继续迁 `KeyboardProfile.Apply` 或 profile 解释层时，已经不需要再从零开始管理 key state 内部状态。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_control_core`
+2. `cargo clippy -p game_control_core --all-targets --all-features -- -D warnings`
+3. `cargo test --workspace`
+4. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+5. `dotnet build E:\\code\\game-all\\GUI\\Modules\\Sync\\DNFSyncBox.csproj -c Debug -p:PlatformTarget=x86`
+6. `dotnet build E:\\code\\game-all\\GUI\\Modules\\Sync\\DNFSyncBox.csproj -c Release -p:PlatformTarget=x86`
+7. `dotnet build E:\\code\\game-all\\GUI\\GameMasterGUI.csproj -c Debug -p:PlatformTarget=x86`
+8. `dotnet build E:\\code\\game-all\\GUI\\GameMasterGUI.csproj -c Release -p:PlatformTarget=x86`
+
+结果：
+- Rust workspace 全量测试与 clippy 通过
+- `DNFSyncBox` Debug / Release 构建通过
+- `GameMasterGUI` Debug / Release 构建通过
+
+---
+
 ## 第三十八批落地：game_control_core 开始接回 heartbeat 与 physical alignment 流程计划（2026-04-08）
 
 ### 本次新增
