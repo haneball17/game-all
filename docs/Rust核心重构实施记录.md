@@ -1260,6 +1260,44 @@
 - Rust workspace 全量测试与 clippy 通过
 - `DNFSyncBox` Debug / Release 构建通过
 - `GameMasterGUI` Debug / Release 构建通过
+
+---
+
+## 第三十五批落地：game_control_core 开始接回输入掩码合并逻辑（2026-04-08）
+
+### 本次新增
+- `game_control_core` 已新增：
+  - `finalize_input_mask(...)`
+- `game_control_core_ffi` 已新增：
+  - `game_control_core_finalize_input_mask(...)`
+
+### 本次接回
+- `BuildInputMask()` 中原本由 C# 本地执行的这段逻辑已开始交给 Rust：
+  - Mapping / Replace 模式下的 `mapping source mask` 合并
+  - `input_mask` 最终输入掩码补全
+- 现在 `SyncController.cs` 在输入掩码构造上已经不再自己逐项遍历 `mapping source mask` 填充目标数组。
+
+### 当前价值
+- `game_control_core` 已进一步覆盖控制端共享快照发布前的输入掩码整形逻辑。
+- `SyncController.cs` 中与“输入掩码最终形态”相关的代码又减少了一层。
+- 后续继续把 heartbeat / physical alignment / key state 推进逻辑迁出时，已经有了更完整的控制内核边界。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_control_core`
+2. `cargo clippy -p game_control_core --all-targets --all-features -- -D warnings`
+3. `cargo test --workspace`
+4. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+5. `dotnet build E:\\code\\game-all\\GUI\\Modules\\Sync\\DNFSyncBox.csproj -c Debug -p:PlatformTarget=x86`
+6. `dotnet build E:\\code\\game-all\\GUI\\Modules\\Sync\\DNFSyncBox.csproj -c Release -p:PlatformTarget=x86`
+7. `dotnet build E:\\code\\game-all\\GUI\\GameMasterGUI.csproj -c Debug -p:PlatformTarget=x86`
+8. `dotnet build E:\\code\\game-all\\GUI\\GameMasterGUI.csproj -c Release -p:PlatformTarget=x86`
+
+结果：
+- Rust workspace 全量测试与 clippy 通过
+- `DNFSyncBox` Debug / Release 构建通过
+- `GameMasterGUI` Debug / Release 构建通过
 - 输出目录已包含 `game_control_core.dll`
 
 ---

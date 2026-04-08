@@ -64,6 +64,14 @@ GAME_CONTROL_CORE_API uint32_t game_control_core_finalize_publish_profile(
     uint8_t* block_mask_ptr,
     size_t block_mask_len);
 
+GAME_CONTROL_CORE_API void game_control_core_finalize_input_mask(
+    uint32_t profile_mode,
+    uint32_t mapping_behavior_replace,
+    const uint8_t* mapping_source_mask_ptr,
+    size_t mapping_source_len,
+    uint8_t* input_mask_ptr,
+    size_t input_mask_len);
+
 #ifdef __cplusplus
 }
 #endif

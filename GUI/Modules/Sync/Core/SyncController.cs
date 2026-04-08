@@ -560,13 +560,13 @@ public sealed class SyncController : IDisposable
         {
             Array.Clear(_inputMappingSourceMask, 0, _inputMappingSourceMask.Length);
             profile.BuildMappingSourceMask(_inputMappingSourceMask);
-            for (var i = 0; i < _inputMask.Length; i++)
-            {
-                if (_inputMappingSourceMask[i] != 0)
-                {
-                    _inputMask[i] = 1;
-                }
-            }
+            NativeMethods.game_control_core_finalize_input_mask(
+                (uint)profile.Mode,
+                profile.MappingBehavior == KeyboardMappingBehavior.Replace ? 1u : 0u,
+                _inputMappingSourceMask,
+                (nuint)_inputMappingSourceMask.Length,
+                _inputMask,
+                (nuint)_inputMask.Length);
         }
     }
 

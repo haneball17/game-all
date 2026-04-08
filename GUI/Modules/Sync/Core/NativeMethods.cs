@@ -195,4 +195,13 @@ public const uint WM_SYSKEYUP = 0x0105;
         nuint mappingSourceLength,
         byte[] blockMask,
         nuint blockMaskLength);
+
+    [DllImport(ControlCoreDll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern void game_control_core_finalize_input_mask(
+        uint profileMode,
+        uint mappingBehaviorReplace,
+        byte[] mappingSourceMask,
+        nuint mappingSourceLength,
+        byte[] inputMask,
+        nuint inputMaskLength);
 }

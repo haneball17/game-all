@@ -2,7 +2,8 @@
 
 use crate::{
     ForegroundDecision, ForegroundTracker, PublishHeader, PublishHeaderInput, WindowSnapshotInput,
-    build_publish_header, evaluate_foreground_state, finalize_publish_profile,
+    build_publish_header, evaluate_foreground_state, finalize_input_mask,
+    finalize_publish_profile,
 };
 
 #[repr(C)]
@@ -142,4 +143,21 @@ pub unsafe extern "C" fn game_control_core_finalize_publish_profile(
     let mapping_source_mask = unsafe { std::slice::from_raw_parts(mapping_source_mask_ptr, mapping_source_len) };
     let block_mask = unsafe { std::slice::from_raw_parts_mut(block_mask_ptr, block_mask_len) };
     finalize_publish_profile(profile_mode, mapping_behavior_replace != 0, mapping_source_mask, block_mask)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn game_control_core_finalize_input_mask(
+    profile_mode: u32,
+    mapping_behavior_replace: u32,
+    mapping_source_mask_ptr: *const u8,
+    mapping_source_len: usize,
+    input_mask_ptr: *mut u8,
+    input_mask_len: usize,
+) {
+    if mapping_source_mask_ptr.is_null() || input_mask_ptr.is_null() {
+        return;
+    }
+    let mapping_source_mask = unsafe { std::slice::from_raw_parts(mapping_source_mask_ptr, mapping_source_len) };
+    let input_mask = unsafe { std::slice::from_raw_parts_mut(input_mask_ptr, input_mask_len) };
+    finalize_input_mask(profile_mode, mapping_behavior_replace != 0, mapping_source_mask, input_mask);
 }

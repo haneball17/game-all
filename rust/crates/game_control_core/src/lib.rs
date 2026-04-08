@@ -137,6 +137,24 @@ pub fn finalize_publish_profile(
     reported_mode
 }
 
+pub fn finalize_input_mask(
+    profile_mode: u32,
+    mapping_behavior_replace: bool,
+    mapping_source_mask: &[u8],
+    input_mask: &mut [u8],
+) {
+    if profile_mode != PROFILE_MODE_MAPPING && !mapping_behavior_replace {
+        return;
+    }
+
+    let len = mapping_source_mask.len().min(input_mask.len());
+    for idx in 0..len {
+        if mapping_source_mask[idx] != 0 {
+            input_mask[idx] = 1;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,5 +252,13 @@ mod tests {
         let reported = finalize_publish_profile(2, true, &mapping_source_mask, &mut block_mask);
         assert_eq!(reported, PROFILE_MODE_MAPPING);
         assert_eq!(block_mask, [0, 1, 0, 1]);
+    }
+
+    #[test]
+    fn finalize_input_mask_merges_mapping_sources() {
+        let mapping_source_mask = [0u8, 1, 0, 1];
+        let mut input_mask = [1u8, 0, 0, 0];
+        finalize_input_mask(2, true, &mapping_source_mask, &mut input_mask);
+        assert_eq!(input_mask, [1, 1, 0, 1]);
     }
 }
