@@ -38,6 +38,8 @@ public sealed class SyncController : IDisposable
     private readonly byte[] _inputMask = new byte[SharedMemoryConstants.KeyCount];
     private readonly byte[] _inputMappingSourceMask = new byte[SharedMemoryConstants.KeyCount];
     private readonly byte[] _physicalDown = new byte[SharedMemoryConstants.KeyCount];
+    private readonly byte[] _physicalApplyMask = new byte[SharedMemoryConstants.KeyCount];
+    private readonly byte[] _physicalDesiredDown = new byte[SharedMemoryConstants.KeyCount];
 
     private WindowSnapshot _snapshot = WindowSnapshot.Empty;
     private KeyboardProfile _activeProfile;
@@ -521,23 +523,26 @@ public sealed class SyncController : IDisposable
             _physicalDown[i] = _inputMask[i] == 0 ? (byte)0 : (byte)(IsPhysicallyDown(i) ? 1 : 0);
         }
 
+        NativeMethods.game_control_core_build_physical_alignment_plan(
+            paused ? 1u : 0u,
+            effectiveForeground ? 1u : 0u,
+            _inputMask,
+            _physicalDown,
+            (nuint)SharedMemoryConstants.KeyCount,
+            _physicalApplyMask,
+            _physicalDesiredDown);
+
         var anyChanged = false;
         lock (_stateLock)
         {
             for (var i = 0; i < SharedMemoryConstants.KeyCount; i++)
             {
-                if (_inputMask[i] == 0)
+                if (_physicalApplyMask[i] == 0)
                 {
                     continue;
                 }
 
-                var physicalDown = _physicalDown[i] != 0;
-                // 仅在前台且未暂停时接受“按下”补偿；抬起补偿不受前台/暂停限制。
-                if (!physicalDown && _keyState.SetState(i, false))
-                {
-                    anyChanged = true;
-                }
-                else if (physicalDown && !paused && effectiveForeground && _keyState.SetState(i, true))
+                if (_keyState.SetState(i, _physicalDesiredDown[i] != 0))
                 {
                     anyChanged = true;
                 }

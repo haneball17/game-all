@@ -155,6 +155,42 @@ pub fn finalize_input_mask(
     }
 }
 
+pub fn build_physical_alignment_plan(
+    paused: bool,
+    effective_foreground_is_dnf: bool,
+    input_mask: &[u8],
+    physical_down: &[u8],
+    out_apply_mask: &mut [u8],
+    out_desired_down: &mut [u8],
+) {
+    let len = input_mask
+        .len()
+        .min(physical_down.len())
+        .min(out_apply_mask.len())
+        .min(out_desired_down.len());
+
+    for idx in 0..len {
+        out_apply_mask[idx] = 0;
+        out_desired_down[idx] = 0;
+
+        if input_mask[idx] == 0 {
+            continue;
+        }
+
+        let physical_is_down = physical_down[idx] != 0;
+        if !physical_is_down {
+            out_apply_mask[idx] = 1;
+            out_desired_down[idx] = 0;
+            continue;
+        }
+
+        if !paused && effective_foreground_is_dnf {
+            out_apply_mask[idx] = 1;
+            out_desired_down[idx] = 1;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,5 +296,25 @@ mod tests {
         let mut input_mask = [1u8, 0, 0, 0];
         finalize_input_mask(2, true, &mapping_source_mask, &mut input_mask);
         assert_eq!(input_mask, [1, 1, 0, 1]);
+    }
+
+    #[test]
+    fn physical_alignment_plan_releases_when_not_physically_down() {
+        let input_mask = [1u8, 1, 0, 1];
+        let physical_down = [0u8, 1, 1, 0];
+        let mut apply_mask = [0u8; 4];
+        let mut desired_down = [0u8; 4];
+
+        build_physical_alignment_plan(
+            false,
+            true,
+            &input_mask,
+            &physical_down,
+            &mut apply_mask,
+            &mut desired_down,
+        );
+
+        assert_eq!(apply_mask, [1, 1, 0, 1]);
+        assert_eq!(desired_down, [0, 1, 0, 0]);
     }
 }

@@ -204,4 +204,14 @@ public const uint WM_SYSKEYUP = 0x0105;
         nuint mappingSourceLength,
         byte[] inputMask,
         nuint inputMaskLength);
+
+    [DllImport(ControlCoreDll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern void game_control_core_build_physical_alignment_plan(
+        uint paused,
+        uint effectiveForegroundIsDnf,
+        byte[] inputMask,
+        byte[] physicalDown,
+        nuint length,
+        byte[] applyMask,
+        byte[] desiredDown);
 }

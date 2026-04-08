@@ -2,7 +2,7 @@
 
 use crate::{
     ForegroundDecision, ForegroundTracker, PublishHeader, PublishHeaderInput, WindowSnapshotInput,
-    build_publish_header, evaluate_foreground_state, finalize_input_mask,
+    build_physical_alignment_plan, build_publish_header, evaluate_foreground_state, finalize_input_mask,
     finalize_publish_profile,
 };
 
@@ -160,4 +160,35 @@ pub unsafe extern "C" fn game_control_core_finalize_input_mask(
     let mapping_source_mask = unsafe { std::slice::from_raw_parts(mapping_source_mask_ptr, mapping_source_len) };
     let input_mask = unsafe { std::slice::from_raw_parts_mut(input_mask_ptr, input_mask_len) };
     finalize_input_mask(profile_mode, mapping_behavior_replace != 0, mapping_source_mask, input_mask);
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn game_control_core_build_physical_alignment_plan(
+    paused: u32,
+    effective_foreground_is_dnf: u32,
+    input_mask_ptr: *const u8,
+    physical_down_ptr: *const u8,
+    len: usize,
+    out_apply_mask_ptr: *mut u8,
+    out_desired_down_ptr: *mut u8,
+) {
+    if input_mask_ptr.is_null()
+        || physical_down_ptr.is_null()
+        || out_apply_mask_ptr.is_null()
+        || out_desired_down_ptr.is_null()
+    {
+        return;
+    }
+    let input_mask = unsafe { std::slice::from_raw_parts(input_mask_ptr, len) };
+    let physical_down = unsafe { std::slice::from_raw_parts(physical_down_ptr, len) };
+    let out_apply_mask = unsafe { std::slice::from_raw_parts_mut(out_apply_mask_ptr, len) };
+    let out_desired_down = unsafe { std::slice::from_raw_parts_mut(out_desired_down_ptr, len) };
+    build_physical_alignment_plan(
+        paused != 0,
+        effective_foreground_is_dnf != 0,
+        input_mask,
+        physical_down,
+        out_apply_mask,
+        out_desired_down,
+    );
 }

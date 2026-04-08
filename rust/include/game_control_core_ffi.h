@@ -72,6 +72,15 @@ GAME_CONTROL_CORE_API void game_control_core_finalize_input_mask(
     uint8_t* input_mask_ptr,
     size_t input_mask_len);
 
+GAME_CONTROL_CORE_API void game_control_core_build_physical_alignment_plan(
+    uint32_t paused,
+    uint32_t effective_foreground_is_dnf,
+    const uint8_t* input_mask_ptr,
+    const uint8_t* physical_down_ptr,
+    size_t len,
+    uint8_t* out_apply_mask_ptr,
+    uint8_t* out_desired_down_ptr);
+
 #ifdef __cplusplus
 }
 #endif

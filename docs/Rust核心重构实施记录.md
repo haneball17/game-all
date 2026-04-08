@@ -1311,6 +1311,51 @@
 
 ---
 
+## 第三十七批落地：game_control_core 开始接回 physical alignment 计划（2026-04-08）
+
+### 本次新增
+- `game_control_core` 已新增：
+  - `build_physical_alignment_plan(...)`
+- `game_control_core_ffi` 已新增：
+  - `game_control_core_build_physical_alignment_plan(...)`
+
+### 本次接回
+- `AlignKeyStateWithPhysicalInput()` 不再在 C# 中自己决定：
+  - 哪些键需要补抬起
+  - 哪些键需要补按下
+  - 前台/暂停条件下哪些键应忽略
+- Rust 现在统一生成：
+  - `apply_mask`
+  - `desired_down`
+- C# 只负责：
+  - 读取物理按键状态
+  - 调 Rust 生成 alignment plan
+  - 对 `_keyState` 应用 `SetState(...)`
+
+### 当前价值
+- `SyncController.cs` 中 heartbeat 触发路径里的“物理对齐判定层”已开始迁出。
+- 这一步把控制端心跳路径从“自己算规则”进一步改成了“Rust 给计划，C# 执行”。
+- 为后续继续把 key state / profile apply 迁往 `game_control_core` 提供了直接接口模式。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_control_core`
+2. `cargo clippy -p game_control_core --all-targets --all-features -- -D warnings`
+3. `cargo test --workspace`
+4. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+5. `dotnet build E:\\code\\game-all\\GUI\\Modules\\Sync\\DNFSyncBox.csproj -c Debug -p:PlatformTarget=x86`
+6. `dotnet build E:\\code\\game-all\\GUI\\Modules\\Sync\\DNFSyncBox.csproj -c Release -p:PlatformTarget=x86`
+7. `dotnet build E:\\code\\game-all\\GUI\\GameMasterGUI.csproj -c Debug -p:PlatformTarget=x86`
+8. `dotnet build E:\\code\\game-all\\GUI\\GameMasterGUI.csproj -c Release -p:PlatformTarget=x86`
+
+结果：
+- Rust workspace 全量测试与 clippy 通过
+- `DNFSyncBox` Debug / Release 构建通过
+- `GameMasterGUI` Debug / Release 构建通过
+
+---
+
 ## 第三十五批落地：game_control_core 开始接回输入掩码合并逻辑（2026-04-08）
 
 ### 本次新增
