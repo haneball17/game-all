@@ -254,4 +254,23 @@ public const uint WM_SYSKEYUP = 0x0105;
         byte[] effectiveDown,
         uint[] effectiveEdge,
         nuint outLength);
+
+    [DllImport(ControlCoreDll, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern void game_control_core_apply_profile(
+        uint profileMode,
+        int[] keys,
+        nuint keyLength,
+        int[] mappingSources,
+        int[] mappingTargets,
+        nuint mappingLength,
+        uint mappingBehaviorReplace,
+        byte[] down,
+        uint[] edgeCounter,
+        byte[] toggleState,
+        nuint length,
+        byte[] keyboardState,
+        uint[] edgeOut,
+        byte[] targetMask,
+        byte[] blockMask,
+        byte[] mappingSourceMask);
 }

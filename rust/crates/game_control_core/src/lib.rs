@@ -313,6 +313,156 @@ pub fn build_heartbeat_plan(shared_memory_ready: bool) -> HeartbeatPlan {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn apply_profile(
+    profile_mode: u32,
+    keys: &[i32],
+    mapping_sources: &[i32],
+    mapping_targets: &[i32],
+    mapping_behavior_replace: bool,
+    down: &[u8],
+    edge_counter: &[u32],
+    toggle_state: &[u8],
+    keyboard_state: &mut [u8],
+    edge_out: &mut [u32],
+    target_mask: &mut [u8],
+    block_mask: &mut [u8],
+    mapping_source_mask: &mut [u8],
+) {
+    keyboard_state.fill(0);
+    edge_out.fill(0);
+    target_mask.fill(0);
+    block_mask.fill(0);
+    mapping_source_mask.fill(0);
+
+    let len = keyboard_state
+        .len()
+        .min(edge_out.len())
+        .min(target_mask.len())
+        .min(block_mask.len())
+        .min(mapping_source_mask.len())
+        .min(down.len())
+        .min(edge_counter.len())
+        .min(toggle_state.len())
+        .min(256);
+
+    match profile_mode {
+        0 => {
+            for item in target_mask.iter_mut().take(len) {
+                *item = 1;
+            }
+        }
+        1 => {
+            for &key in keys {
+                if let Ok(idx) = usize::try_from(key) && idx < len {
+                    target_mask[idx] = 1;
+                }
+            }
+        }
+        2 => {
+            for item in target_mask.iter_mut().take(len) {
+                *item = 1;
+            }
+            for &key in keys {
+                if let Ok(idx) = usize::try_from(key) && idx < len {
+                    target_mask[idx] = 0;
+                    block_mask[idx] = 1;
+                }
+            }
+        }
+        3 => {
+            for &target in mapping_targets {
+                if let Ok(idx) = usize::try_from(target) && idx < len {
+                    target_mask[idx] = 1;
+                }
+            }
+        }
+        _ => {}
+    }
+
+    let mapping_len = mapping_sources.len().min(mapping_targets.len());
+    for &source_key in mapping_sources.iter().take(mapping_len) {
+        if let Ok(source) = usize::try_from(source_key) && source < len {
+            mapping_source_mask[source] = 1;
+        }
+    }
+
+    if profile_mode == PROFILE_MODE_MAPPING {
+        for idx in 0..mapping_len {
+            let Ok(source) = usize::try_from(mapping_sources[idx]) else {
+                continue;
+            };
+            let Ok(target) = usize::try_from(mapping_targets[idx]) else {
+                continue;
+            };
+            if source >= len || target >= len {
+                continue;
+            }
+            if down[source] != 0 {
+                keyboard_state[target] = 0x80 | (toggle_state[target] & 0x01);
+            }
+            edge_out[target] = edge_counter[source];
+        }
+        return;
+    }
+
+    let use_replace = mapping_behavior_replace && mapping_len > 0;
+    let mut suppress_source = [0u8; 256];
+    let mut mapped_down = [0u8; 256];
+    let mut mapped_edge = [0u32; 256];
+
+    if use_replace {
+        for idx in 0..mapping_len {
+            let Ok(source) = usize::try_from(mapping_sources[idx]) else {
+                continue;
+            };
+            let Ok(target) = usize::try_from(mapping_targets[idx]) else {
+                continue;
+            };
+            if source >= len || target >= len {
+                continue;
+            }
+            if target_mask[source] == 0 {
+                continue;
+            }
+            target_mask[target] = 1;
+            suppress_source[source] = 1;
+            if down[source] != 0 {
+                mapped_down[target] = 1;
+            }
+            if edge_counter[source] > mapped_edge[target] {
+                mapped_edge[target] = edge_counter[source];
+            }
+        }
+    }
+
+    for idx in 0..len {
+        if target_mask[idx] == 0 {
+            continue;
+        }
+
+        if use_replace && suppress_source[idx] != 0 {
+            edge_out[idx] = 0;
+            continue;
+        }
+
+        let mut desired_down = down[idx] != 0;
+        let mut desired_edge = edge_counter[idx];
+        if use_replace && mapped_down[idx] != 0 {
+            desired_down = true;
+        }
+        if use_replace && mapped_edge[idx] > desired_edge {
+            desired_edge = mapped_edge[idx];
+        }
+
+        if desired_down {
+            keyboard_state[idx] = 0x80 | (toggle_state[idx] & 0x01);
+        }
+
+        edge_out[idx] = desired_edge;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,5 +622,60 @@ mod tests {
         core.clear();
         core.copy_edge_counters(&mut edges);
         assert_eq!(edges[0x41], 1);
+    }
+
+    #[test]
+    fn apply_profile_supports_replace_mapping_and_blacklist_block_mask() {
+        let down = [0u8; 256];
+        let mut edge_counter = [0u32; 256];
+        let toggle = [0u8; 256];
+        let mut keyboard = [0u8; 256];
+        let mut edge_out = [0u32; 256];
+        let mut target = [0u8; 256];
+        let mut block = [0u8; 256];
+        let mut mapping_source = [0u8; 256];
+        edge_counter[0x41] = 2;
+
+        apply_profile(
+            2,
+            &[0x41],
+            &[],
+            &[],
+            false,
+            &down,
+            &edge_counter,
+            &toggle,
+            &mut keyboard,
+            &mut edge_out,
+            &mut target,
+            &mut block,
+            &mut mapping_source,
+        );
+        assert_eq!(target[0x41], 0);
+        assert_eq!(block[0x41], 1);
+
+        let mut down2 = [0u8; 256];
+        down2[0x51] = 1;
+        let mut edge_counter2 = [0u32; 256];
+        edge_counter2[0x51] = 9;
+        apply_profile(
+            1,
+            &[0x51],
+            &[0x51],
+            &[0x45],
+            true,
+            &down2,
+            &edge_counter2,
+            &toggle,
+            &mut keyboard,
+            &mut edge_out,
+            &mut target,
+            &mut block,
+            &mut mapping_source,
+        );
+        assert_eq!(mapping_source[0x51], 1);
+        assert_eq!(target[0x45], 1);
+        assert_eq!(keyboard[0x45], 0x80);
+        assert_eq!(edge_out[0x45], 9);
     }
 }

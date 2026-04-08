@@ -39,6 +39,8 @@ public sealed class KeyStateTracker : IDisposable
         byte[] keyboardState,
         uint[] edgeOut,
         byte[] maskOut,
+        byte[] blockMask,
+        byte[] mappingSourceMask,
         long nowMs)
     {
         Array.Clear(_repeatMaskBytes, 0, _repeatMaskBytes.Length);
@@ -63,7 +65,23 @@ public sealed class KeyStateTracker : IDisposable
             _effectiveDown[i] = _effectiveDownBytes[i] != 0;
         }
 
-        profile.Apply(_effectiveDown, _effectiveEdge, toggleState, keyboardState, edgeOut, maskOut);
+        NativeMethods.game_control_core_apply_profile(
+            (uint)profile.Mode,
+            profile.KeysArray,
+            (nuint)profile.KeysArray.Length,
+            profile.MappingSources,
+            profile.MappingTargets,
+            (nuint)profile.MappingSources.Length,
+            profile.MappingBehavior == KeyboardMappingBehavior.Replace ? 1u : 0u,
+            _effectiveDownBytes,
+            _effectiveEdge,
+            toggleState,
+            (nuint)SharedMemoryConstants.KeyCount,
+            keyboardState,
+            edgeOut,
+            maskOut,
+            blockMask,
+            mappingSourceMask);
     }
 
     public void CopyEdgeCounters(uint[] edgeOut)

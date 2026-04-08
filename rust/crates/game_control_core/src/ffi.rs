@@ -2,8 +2,9 @@
 
 use crate::{
     ControlKeyStateCore, ForegroundDecision, ForegroundTracker, HeartbeatPlan, PublishHeader,
-    PublishHeaderInput, WindowSnapshotInput, build_heartbeat_plan, build_physical_alignment_plan,
-    build_publish_header, evaluate_foreground_state, finalize_input_mask, finalize_publish_profile,
+    PublishHeaderInput, WindowSnapshotInput, apply_profile, build_heartbeat_plan,
+    build_physical_alignment_plan, build_publish_header, evaluate_foreground_state,
+    finalize_input_mask, finalize_publish_profile,
 };
 
 #[repr(C)]
@@ -294,4 +295,76 @@ pub unsafe extern "C" fn game_control_core_key_state_build_effective(
             out_effective_edge,
         )
     };
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn game_control_core_apply_profile(
+    profile_mode: u32,
+    keys_ptr: *const i32,
+    key_len: usize,
+    mapping_sources_ptr: *const i32,
+    mapping_targets_ptr: *const i32,
+    mapping_len: usize,
+    mapping_behavior_replace: u32,
+    down_ptr: *const u8,
+    edge_counter_ptr: *const u32,
+    toggle_state_ptr: *const u8,
+    len: usize,
+    keyboard_state_ptr: *mut u8,
+    edge_out_ptr: *mut u32,
+    target_mask_ptr: *mut u8,
+    block_mask_ptr: *mut u8,
+    mapping_source_mask_ptr: *mut u8,
+) {
+    if down_ptr.is_null()
+        || edge_counter_ptr.is_null()
+        || toggle_state_ptr.is_null()
+        || keyboard_state_ptr.is_null()
+        || edge_out_ptr.is_null()
+        || target_mask_ptr.is_null()
+        || block_mask_ptr.is_null()
+        || mapping_source_mask_ptr.is_null()
+    {
+        return;
+    }
+
+    let keys = if keys_ptr.is_null() {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(keys_ptr, key_len) }
+    };
+    let mapping_sources = if mapping_sources_ptr.is_null() {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(mapping_sources_ptr, mapping_len) }
+    };
+    let mapping_targets = if mapping_targets_ptr.is_null() {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(mapping_targets_ptr, mapping_len) }
+    };
+    let down = unsafe { std::slice::from_raw_parts(down_ptr, len) };
+    let edge_counter = unsafe { std::slice::from_raw_parts(edge_counter_ptr, len) };
+    let toggle_state = unsafe { std::slice::from_raw_parts(toggle_state_ptr, len) };
+    let keyboard_state = unsafe { std::slice::from_raw_parts_mut(keyboard_state_ptr, len) };
+    let edge_out = unsafe { std::slice::from_raw_parts_mut(edge_out_ptr, len) };
+    let target_mask = unsafe { std::slice::from_raw_parts_mut(target_mask_ptr, len) };
+    let block_mask = unsafe { std::slice::from_raw_parts_mut(block_mask_ptr, len) };
+    let mapping_source_mask = unsafe { std::slice::from_raw_parts_mut(mapping_source_mask_ptr, len) };
+
+    apply_profile(
+        profile_mode,
+        keys,
+        mapping_sources,
+        mapping_targets,
+        mapping_behavior_replace != 0,
+        down,
+        edge_counter,
+        toggle_state,
+        keyboard_state,
+        edge_out,
+        target_mask,
+        block_mask,
+        mapping_source_mask,
+    );
 }

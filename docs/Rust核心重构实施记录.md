@@ -1311,6 +1311,60 @@
 
 ---
 
+## 第四十批落地：game_control_core 开始接回 profile apply 输出整形（2026-04-08）
+
+### 本次新增
+- `game_control_core` 已新增：
+  - `apply_profile(...)`
+- `game_control_core_ffi` 已新增：
+  - `game_control_core_apply_profile(...)`
+
+### 本次接回
+- `KeyStateTracker.ApplyProfile()` 不再在 C# 中用 `KeyboardProfile.Apply(...)` 直接生成：
+  - `keyboard_state`
+  - `edge_out`
+  - `target_mask`
+  - `block_mask`
+  - `mapping_source_mask`
+- 现在的链条改为：
+  - Rust `ControlKeyStateCore` 生成 effective state
+  - Rust `apply_profile(...)` 生成 profile 输出
+  - C# 只负责把 profile 元数据数组桥接给 Rust
+- `KeyboardProfile` 当前已增加稳定数组视图：
+  - `KeysArray`
+  - `MappingSources`
+  - `MappingTargets`
+
+### 当前价值
+- `SyncController.cs` 中最大的纯逻辑输出整形块已经开始迁出。
+- `KeyStateTracker.cs` 现在不只是 Rust key state 包装，还开始驱动 Rust profile 输出整形。
+- 控制端这条线已经从：
+  - 流程判定
+  - 头部构建
+  - mask shaping
+  继续推进到了：
+  - key state runtime
+  - profile apply 输出整形
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_control_core`
+2. `cargo clippy -p game_control_core --all-targets --all-features -- -D warnings`
+3. `cargo test --workspace`
+4. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+5. `dotnet build E:\\code\\game-all\\GUI\\Modules\\Sync\\DNFSyncBox.csproj -c Debug -p:PlatformTarget=x86`
+6. `dotnet build E:\\code\\game-all\\GUI\\Modules\\Sync\\DNFSyncBox.csproj -c Release -p:PlatformTarget=x86`
+7. `dotnet build E:\\code\\game-all\\GUI\\GameMasterGUI.csproj -c Debug -p:PlatformTarget=x86`
+8. `dotnet build E:\\code\\game-all\\GUI\\GameMasterGUI.csproj -c Release -p:PlatformTarget=x86`
+
+结果：
+- Rust workspace 全量测试与 clippy 通过
+- `DNFSyncBox` Debug / Release 构建通过
+- `GameMasterGUI` Debug / Release 构建通过
+
+---
+
 ## 第三十九批落地：KeyStateTracker 开始迁到 game_control_core（2026-04-08）
 
 ### 本次新增

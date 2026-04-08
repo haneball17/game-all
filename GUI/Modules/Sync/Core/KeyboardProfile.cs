@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace DNFSyncBox;
 
@@ -33,6 +34,9 @@ internal sealed class KeyboardProfile
     private readonly KeyboardMappingBehavior _mappingBehavior;
     private readonly bool[] _repeatMask;
     private readonly int _repeatIntervalMs;
+    private readonly int[] _keysArray;
+    private readonly int[] _mappingSources;
+    private readonly int[] _mappingTargets;
 
     public KeyboardProfile(
         string id,
@@ -49,6 +53,9 @@ internal sealed class KeyboardProfile
         _keys = new HashSet<int>(keys);
         _mappings = new List<KeyMapping>(mappings);
         _mappingBehavior = mappingBehavior;
+        _keysArray = _keys.ToArray();
+        _mappingSources = _mappings.Select(m => m.Source).ToArray();
+        _mappingTargets = _mappings.Select(m => m.Target).ToArray();
         _repeatMask = new bool[SharedMemoryConstants.KeyCount];
         foreach (var key in repeatKeys)
         {
@@ -66,6 +73,9 @@ internal sealed class KeyboardProfile
     public KeyboardMappingBehavior MappingBehavior => _mappingBehavior;
     public bool[] RepeatMask => _repeatMask;
     public int RepeatIntervalMs => _repeatIntervalMs;
+    public int[] KeysArray => _keysArray;
+    public int[] MappingSources => _mappingSources;
+    public int[] MappingTargets => _mappingTargets;
 
     /// <summary>
     /// 根据方案生成目标键掩码（1 表示覆盖该键）。
