@@ -1311,6 +1311,53 @@
 
 ---
 
+## 第四十三批落地：game_control_core 开始接回 profile mask 与 KeyStateTracker 输出真值（2026-04-08）
+
+### 本次新增
+- `game_control_core` 已新增：
+  - `build_profile_masks(...)`
+  - `apply_profile(...)`
+  - `ControlKeyStateCore` 一组运行时接口
+- `game_control_core_ffi` 已新增：
+  - `game_control_core_build_profile_masks(...)`
+  - `game_control_core_apply_profile(...)`
+  - `game_control_core_key_state_*`
+
+### 本次接回
+- `KeyStateTracker.cs` 已从“纯 C# 状态机”改为 Rust handle 包装层。
+- `KeyboardProfile` 当前已新增稳定元数据数组：
+  - `KeysArray`
+  - `MappingSources`
+  - `MappingTargets`
+- `SyncController.cs` 当前已改为：
+  - paused 分支 mask 构造直接消费 Rust `build_profile_masks(...)`
+  - 非 paused 分支输出整形直接消费 Rust `apply_profile(...)`
+
+### 当前价值
+- `game_control_core` 已经从“流程判定内核”进入“控制端快照输出真值层”。
+- `SyncController.cs` 中最大的一块 profile 输出整形逻辑已经开始离开 C#。
+- `KeyStateTracker` 与 `KeyboardProfile` 进一步退化为桥接/元数据层。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_control_core`
+2. `cargo clippy -p game_control_core --all-targets --all-features -- -D warnings`
+3. `cargo test --workspace`
+4. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+5. `dotnet build E:\\code\\game-all\\GUI\\Modules\\Sync\\DNFSyncBox.csproj -c Debug -p:PlatformTarget=x86`
+6. `dotnet build E:\\code\\game-all\\GUI\\Modules\\Sync\\DNFSyncBox.csproj -c Release -p:PlatformTarget=x86`
+7. `dotnet msbuild E:\\code\\game-all\\GUI\\GameMasterGUI.csproj /t:CoreBuild /p:Configuration=Debug /p:PlatformTarget=x86`
+8. `dotnet msbuild E:\\code\\game-all\\GUI\\GameMasterGUI.csproj /t:CoreBuild /p:Configuration=Release /p:PlatformTarget=x86`
+
+结果：
+- Rust workspace 全量测试与 clippy 通过
+- `DNFSyncBox` Debug / Release 构建通过
+- `GameMasterGUI` Debug / Release 编译通过
+- 若直接执行普通 `Build` 且 `artifacts/run` 中存在运行中的 `game-master`，`PostBuildCopyToRun` 可能因文件占用失败；这是运行中文件锁，不是代码错误
+
+---
+
 ## 第四十一批落地：game_control_core 开始接回 profile mask 与 key state/profile apply 真值（2026-04-08）
 
 ### 本次新增
