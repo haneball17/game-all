@@ -421,9 +421,19 @@ public sealed class SyncController : IDisposable
             {
                 Array.Clear(_keyboardState, 0, _keyboardState.Length);
                 _keyState.CopyEdgeCounters(_edgeCounter);
-                profile.BuildMask(_targetMask);
-                profile.BuildBlockMask(_blockMask);
-                Array.Clear(_mappingSourceMask, 0, _mappingSourceMask.Length);
+                NativeMethods.game_control_core_build_profile_masks(
+                    (uint)profile.Mode,
+                    profile.KeysArray,
+                    (nuint)profile.KeysArray.Length,
+                    profile.MappingSources,
+                    profile.MappingTargets,
+                    (nuint)profile.MappingSources.Length,
+                    profile.MappingBehavior == KeyboardMappingBehavior.Replace ? 1u : 0u,
+                    _targetMask,
+                    _blockMask,
+                    _mappingSourceMask,
+                    _inputMask,
+                    (nuint)SharedMemoryConstants.KeyCount);
             }
             else
             {
@@ -570,22 +580,19 @@ public sealed class SyncController : IDisposable
 
     private void BuildInputMask(KeyboardProfile profile)
     {
-        Array.Clear(_inputMask, 0, _inputMask.Length);
-        profile.BuildMask(_inputMask);
-
-        if (profile.Mode == KeyboardProfileMode.Mapping ||
-            profile.MappingBehavior == KeyboardMappingBehavior.Replace)
-        {
-            Array.Clear(_inputMappingSourceMask, 0, _inputMappingSourceMask.Length);
-            profile.BuildMappingSourceMask(_inputMappingSourceMask);
-            NativeMethods.game_control_core_finalize_input_mask(
-                (uint)profile.Mode,
-                profile.MappingBehavior == KeyboardMappingBehavior.Replace ? 1u : 0u,
-                _inputMappingSourceMask,
-                (nuint)_inputMappingSourceMask.Length,
-                _inputMask,
-                (nuint)_inputMask.Length);
-        }
+        NativeMethods.game_control_core_build_profile_masks(
+            (uint)profile.Mode,
+            profile.KeysArray,
+            (nuint)profile.KeysArray.Length,
+            profile.MappingSources,
+            profile.MappingTargets,
+            (nuint)profile.MappingSources.Length,
+            profile.MappingBehavior == KeyboardMappingBehavior.Replace ? 1u : 0u,
+            _targetMask,
+            _blockMask,
+            _inputMappingSourceMask,
+            _inputMask,
+            (nuint)SharedMemoryConstants.KeyCount);
     }
 
     private static bool IsPhysicallyDown(int vKey)

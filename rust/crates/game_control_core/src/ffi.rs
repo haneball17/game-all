@@ -3,6 +3,7 @@
 use crate::{
     ControlKeyStateCore, ForegroundDecision, ForegroundTracker, HeartbeatPlan, PublishHeader,
     PublishHeaderInput, WindowSnapshotInput, apply_profile, build_heartbeat_plan,
+    build_profile_masks,
     build_physical_alignment_plan, build_publish_header, evaluate_foreground_state,
     finalize_input_mask, finalize_publish_profile,
 };
@@ -366,5 +367,61 @@ pub unsafe extern "C" fn game_control_core_apply_profile(
         target_mask,
         block_mask,
         mapping_source_mask,
+    );
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn game_control_core_build_profile_masks(
+    profile_mode: u32,
+    keys_ptr: *const i32,
+    key_len: usize,
+    mapping_sources_ptr: *const i32,
+    mapping_targets_ptr: *const i32,
+    mapping_len: usize,
+    mapping_behavior_replace: u32,
+    target_mask_ptr: *mut u8,
+    block_mask_ptr: *mut u8,
+    mapping_source_mask_ptr: *mut u8,
+    input_mask_ptr: *mut u8,
+    len: usize,
+) {
+    if target_mask_ptr.is_null()
+        || block_mask_ptr.is_null()
+        || mapping_source_mask_ptr.is_null()
+        || input_mask_ptr.is_null()
+    {
+        return;
+    }
+
+    let keys = if keys_ptr.is_null() {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(keys_ptr, key_len) }
+    };
+    let mapping_sources = if mapping_sources_ptr.is_null() {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(mapping_sources_ptr, mapping_len) }
+    };
+    let mapping_targets = if mapping_targets_ptr.is_null() {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(mapping_targets_ptr, mapping_len) }
+    };
+    let target_mask = unsafe { std::slice::from_raw_parts_mut(target_mask_ptr, len) };
+    let block_mask = unsafe { std::slice::from_raw_parts_mut(block_mask_ptr, len) };
+    let mapping_source_mask = unsafe { std::slice::from_raw_parts_mut(mapping_source_mask_ptr, len) };
+    let input_mask = unsafe { std::slice::from_raw_parts_mut(input_mask_ptr, len) };
+
+    build_profile_masks(
+        profile_mode,
+        keys,
+        mapping_sources,
+        mapping_targets,
+        mapping_behavior_replace != 0,
+        target_mask,
+        block_mask,
+        mapping_source_mask,
+        input_mask,
     );
 }

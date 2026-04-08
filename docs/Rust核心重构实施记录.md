@@ -1311,6 +1311,55 @@
 
 ---
 
+## 第四十一批落地：game_control_core 开始接回 profile mask 与 key state/profile apply 真值（2026-04-08）
+
+### 本次新增
+- `game_control_core` 已新增：
+  - `build_profile_masks(...)`
+  - `apply_profile(...)`
+  - `ControlKeyStateCore`
+  - `set_state / clear / copy_edge_counters / build_effective_state`
+- `game_control_core_ffi` 已新增：
+  - `game_control_core_build_profile_masks(...)`
+  - `game_control_core_apply_profile(...)`
+  - `game_control_core_key_state_*` 一组接口
+
+### 本次接回
+- `KeyboardProfile` 当前已退化为 profile 元数据提供者：
+  - `KeysArray`
+  - `MappingSources`
+  - `MappingTargets`
+- `KeyStateTracker.cs` 当前已改为 Rust handle 包装层：
+  - Rust 管理 key state / edge / repeat / effective state
+- `SyncController.cs` 当前已改为：
+  - paused 分支的 `BuildMask / BuildBlockMask / BuildMappingSourceMask` 逐步改由 Rust 输出
+  - `ApplyProfile()` 直接消费 Rust 生成的 `keyboard_state / edge_out / target_mask / block_mask / mapping_source_mask`
+
+### 当前价值
+- `game_control_core` 已经不仅负责“控制流程判定”，也开始承担“控制端快照主体生成”的核心逻辑。
+- `SyncController.cs` 中最难维护的一块输出整形逻辑已经开始明显迁出。
+- `KeyStateTracker` 和 `KeyboardProfile` 都开始从“逻辑真值层”退化为“桥接/元数据层”。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_control_core`
+2. `cargo clippy -p game_control_core --all-targets --all-features -- -D warnings`
+3. `cargo test --workspace`
+4. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+5. `dotnet build E:\\code\\game-all\\GUI\\Modules\\Sync\\DNFSyncBox.csproj -c Debug -p:PlatformTarget=x86`
+6. `dotnet build E:\\code\\game-all\\GUI\\Modules\\Sync\\DNFSyncBox.csproj -c Release -p:PlatformTarget=x86`
+7. `dotnet msbuild E:\\code\\game-all\\GUI\\GameMasterGUI.csproj /t:CoreBuild /p:Configuration=Debug /p:PlatformTarget=x86`
+8. `dotnet msbuild E:\\code\\game-all\\GUI\\GameMasterGUI.csproj /t:CoreBuild /p:Configuration=Release /p:PlatformTarget=x86`
+
+结果：
+- Rust workspace 全量测试与 clippy 通过
+- `DNFSyncBox` Debug / Release 构建通过
+- `GameMasterGUI` Debug / Release 编译通过
+- 若直接执行 `Build` 而 `artifacts/run` 中存在运行中的 `game-master` 进程，`PostBuildCopyToRun` 可能因文件占用失败；这属于环境锁定，不是代码错误
+
+---
+
 ## 第四十批落地：game_control_core 开始接回 profile apply 输出整形（2026-04-08）
 
 ### 本次新增

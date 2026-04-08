@@ -130,6 +130,20 @@ GAME_CONTROL_CORE_API void game_control_core_apply_profile(
     uint8_t* block_mask_ptr,
     uint8_t* mapping_source_mask_ptr);
 
+GAME_CONTROL_CORE_API void game_control_core_build_profile_masks(
+    uint32_t profile_mode,
+    const int32_t* keys_ptr,
+    size_t key_len,
+    const int32_t* mapping_sources_ptr,
+    const int32_t* mapping_targets_ptr,
+    size_t mapping_len,
+    uint32_t mapping_behavior_replace,
+    uint8_t* target_mask_ptr,
+    uint8_t* block_mask_ptr,
+    uint8_t* mapping_source_mask_ptr,
+    uint8_t* input_mask_ptr,
+    size_t len);
+
 #ifdef __cplusplus
 }
 #endif

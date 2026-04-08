@@ -314,6 +314,79 @@ pub fn build_heartbeat_plan(shared_memory_ready: bool) -> HeartbeatPlan {
 }
 
 #[allow(clippy::too_many_arguments)]
+pub fn build_profile_masks(
+    profile_mode: u32,
+    keys: &[i32],
+    mapping_sources: &[i32],
+    mapping_targets: &[i32],
+    mapping_behavior_replace: bool,
+    target_mask: &mut [u8],
+    block_mask: &mut [u8],
+    mapping_source_mask: &mut [u8],
+    input_mask: &mut [u8],
+) {
+    target_mask.fill(0);
+    block_mask.fill(0);
+    mapping_source_mask.fill(0);
+    input_mask.fill(0);
+
+    let len = target_mask
+        .len()
+        .min(block_mask.len())
+        .min(mapping_source_mask.len())
+        .min(input_mask.len())
+        .min(256);
+
+    match profile_mode {
+        0 => {
+            for idx in 0..len {
+                target_mask[idx] = 1;
+                input_mask[idx] = 1;
+            }
+        }
+        1 => {
+            for &key in keys {
+                if let Ok(idx) = usize::try_from(key) && idx < len {
+                    target_mask[idx] = 1;
+                    input_mask[idx] = 1;
+                }
+            }
+        }
+        2 => {
+            for idx in 0..len {
+                target_mask[idx] = 1;
+                input_mask[idx] = 1;
+            }
+            for &key in keys {
+                if let Ok(idx) = usize::try_from(key) && idx < len {
+                    target_mask[idx] = 0;
+                    block_mask[idx] = 1;
+                }
+            }
+        }
+        3 => {
+            for &target in mapping_targets {
+                if let Ok(idx) = usize::try_from(target) && idx < len {
+                    target_mask[idx] = 1;
+                    input_mask[idx] = 1;
+                }
+            }
+        }
+        _ => {}
+    }
+
+    let mapping_len = mapping_sources.len().min(mapping_targets.len());
+    if profile_mode == PROFILE_MODE_MAPPING || mapping_behavior_replace {
+        for &source_key in mapping_sources.iter().take(mapping_len) {
+            if let Ok(source) = usize::try_from(source_key) && source < len {
+                mapping_source_mask[source] = 1;
+                input_mask[source] = 1;
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn apply_profile(
     profile_mode: u32,
     keys: &[i32],
@@ -677,5 +750,29 @@ mod tests {
         assert_eq!(target[0x45], 1);
         assert_eq!(keyboard[0x45], 0x80);
         assert_eq!(edge_out[0x45], 9);
+    }
+
+    #[test]
+    fn build_profile_masks_supports_blacklist_and_mapping_sources() {
+        let mut target = [0u8; 256];
+        let mut block = [0u8; 256];
+        let mut mapping_source = [0u8; 256];
+        let mut input = [0u8; 256];
+
+        build_profile_masks(
+            2,
+            &[0x41],
+            &[0x51],
+            &[0x45],
+            true,
+            &mut target,
+            &mut block,
+            &mut mapping_source,
+            &mut input,
+        );
+        assert_eq!(target[0x41], 0);
+        assert_eq!(block[0x41], 1);
+        assert_eq!(mapping_source[0x51], 1);
+        assert_eq!(input[0x51], 1);
     }
 }
