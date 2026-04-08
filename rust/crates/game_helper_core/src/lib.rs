@@ -86,6 +86,17 @@ pub struct HelperControlTickDecision {
     pub action_sequence_changed: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HelperOverridePlan {
+    pub hotkey_enabled: bool,
+    pub apply_fullscreen_attack_target: Option<bool>,
+    pub apply_auto_transparent: Option<bool>,
+    pub apply_attract_enabled: Option<bool>,
+    pub apply_gather_items_enabled: Option<bool>,
+    pub fullscreen_skill_enabled: bool,
+    pub fullscreen_skill_active: bool,
+}
+
 pub fn normalize_control_value(value: u8) -> u8 {
     match value {
         CONTROL_FORCE_OFF | CONTROL_FORCE_ON => value,
@@ -199,6 +210,56 @@ pub fn evaluate_control_tick(
     }
 }
 
+pub fn build_control_override_plan(
+    fullscreen_attack: u8,
+    fullscreen_skill: u8,
+    auto_transparent: u8,
+    attract: u8,
+    hotkey_enabled: u8,
+    config_fullscreen_skill_enabled: bool,
+    default_hotkey_enabled: bool,
+) -> HelperOverridePlan {
+    let hotkey_enabled = match hotkey_enabled {
+        CONTROL_FORCE_OFF => false,
+        CONTROL_FORCE_ON => true,
+        _ => default_hotkey_enabled,
+    };
+
+    let apply_fullscreen_attack_target = match fullscreen_attack {
+        CONTROL_FORCE_OFF => Some(false),
+        CONTROL_FORCE_ON => Some(true),
+        _ => None,
+    };
+
+    let apply_auto_transparent = match auto_transparent {
+        CONTROL_FORCE_OFF => Some(false),
+        CONTROL_FORCE_ON => Some(true),
+        _ => None,
+    };
+
+    let (apply_attract_enabled, apply_gather_items_enabled) = match attract {
+        CONTROL_FORCE_OFF => (Some(false), Some(false)),
+        CONTROL_FORCE_ON => (Some(true), Some(true)),
+        _ => (None, None),
+    };
+
+    let (fullscreen_skill_enabled, fullscreen_skill_active) = match fullscreen_skill {
+        CONTROL_FORCE_ON => (true, true),
+        CONTROL_FORCE_OFF => (config_fullscreen_skill_enabled, false),
+        _ => (config_fullscreen_skill_enabled, config_fullscreen_skill_enabled),
+    };
+
+    HelperOverridePlan {
+        hotkey_enabled,
+        apply_fullscreen_attack_target,
+        apply_auto_transparent,
+        apply_attract_enabled,
+        apply_gather_items_enabled,
+        fullscreen_skill_enabled,
+        fullscreen_skill_active,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,5 +348,39 @@ mod tests {
         assert!(decision.action_sequence_changed);
         assert_eq!(decision.next_state.fullscreen_attack, CONTROL_FORCE_ON);
         assert_eq!(decision.next_state.last_action_sequence, 3);
+    }
+
+    #[test]
+    fn override_plan_respects_force_and_follow_modes() {
+        let force_on = build_control_override_plan(
+            CONTROL_FORCE_ON,
+            CONTROL_FORCE_ON,
+            CONTROL_FORCE_OFF,
+            CONTROL_FORCE_ON,
+            CONTROL_FORCE_OFF,
+            false,
+            true,
+        );
+        assert!(!force_on.hotkey_enabled);
+        assert_eq!(force_on.apply_fullscreen_attack_target, Some(true));
+        assert_eq!(force_on.apply_auto_transparent, Some(false));
+        assert_eq!(force_on.apply_attract_enabled, Some(true));
+        assert_eq!(force_on.apply_gather_items_enabled, Some(true));
+        assert!(force_on.fullscreen_skill_enabled);
+        assert!(force_on.fullscreen_skill_active);
+
+        let follow = build_control_override_plan(
+            CONTROL_FOLLOW,
+            CONTROL_FOLLOW,
+            CONTROL_FOLLOW,
+            CONTROL_FOLLOW,
+            CONTROL_FOLLOW,
+            false,
+            true,
+        );
+        assert!(follow.hotkey_enabled);
+        assert_eq!(follow.apply_fullscreen_attack_target, None);
+        assert!(!follow.fullscreen_skill_enabled);
+        assert!(!follow.fullscreen_skill_active);
     }
 }

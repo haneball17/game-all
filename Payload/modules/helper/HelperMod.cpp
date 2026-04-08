@@ -2788,46 +2788,34 @@ static BYTE NormalizeControlValue(BYTE value) {
 static void ApplyControlOverrides() {
 	BOOL config_fullscreen_skill_enabled = g_config_snapshot_ready ? g_config_snapshot.enable_fullscreen_skill : g_fullscreen_skill_enabled;
 	BOOL default_hotkey_enabled = g_config_snapshot_ready ? (g_config_snapshot.disable_input_thread ? FALSE : TRUE) : TRUE;
-	if (g_control_hotkey_enabled == kControlForceOff) {
-		g_hotkey_enabled = FALSE;
-	} else if (g_control_hotkey_enabled == kControlForceOn) {
-		g_hotkey_enabled = TRUE;
-	} else {
-		g_hotkey_enabled = default_hotkey_enabled;
+	HelperOverridePlanInterop plan = game_helper_core_build_control_override_plan(
+		g_control_fullscreen_attack,
+		g_control_fullscreen_skill,
+		g_control_auto_transparent,
+		g_control_attract,
+		g_control_hotkey_enabled,
+		config_fullscreen_skill_enabled ? 1u : 0u,
+		default_hotkey_enabled ? 1u : 0u);
+
+	g_hotkey_enabled = plan.hotkey_enabled != 0;
+
+	if (plan.apply_fullscreen_attack_target != 0) {
+		SetFullscreenAttackTargetEnabled(plan.fullscreen_attack_target != 0);
 	}
 
-	if (g_control_fullscreen_attack == kControlForceOn) {
-		SetFullscreenAttackTargetEnabled(TRUE);
-	} else if (g_control_fullscreen_attack == kControlForceOff) {
-		SetFullscreenAttackTargetEnabled(FALSE);
+	if (plan.apply_auto_transparent != 0) {
+		SetAutoTransparentEnabled(plan.auto_transparent_enabled != 0);
 	}
 
-	if (g_control_auto_transparent == kControlForceOn) {
-		SetAutoTransparentEnabled(TRUE);
-	} else if (g_control_auto_transparent == kControlForceOff) {
-		SetAutoTransparentEnabled(FALSE);
+	if (plan.apply_attract_enabled != 0) {
+		SetAttractEnabled(plan.attract_enabled != 0);
+	}
+	if (plan.apply_gather_items_enabled != 0) {
+		SetGatherItemsEnabled(plan.gather_items_enabled != 0);
 	}
 
-	if (g_control_attract == kControlForceOn) {
-		SetAttractEnabled(TRUE);
-		SetGatherItemsEnabled(TRUE);
-	} else if (g_control_attract == kControlForceOff) {
-		SetAttractEnabled(FALSE);
-		SetGatherItemsEnabled(FALSE);
-	}
-
-	if (g_control_fullscreen_skill == kControlForceOn) {
-		g_fullscreen_skill_enabled = TRUE;
-		g_fullscreen_skill_active = TRUE;
-	} else if (g_control_fullscreen_skill == kControlForceOff) {
-		g_fullscreen_skill_enabled = config_fullscreen_skill_enabled;
-		g_fullscreen_skill_active = FALSE;
-	} else {
-		g_fullscreen_skill_enabled = config_fullscreen_skill_enabled;
-		if (!g_fullscreen_skill_enabled) {
-			g_fullscreen_skill_active = FALSE;
-		}
-	}
+	g_fullscreen_skill_enabled = plan.fullscreen_skill_enabled != 0;
+	g_fullscreen_skill_active = plan.fullscreen_skill_active != 0;
 }
 
 // 应用配置到运行时变量，避免线程直接读结构体。

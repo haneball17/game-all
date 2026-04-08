@@ -2,9 +2,9 @@
 
 use crate::{
     HelperControlApplyPlan, HelperControlRuntimeState, HelperControlTickDecision,
-    HelperStatusContractDecision, HelperStatusSnapshotInput, build_helper_status_snapshot,
-    decode_control_apply_plan, evaluate_control_tick, evaluate_helper_control_contract,
-    evaluate_helper_status_contract,
+    HelperOverridePlan, HelperStatusContractDecision, HelperStatusSnapshotInput,
+    build_control_override_plan, build_helper_status_snapshot, decode_control_apply_plan,
+    evaluate_control_tick, evaluate_helper_control_contract, evaluate_helper_status_contract,
 };
 use game_core_protocols::{HelperControlV4, HelperStatusV5};
 
@@ -93,6 +93,22 @@ pub struct HelperControlTickDecisionInterop {
     pub should_apply_overrides: u32,
     pub summon_sequence_changed: u32,
     pub action_sequence_changed: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HelperOverridePlanInterop {
+    pub hotkey_enabled: u32,
+    pub apply_fullscreen_attack_target: u32,
+    pub fullscreen_attack_target: u32,
+    pub apply_auto_transparent: u32,
+    pub auto_transparent_enabled: u32,
+    pub apply_attract_enabled: u32,
+    pub attract_enabled: u32,
+    pub apply_gather_items_enabled: u32,
+    pub gather_items_enabled: u32,
+    pub fullscreen_skill_enabled: u32,
+    pub fullscreen_skill_active: u32,
 }
 
 impl From<HelperStatusContractDecision> for HelperStatusContractDecisionInterop {
@@ -192,6 +208,24 @@ impl From<HelperControlTickDecision> for HelperControlTickDecisionInterop {
     }
 }
 
+impl From<HelperOverridePlan> for HelperOverridePlanInterop {
+    fn from(value: HelperOverridePlan) -> Self {
+        Self {
+            hotkey_enabled: u32::from(value.hotkey_enabled),
+            apply_fullscreen_attack_target: u32::from(value.apply_fullscreen_attack_target.is_some()),
+            fullscreen_attack_target: u32::from(value.apply_fullscreen_attack_target.unwrap_or(false)),
+            apply_auto_transparent: u32::from(value.apply_auto_transparent.is_some()),
+            auto_transparent_enabled: u32::from(value.apply_auto_transparent.unwrap_or(false)),
+            apply_attract_enabled: u32::from(value.apply_attract_enabled.is_some()),
+            attract_enabled: u32::from(value.apply_attract_enabled.unwrap_or(false)),
+            apply_gather_items_enabled: u32::from(value.apply_gather_items_enabled.is_some()),
+            gather_items_enabled: u32::from(value.apply_gather_items_enabled.unwrap_or(false)),
+            fullscreen_skill_enabled: u32::from(value.fullscreen_skill_enabled),
+            fullscreen_skill_active: u32::from(value.fullscreen_skill_active),
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn game_helper_core_evaluate_status_contract(
     snapshot: *const core::ffi::c_void,
@@ -256,4 +290,26 @@ pub unsafe extern "C" fn game_helper_core_evaluate_control_tick(
     );
     unsafe { out_decision.write(decision.into()) };
     1
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn game_helper_core_build_control_override_plan(
+    fullscreen_attack: u8,
+    fullscreen_skill: u8,
+    auto_transparent: u8,
+    attract: u8,
+    hotkey_enabled: u8,
+    config_fullscreen_skill_enabled: u32,
+    default_hotkey_enabled: u32,
+) -> HelperOverridePlanInterop {
+    build_control_override_plan(
+        fullscreen_attack,
+        fullscreen_skill,
+        auto_transparent,
+        attract,
+        hotkey_enabled,
+        config_fullscreen_skill_enabled != 0,
+        default_hotkey_enabled != 0,
+    )
+    .into()
 }

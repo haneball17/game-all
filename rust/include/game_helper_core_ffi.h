@@ -87,6 +87,20 @@ typedef struct HelperControlTickDecisionInterop {
     uint32_t action_sequence_changed;
 } HelperControlTickDecisionInterop;
 
+typedef struct HelperOverridePlanInterop {
+    uint32_t hotkey_enabled;
+    uint32_t apply_fullscreen_attack_target;
+    uint32_t fullscreen_attack_target;
+    uint32_t apply_auto_transparent;
+    uint32_t auto_transparent_enabled;
+    uint32_t apply_attract_enabled;
+    uint32_t attract_enabled;
+    uint32_t apply_gather_items_enabled;
+    uint32_t gather_items_enabled;
+    uint32_t fullscreen_skill_enabled;
+    uint32_t fullscreen_skill_active;
+} HelperOverridePlanInterop;
+
 GAME_HELPER_CORE_API uint32_t game_helper_core_evaluate_status_contract(
     const void* snapshot,
     HelperStatusContractDecisionInterop* out_decision);
@@ -106,6 +120,15 @@ GAME_HELPER_CORE_API uint32_t game_helper_core_evaluate_control_tick(
     const HelperControlRuntimeStateInterop* state,
     const void* snapshot,
     HelperControlTickDecisionInterop* out_decision);
+
+GAME_HELPER_CORE_API HelperOverridePlanInterop game_helper_core_build_control_override_plan(
+    uint8_t fullscreen_attack,
+    uint8_t fullscreen_skill,
+    uint8_t auto_transparent,
+    uint8_t attract,
+    uint8_t hotkey_enabled,
+    uint32_t config_fullscreen_skill_enabled,
+    uint32_t default_hotkey_enabled);
 
 #ifdef __cplusplus
 }

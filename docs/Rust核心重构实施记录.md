@@ -1178,6 +1178,54 @@
 
 ---
 
+## 第三十六批落地：game_helper_core 开始接回 ApplyControlOverrides 决策（2026-04-08）
+
+### 本次新增
+- `game_helper_core` 已新增：
+  - `HelperOverridePlan`
+  - `build_control_override_plan(...)`
+- `game_helper_core_ffi` 已新增：
+  - `HelperOverridePlanInterop`
+  - `game_helper_core_build_control_override_plan(...)`
+
+### 本次接回
+- `ApplyControlOverrides()` 不再在 C++ 中自己分支判断：
+  - `hotkey_enabled`
+  - fullscreen attack 强制开/关
+  - auto transparent 强制开/关
+  - attract / gather 强制开/关
+  - fullscreen skill enabled / active 的最终覆盖结果
+- Rust 现在统一输出 override plan，C++ 只负责执行：
+  - `SetFullscreenAttackTargetEnabled(...)`
+  - `SetAutoTransparentEnabled(...)`
+  - `SetAttractEnabled(...)`
+  - `SetGatherItemsEnabled(...)`
+  - 写回 `g_hotkey_enabled / g_fullscreen_skill_enabled / g_fullscreen_skill_active`
+
+### 当前价值
+- `Helper` 控制共享内存读取链已经连续收走了：
+  - 协议契约校验
+  - control runtime state 比较
+  - action mask 解码
+  - override 计划决策
+- `HelperMod.cpp` 里和控制共享内存解释直接相关的本地分支进一步减少。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_helper_core`
+2. `cargo clippy -p game_helper_core --all-targets --all-features -- -D warnings`
+3. `cargo test --workspace`
+4. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+5. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Debug /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+6. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+
+结果：
+- `game_helper_core` 与 Rust workspace 全量验证通过
+- Windows `Payload` Debug / Release 构建通过
+
+---
+
 ## 第三十四批落地：game_helper_core 开始接回 ControlReaderTick 运行时状态机（2026-04-08）
 
 ### 本次新增
