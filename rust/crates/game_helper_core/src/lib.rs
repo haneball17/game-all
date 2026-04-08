@@ -1,6 +1,7 @@
 use game_core_protocols::{
     HELPER_CONTROL_V4_SIZE, HELPER_CONTROL_V4_VERSION, HELPER_STATUS_V5_SIZE,
-    HELPER_STATUS_V5_VERSION, HelperControlV4, HelperStatusV5,
+    HELPER_STATUS_V5_VERSION, HelperControlV4, HelperStatusV5, helper_control_mapping_name,
+    helper_status_mapping_name,
 };
 
 pub mod ffi;
@@ -114,6 +115,21 @@ pub fn evaluate_helper_status_contract(snapshot: &HelperStatusV5) -> HelperStatu
 
 pub fn evaluate_helper_control_contract(snapshot: &HelperControlV4) -> bool {
     snapshot.Version == HELPER_CONTROL_V4_VERSION && snapshot.Size == HELPER_CONTROL_V4_SIZE
+}
+
+pub fn build_status_mapping_name(pid: u32, use_global: bool) -> String {
+    helper_status_mapping_name(pid, use_global)
+}
+
+pub fn build_control_mapping_name(pid: u32, use_global: bool) -> String {
+    helper_control_mapping_name(pid, use_global)
+}
+
+pub fn build_default_control_snapshot(pid: u32) -> HelperControlV4 {
+    HelperControlV4 {
+        Pid: pid,
+        ..HelperControlV4::default()
+    }
 }
 
 pub fn build_helper_status_snapshot(input: HelperStatusSnapshotInput) -> HelperStatusV5 {
@@ -348,6 +364,23 @@ mod tests {
         assert!(decision.action_sequence_changed);
         assert_eq!(decision.next_state.fullscreen_attack, CONTROL_FORCE_ON);
         assert_eq!(decision.next_state.last_action_sequence, 3);
+    }
+
+    #[test]
+    fn mapping_names_follow_existing_local_and_global_scheme() {
+        assert_eq!(build_status_mapping_name(42, false), "Local\\GameHelperStatus_42");
+        assert_eq!(build_control_mapping_name(42, true), "Global\\GameHelperControl_42");
+    }
+
+    #[test]
+    fn default_control_snapshot_uses_protocol_defaults_and_pid() {
+        let snapshot = build_default_control_snapshot(99);
+        let pid = snapshot.Pid;
+        let version = snapshot.Version;
+        let size = snapshot.Size;
+        assert_eq!(pid, 99);
+        assert_eq!(version, HELPER_CONTROL_V4_VERSION);
+        assert_eq!(size, HELPER_CONTROL_V4_SIZE);
     }
 
     #[test]

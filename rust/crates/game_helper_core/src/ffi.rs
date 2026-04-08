@@ -3,7 +3,8 @@
 use crate::{
     HelperControlApplyPlan, HelperControlRuntimeState, HelperControlTickDecision,
     HelperOverridePlan, HelperStatusContractDecision, HelperStatusSnapshotInput,
-    build_control_override_plan, build_helper_status_snapshot, decode_control_apply_plan,
+    build_control_mapping_name, build_control_override_plan, build_default_control_snapshot,
+    build_helper_status_snapshot, build_status_mapping_name, decode_control_apply_plan,
     evaluate_control_tick, evaluate_helper_control_contract, evaluate_helper_status_contract,
 };
 use game_core_protocols::{HelperControlV4, HelperStatusV5};
@@ -293,6 +294,44 @@ pub unsafe extern "C" fn game_helper_core_evaluate_control_tick(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn game_helper_core_build_status_mapping_name_utf16(
+    pid: u32,
+    use_global: u32,
+    out_buffer: *mut u16,
+    out_capacity: usize,
+) -> usize {
+    if out_buffer.is_null() || out_capacity == 0 {
+        return 0;
+    }
+    let name = build_status_mapping_name(pid, use_global != 0);
+    let utf16: Vec<u16> = name.encode_utf16().collect();
+    let copy_len = utf16.len().min(out_capacity.saturating_sub(1));
+    let out = unsafe { std::slice::from_raw_parts_mut(out_buffer, out_capacity) };
+    out[..copy_len].copy_from_slice(&utf16[..copy_len]);
+    out[copy_len] = 0;
+    copy_len
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn game_helper_core_build_control_mapping_name_utf16(
+    pid: u32,
+    use_global: u32,
+    out_buffer: *mut u16,
+    out_capacity: usize,
+) -> usize {
+    if out_buffer.is_null() || out_capacity == 0 {
+        return 0;
+    }
+    let name = build_control_mapping_name(pid, use_global != 0);
+    let utf16: Vec<u16> = name.encode_utf16().collect();
+    let copy_len = utf16.len().min(out_capacity.saturating_sub(1));
+    let out = unsafe { std::slice::from_raw_parts_mut(out_buffer, out_capacity) };
+    out[..copy_len].copy_from_slice(&utf16[..copy_len]);
+    out[copy_len] = 0;
+    copy_len
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn game_helper_core_build_control_override_plan(
     fullscreen_attack: u8,
     fullscreen_skill: u8,
@@ -312,4 +351,17 @@ pub extern "C" fn game_helper_core_build_control_override_plan(
         default_hotkey_enabled != 0,
     )
     .into()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn game_helper_core_build_default_control_snapshot(
+    pid: u32,
+    out_snapshot: *mut core::ffi::c_void,
+) -> u32 {
+    if out_snapshot.is_null() {
+        return 0;
+    }
+    let snapshot = build_default_control_snapshot(pid);
+    unsafe { (out_snapshot as *mut HelperControlV4).write(snapshot) };
+    1
 }

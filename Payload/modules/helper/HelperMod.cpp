@@ -1497,9 +1497,12 @@ static BOOL InitializeSharedMemory() {
 	}
 	DWORD pid = GetCurrentProcessId();
 	wchar_t name_buffer[64] = {0};
-	const wchar_t* prefixes[] = {kSharedMemoryNamePrefixLocal, kSharedMemoryNamePrefixGlobal};
 	for (int i = 0; i < 2; ++i) {
-		BuildSharedMemoryName(prefixes[i], name_buffer, sizeof(name_buffer) / sizeof(name_buffer[0]), pid);
+		game_helper_core_build_status_mapping_name_utf16(
+			pid,
+			i == 1 ? 1u : 0u,
+			reinterpret_cast<uint16_t*>(name_buffer),
+			sizeof(name_buffer) / sizeof(name_buffer[0]));
 		if (name_buffer[0] == L'\0') {
 			continue;
 		}
@@ -1549,9 +1552,12 @@ static BOOL InitializeControlMemory() {
 	}
 	DWORD pid = GetCurrentProcessId();
 	wchar_t name_buffer[64] = {0};
-	const wchar_t* prefixes[] = {kControlMemoryNamePrefixLocal, kControlMemoryNamePrefixGlobal};
 	for (int i = 0; i < 2; ++i) {
-		BuildSharedMemoryName(prefixes[i], name_buffer, sizeof(name_buffer) / sizeof(name_buffer[0]), pid);
+		game_helper_core_build_control_mapping_name_utf16(
+			pid,
+			i == 1 ? 1u : 0u,
+			reinterpret_cast<uint16_t*>(name_buffer),
+			sizeof(name_buffer) / sizeof(name_buffer[0]));
 		if (name_buffer[0] == L'\0') {
 			continue;
 		}
@@ -1585,9 +1591,11 @@ static BOOL InitializeControlMemory() {
 		g_control_memory_view = view;
 		ZeroMemory(view, sizeof(HelperControlV4));
 		HelperControlV4 init = {0};
-		init.version = kControlMemoryVersionV4;
-		init.size = static_cast<DWORD>(sizeof(HelperControlV4));
-		init.pid = pid;
+		if (game_helper_core_build_default_control_snapshot(pid, &init) == 0) {
+			CloseHandle(mapping);
+			UnmapViewOfFile(view);
+			return FALSE;
+		}
 		memcpy(view, &init, sizeof(init));
 		InterlockedExchange(&g_control_memory_failed_logged, 0);
 		wcscpy_s(g_control_memory_name, name_buffer);

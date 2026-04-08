@@ -942,6 +942,38 @@
 
 ---
 
+## 第四十四批落地：game_helper_core 开始接回共享内存初始化协议胶水（2026-04-08）
+
+### 本次新增
+- `game_helper_core` 已新增：
+  - `build_status_mapping_name(...)`
+  - `build_control_mapping_name(...)`
+  - `build_default_control_snapshot(...)`
+- `game_helper_core_ffi` 已新增：
+  - `game_helper_core_build_status_mapping_name_utf16(...)`
+  - `game_helper_core_build_control_mapping_name_utf16(...)`
+  - `game_helper_core_build_default_control_snapshot(...)`
+
+### 本次接回
+- `InitializeSharedMemory()` 不再在 C++ 中直接拼接 `GameHelperStatus` 映射名。
+- `InitializeControlMemory()` 不再在 C++ 中直接拼接 `GameHelperControl` 映射名，也不再手写默认 `HelperControlV4` 初始化快照。
+- 上述协议相关初始化胶水现在已开始由 Rust 输出。
+
+### 本轮验证
+已完成：
+
+1. `cargo test -p game_helper_core`
+2. `cargo clippy -p game_helper_core --all-targets --all-features -- -D warnings`
+3. `cargo test --workspace`
+4. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+5. `MSBuild.exe E:\\code\\game-all\\Payload\\Payload.vcxproj /t:Build /p:Configuration=Release /p:Platform=Win32 /p:PlatformToolset=v142 /m`
+
+结果：
+- `game_helper_core` 与 Rust workspace 全量验证通过
+- Windows `Payload` Release 构建通过
+
+---
+
 ## 第二十六批落地：Injector attempt 结果解释继续收口到 Rust（2026-04-08）
 
 ### 本次新增

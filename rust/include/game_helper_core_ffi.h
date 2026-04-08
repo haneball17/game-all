@@ -121,6 +121,18 @@ GAME_HELPER_CORE_API uint32_t game_helper_core_evaluate_control_tick(
     const void* snapshot,
     HelperControlTickDecisionInterop* out_decision);
 
+GAME_HELPER_CORE_API size_t game_helper_core_build_status_mapping_name_utf16(
+    uint32_t pid,
+    uint32_t use_global,
+    uint16_t* out_buffer,
+    size_t out_capacity);
+
+GAME_HELPER_CORE_API size_t game_helper_core_build_control_mapping_name_utf16(
+    uint32_t pid,
+    uint32_t use_global,
+    uint16_t* out_buffer,
+    size_t out_capacity);
+
 GAME_HELPER_CORE_API HelperOverridePlanInterop game_helper_core_build_control_override_plan(
     uint8_t fullscreen_attack,
     uint8_t fullscreen_skill,
@@ -129,6 +141,10 @@ GAME_HELPER_CORE_API HelperOverridePlanInterop game_helper_core_build_control_ov
     uint8_t hotkey_enabled,
     uint32_t config_fullscreen_skill_enabled,
     uint32_t default_hotkey_enabled);
+
+GAME_HELPER_CORE_API uint32_t game_helper_core_build_default_control_snapshot(
+    uint32_t pid,
+    void* out_snapshot);
 
 #ifdef __cplusplus
 }
