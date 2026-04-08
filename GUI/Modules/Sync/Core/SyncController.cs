@@ -423,11 +423,19 @@ public sealed class SyncController : IDisposable
                 _keyState.CopyEdgeCounters(_edgeCounter);
                 profile.BuildMask(_targetMask);
                 profile.BuildBlockMask(_blockMask);
+                Array.Clear(_mappingSourceMask, 0, _mappingSourceMask.Length);
             }
             else
             {
-                _keyState.ApplyProfile(profile, _toggleState, _keyboardState, _edgeCounter, _targetMask, Environment.TickCount64);
-                profile.BuildBlockMask(_blockMask);
+                _keyState.ApplyProfile(
+                    profile,
+                    _toggleState,
+                    _keyboardState,
+                    _edgeCounter,
+                    _targetMask,
+                    _blockMask,
+                    _mappingSourceMask,
+                    Environment.TickCount64);
             }
         }
 
@@ -437,8 +445,6 @@ public sealed class SyncController : IDisposable
         if (profile.Mode == KeyboardProfileMode.Mapping ||
             profile.MappingBehavior == KeyboardMappingBehavior.Replace)
         {
-            Array.Clear(_mappingSourceMask, 0, _mappingSourceMask.Length);
-            profile.BuildMappingSourceMask(_mappingSourceMask);
             reportedMode = NativeMethods.game_control_core_finalize_publish_profile(
                 (uint)profile.Mode,
                 profile.MappingBehavior == KeyboardMappingBehavior.Replace ? 1u : 0u,
